@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -12,6 +13,33 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGetResponseBodySizeLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		size      int
+		wantError bool
+	}{
+		{name: "accepts response at limit", size: maxAdvancedCustomBalanceResponseBytes},
+		{name: "rejects oversized response", size: maxAdvancedCustomBalanceResponseBytes + 1, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := strings.Repeat("x", tc.size)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(payload))
+			}))
+			defer server.Close()
+			body, err := GetResponseBody(http.MethodGet, server.URL, &model.Channel{}, nil)
+			if tc.wantError {
+				require.ErrorContains(t, err, "balance response exceeds")
+				assert.Nil(t, body)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, payload, string(body))
+		})
+	}
+}
 
 func TestGetDeepSeekBalanceUSD(t *testing.T) {
 	tests := []struct {

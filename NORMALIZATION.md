@@ -37,3 +37,11 @@ The fork ignores local environment variants, scratch files, agent session artifa
 Each feature increment records its validation and remaining limitations. Payment work requires amount and currency verification, authenticated callbacks, duplicate notification handling, and an immutable order conversion snapshot. Database changes require fresh-install and upgrade verification on SQLite, MySQL, and PostgreSQL. Frontend changes require relevant tests, type checking, lint, build, and desktop/mobile review before a feature release is described as complete.
 
 No feature release has been published yet.
+
+## Verified increments
+
+### Channel balance response bounds
+
+Migrated the source checkout's response size limit into the shared channel balance HTTP reader, reusing the existing 256 KiB balance response limit. Responses above that limit fail instead of being read without a bound. Response bodies now close on every return path, including non-200 responses and read failures.
+
+Validation: `go test ./controller -run 'TestGetResponseBodySizeLimit' -count=1` passed. The regression cases cover acceptance at the limit and rejection above it. `git diff --check` passed. This increment does not change database schemas or balance conversion rules.
