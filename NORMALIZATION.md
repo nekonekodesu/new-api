@@ -38,6 +38,12 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+### Payment method currency and fee contract
+
+Added a provider-neutral payment method setting with provider currency, USD exchange rate, percentage fee, and fixed fee. Added a validated quote helper so future gateways, including Taiwan providers, use the same amount calculation and reject invalid rates or fees.
+
+Validation: `go test ./setting/operation_setting -run 'TestQuotePaymentAmount|TestGetUsdToCurrencyRate' -count=1` passed. No gateway callback or database schema was changed in this increment.
+
 ### Independent NTD exchange rate
 
 Added a separate `NTDExchangeRate` option and connected NTD display, logs, subscription amounts, and system configuration to it. Existing `USDExchangeRate` remains the CNY-compatible setting. This prevents a Taiwan dollar display from silently reusing the CNY exchange rate.

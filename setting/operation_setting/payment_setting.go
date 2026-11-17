@@ -11,6 +11,8 @@ import (
 type PaymentSetting struct {
 	AmountOptions  []int           `json:"amount_options"`
 	AmountDiscount map[int]float64 `json:"amount_discount"` // 充值金额对应的折扣，例如 100 元 0.9 表示 100 元充值享受 9 折优惠
+	// Per-channel quote settings. Rates are provider-currency units per USD.
+	PaymentMethods map[string]PaymentMethodSetting `json:"payment_methods"`
 
 	ComplianceConfirmed    bool   `json:"compliance_confirmed"`
 	ComplianceTermsVersion string `json:"compliance_terms_version"`
@@ -22,6 +24,13 @@ type PaymentSetting struct {
 	EpaySignType           string `json:"epay_sign_type"`
 	EpayMerchantPrivateKey string `json:"epay_merchant_private_key"`
 	EpayPlatformPublicKey  string `json:"epay_platform_public_key"`
+}
+
+type PaymentMethodSetting struct {
+	Currency     string  `json:"currency"`
+	ExchangeRate float64 `json:"exchange_rate"`
+	FeeRate      float64 `json:"fee_rate"`
+	FixedFee     float64 `json:"fixed_fee"`
 }
 
 const CurrentComplianceTermsVersion = "v1"
@@ -39,8 +48,21 @@ const (
 var paymentSetting = PaymentSetting{
 	AmountOptions:  []int{10, 20, 50, 100, 200, 500},
 	AmountDiscount: map[int]float64{},
+	PaymentMethods: map[string]PaymentMethodSetting{},
 	// 没有保存过签名方式的站点按 MD5 运行，升级后行为不变。
 	EpaySignType: EpaySignTypeMD5,
+}
+
+// QuotePaymentAmount converts a USD amount into the provider's currency and
+// applies the configured percentage and fixed fees. Invalid rates are rejected
+// instead of silently charging a different amount.
+func QuotePaymentAmount(amountUSD float64, method PaymentMethodSetting) (float64, error) {
+	if amountUSD <= 0 || method.ExchangeRate <= 0 || method.FeeRate < 0 || method.FixedFee < 0 {
+		return 0, common.NewMessage("Invalid payment currency or fee configuration")
+	}
+	amount := amountUSD * method.ExchangeRate
+	amount += amount*method.FeeRate + method.FixedFee
+	return amount, nil
 }
 
 func init() {
