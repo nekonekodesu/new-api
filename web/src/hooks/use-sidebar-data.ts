@@ -20,7 +20,9 @@ import {
   Activity,
   Box,
   ClipboardList,
+  Clock,
   CreditCard,
+  DollarSign,
   FileText,
   FlaskConical,
   Key,
@@ -36,7 +38,6 @@ import {
   User,
   Users,
   Wallet,
-  Workflow,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -154,6 +155,43 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             icon: Ticket,
           },
           {
+            title: t('CRON'),
+            icon: Clock,
+            items: [
+              {
+                title: t('CRON Scheduled Tasks'),
+                url: '/channels?tab=cron',
+                configUrls: ['/channels'],
+              },
+              {
+                title: t('Upstream Account & Group Channel Sync'),
+                url: '/channels?tab=upstream-accounts',
+                configUrls: ['/channels'],
+              },
+              {
+                title: t('Channel Upstream Model Sync'),
+                url: '/channels?tab=upstream-sync',
+                configUrls: ['/channels'],
+              },
+            ],
+          },
+          {
+            title: t('Cost Management'),
+            icon: DollarSign,
+            items: [
+              {
+                title: t('Model Cost & Selling Price'),
+                url: '/channels?tab=cost-models',
+                configUrls: ['/channels'],
+              },
+              {
+                title: t('User Top-up & Gross Margin'),
+                url: '/channels?tab=cost-users',
+                configUrls: ['/channels'],
+              },
+            ],
+          },
+          {
             title: t('Subscriptions'),
             url: '/subscriptions',
             icon: CreditCard,
@@ -165,15 +203,9 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             requiredRole: ROLE.SUPER_ADMIN,
           },
           {
-            title: t('Plugins'),
+            title: t('Task Plugins'),
             url: '/task-plugins',
             icon: PlugZap,
-            requiredRole: ROLE.SUPER_ADMIN,
-          },
-          {
-            title: t('Request processing'),
-            url: '/request-processing',
-            icon: Workflow,
             requiredRole: ROLE.SUPER_ADMIN,
           },
           {
@@ -182,7 +214,6 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             activeUrls: ['/system-settings'],
             icon: Settings,
             requiredRole: ROLE.SUPER_ADMIN,
-            // Model pricing lives in System Settings.
             badge: badges.modelPricing,
           },
         ],

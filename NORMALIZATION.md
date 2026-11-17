@@ -38,6 +38,12 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+### Navigation and sidebar behavior
+
+Migrated active URL matching, query-aware navigation state, sidebar grouping, audit/task log links, and model-pricing badges. Existing project attribution and home-page branding were intentionally excluded from this increment.
+
+Validation: frontend `bun run typecheck`, targeted Oxlint for changed navigation files, and `bun run build` passed.
+
 ### Usage logs and request policy surfaces
 
 Migrated the usage-log table, audit viewer, error-response display, timing fields, filters, mobile log cards, and request-policy routing/health UI. The current rc.51 table markup remains authoritative; one source routing regression test expected a different cell split and was intentionally not carried over.

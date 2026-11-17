@@ -101,6 +101,7 @@ const URL_TO_CONFIG_MAP: Record<string, { section: string; module: string }> = {
   '/dashboard': { section: 'console', module: 'detail' },
   '/dashboard/overview': { section: 'console', module: 'detail' },
   '/dashboard/models': { section: 'console', module: 'detail' },
+  '/dashboard/health': { section: 'console', module: 'detail' },
   '/dashboard/users': { section: 'console', module: 'detail' },
   '/keys': { section: 'console', module: 'token' },
   '/usage-logs': { section: 'console', module: 'log' },
@@ -174,7 +175,8 @@ function isModuleEnabled(
   adminConfig: SidebarModulesAdminConfig,
   userConfig: SidebarModulesUserConfig
 ): boolean {
-  const mapping = URL_TO_CONFIG_MAP[url]
+  const baseUrl = url.split('?')[0]
+  const mapping = URL_TO_CONFIG_MAP[url] ?? URL_TO_CONFIG_MAP[baseUrl]
   if (!mapping) {
     // No mapping config, default to visible (e.g. system settings and new features)
     return true

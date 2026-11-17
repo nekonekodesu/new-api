@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Link, useLocation } from '@tanstack/react-router'
+import { Link, useLocation, type LinkComponentProps } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import { type ReactNode, useState, useEffect } from 'react'
 
@@ -117,11 +117,27 @@ function NavBadge({ children }: { children: ReactNode }) {
   return <Badge className='shrink-0 px-1 py-0 text-xs'>{children}</Badge>
 }
 
+function buildLinkProps(url: NavLink['url']): LinkComponentProps {
+  if (typeof url === 'string' && url.includes('?')) {
+    const [pathname, query = ''] = url.split('?')
+    const searchParams = new URLSearchParams(query)
+    const search: Record<string, string> = {}
+    searchParams.forEach((value, key) => {
+      search[key] = value
+    })
+    // Sidebar menu urls may carry query strings for routes that are not
+    // statically registered, so bypass the narrowed Link options typing.
+    return { to: pathname, search } as LinkComponentProps
+  }
+  return { to: url } as LinkComponentProps
+}
+
 /**
  * Sidebar menu link item
  */
 function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
   const { isMobile, setOpenMobile } = useSidebar()
+  const linkProps = buildLinkProps(item.url)
   return (
     <SidebarMenuItem>
       <SidebarMenuButton
@@ -129,7 +145,7 @@ function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
         tooltip={item.title}
         render={
           <Link
-            to={item.url}
+            {...linkProps}
             preload={isMobile ? false : undefined}
             onClick={() => setOpenMobile(false)}
           />
@@ -185,24 +201,29 @@ function SidebarMenuCollapsible({
       </CollapsibleTrigger>
       <CollapsibleContent className='CollapsibleContent'>
         <SidebarMenuSub>
-          {item.items.map((subItem) => (
-            <SidebarMenuSubItem key={subItem.title}>
-              <SidebarMenuSubButton
-                isActive={checkIsActive(href, subItem)}
-                render={
-                  <Link
-                    to={subItem.url}
-                    preload={isMobile ? false : undefined}
-                    onClick={() => setOpenMobile(false)}
-                  />
-                }
-              >
-                {subItem.icon && <subItem.icon className='shrink-0' />}
-                <span className='min-w-0 flex-1 truncate'>{subItem.title}</span>
-                {subItem.badge && <NavBadge>{subItem.badge}</NavBadge>}
-              </SidebarMenuSubButton>
-            </SidebarMenuSubItem>
-          ))}
+          {item.items.map((subItem) => {
+            const subLinkProps = buildLinkProps(subItem.url)
+            return (
+              <SidebarMenuSubItem key={subItem.title}>
+                <SidebarMenuSubButton
+                  isActive={checkIsActive(href, subItem)}
+                  render={
+                    <Link
+                      {...subLinkProps}
+                      preload={isMobile ? false : undefined}
+                      onClick={() => setOpenMobile(false)}
+                    />
+                  }
+                >
+                  {subItem.icon && <subItem.icon className='shrink-0' />}
+                  <span className='min-w-0 flex-1 truncate'>
+                    {subItem.title}
+                  </span>
+                  {subItem.badge && <NavBadge>{subItem.badge}</NavBadge>}
+                </SidebarMenuSubButton>
+              </SidebarMenuSubItem>
+            )
+          })}
         </SidebarMenuSub>
       </CollapsibleContent>
     </Collapsible>
@@ -242,26 +263,30 @@ function SidebarMenuCollapsedDropdown({
               {item.title} {item.badge ? `(${item.badge})` : ''}
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            {item.items.map((sub) => (
-              <DropdownMenuItem
-                key={`${sub.title}-${sub.url}`}
-                render={
-                  <Link
-                    to={sub.url}
-                    className={`${checkIsActive(href, sub) ? 'bg-secondary' : ''}`}
-                  />
-                }
-              >
-                {sub.icon && <sub.icon />}
-                <span className='max-w-52 text-wrap'>{sub.title}</span>
-                {sub.badge && (
-                  <span className='ms-auto text-xs'>{sub.badge}</span>
-                )}
-              </DropdownMenuItem>
-            ))}
+            {item.items.map((sub) => {
+              const subLinkProps = buildLinkProps(sub.url)
+              return (
+                <DropdownMenuItem
+                  key={`${sub.title}-${sub.url}`}
+                  render={
+                    <Link
+                      {...subLinkProps}
+                      className={`${checkIsActive(href, sub) ? 'bg-secondary' : ''}`}
+                    />
+                  }
+                >
+                  {sub.icon && <sub.icon />}
+                  <span className='max-w-52 text-wrap'>{sub.title}</span>
+                  {sub.badge && (
+                    <span className='ms-auto text-xs'>{sub.badge}</span>
+                  )}
+                </DropdownMenuItem>
+              )
+            })}
           </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
     </SidebarMenuItem>
   )
 }
+
