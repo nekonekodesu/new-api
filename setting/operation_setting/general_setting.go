@@ -81,8 +81,13 @@ func GetUsdToCurrencyRate(usdToCny float64) float64 {
 	switch generalSetting.QuotaDisplayType {
 	case QuotaDisplayTypeUSD:
 		return 1
-	case QuotaDisplayTypeCNY, QuotaDisplayTypeNTD:
+	case QuotaDisplayTypeCNY:
 		return usdToCny
+	case QuotaDisplayTypeNTD:
+		if NTDExchangeRate > 0 {
+			return NTDExchangeRate
+		}
+		return 1
 	case QuotaDisplayTypeCustom:
 		if generalSetting.CustomCurrencyExchangeRate > 0 {
 			return generalSetting.CustomCurrencyExchangeRate

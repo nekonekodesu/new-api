@@ -62,6 +62,9 @@ const createPricingSchema = (t: (key: string) => string) =>
       USDExchangeRate: z.coerce
         .number()
         .min(0.0001, t('Exchange rate must be greater than 0')),
+      NTDExchangeRate: z.coerce
+        .number()
+        .min(0.0001, t('Exchange rate must be greater than 0')),
       DisplayInCurrencyEnabled: z.boolean(),
       DisplayTokenStatEnabled: z.boolean(),
       general_setting: z.object({
@@ -229,7 +232,7 @@ export function PricingSection({ defaultValues }: PricingSectionProps) {
               )}
             />
 
-            {displayType !== 'TOKENS' && (
+            {displayType !== 'TOKENS' && displayType !== 'NTD' && (
               <FormField
                 control={form.control}
                 name='USDExchangeRate'
@@ -254,6 +257,27 @@ export function PricingSection({ defaultValues }: PricingSectionProps) {
                         'Real exchange rate between USD and your payment gateway currency'
                       )}
                     </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
+
+            {displayType === 'NTD' && (
+              <FormField
+                control={form.control}
+                name='NTDExchangeRate'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('TWD per USD')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        step='0.01'
+                        {...safeNumberFieldProps(field)}
+                      />
+                    </FormControl>
+                    <FormDescription>{t('Real exchange rate between USD and New Taiwan dollar')}</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}

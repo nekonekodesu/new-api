@@ -132,7 +132,7 @@ func LogQuota(quota int) string {
 		return common.LogText("¥%.6f quota", cny)
 	case operation_setting.QuotaDisplayTypeNTD:
 		usd := q / common.QuotaPerUnit
-		ntd := usd * operation_setting.USDExchangeRate
+		ntd := usd * operation_setting.NTDExchangeRate
 		return common.LogText("NT$%.6f quota", ntd)
 	case operation_setting.QuotaDisplayTypeCustom:
 		usd := q / common.QuotaPerUnit
@@ -162,7 +162,7 @@ func FormatQuota(quota int) string {
 		return fmt.Sprintf("¥%.6f", cny)
 	case operation_setting.QuotaDisplayTypeNTD:
 		usd := q / common.QuotaPerUnit
-		ntd := usd * operation_setting.USDExchangeRate
+		ntd := usd * operation_setting.NTDExchangeRate
 		return fmt.Sprintf("NT$%.6f", ntd)
 	case operation_setting.QuotaDisplayTypeCustom:
 		usd := q / common.QuotaPerUnit

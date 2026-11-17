@@ -38,6 +38,12 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+### Independent NTD exchange rate
+
+Added a separate `NTDExchangeRate` option and connected NTD display, logs, subscription amounts, and system configuration to it. Existing `USDExchangeRate` remains the CNY-compatible setting. This prevents a Taiwan dollar display from silently reusing the CNY exchange rate.
+
+Validation: `go test ./setting/operation_setting -run TestGetUsdToCurrencyRateUsesSelectedCurrencyRate -count=1`, frontend `bun run typecheck`, and targeted Oxlint for changed system-setting files passed.
+
 ### Frontend management surfaces
 
 Migrated the channel management API extensions and management surfaces for cost control, model price tables, upstream synchronization, scheduled tasks, channel classification, model health, network behavior, and configurable NTD display support. Existing plugin login and balance-task API contracts were restored when the feature batch initially replaced them.

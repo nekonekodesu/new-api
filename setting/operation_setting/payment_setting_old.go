@@ -17,6 +17,9 @@ var Price = 7.3
 var MinTopUp = 1
 var USDExchangeRate = 7.3
 
+// NTDExchangeRate is the configured USD to New Taiwan dollar display rate.
+var NTDExchangeRate = 32.0
+
 var PayMethods = []map[string]string{
 	{
 		"name": "支付宝",

@@ -36,6 +36,7 @@ const STATUS_RELATED_KEYS = new Set([
   'log_setting.max_range_days',
   'QuotaPerUnit',
   'USDExchangeRate',
+  'NTDExchangeRate',
   'DisplayInCurrencyEnabled',
   'DisplayTokenStatEnabled',
   'general_setting.quota_display_type',
