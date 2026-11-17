@@ -134,6 +134,74 @@ type AmountRequest struct {
 	Amount int64 `json:"amount"`
 }
 
+type ECPayRequest struct {
+	Amount int64 `json:"amount"`
+}
+
+func RequestECPay(c *gin.Context) {
+	var req ECPayRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Amount < getMinTopup() || rejectInvalidTopUpQuota(c, c.GetInt("id"), req.Amount) {
+		if err != nil {
+			paymentError(c, common.NewMessage("Invalid parameters"))
+		}
+		return
+	}
+	if !operation_setting.IsECPayEnabled() {
+		paymentError(c, common.NewMessage("Payment information has not been configured by administrator"))
+		return
+	}
+	tradeNo := fmt.Sprintf("ECPAY%d%s", c.GetInt("id"), common.GetRandomString(20))
+	callback := service.GetCallbackAddress() + "/api/user/ecpay/notify"
+	fields := map[string]string{
+		"MerchantID":        operation_setting.GetPaymentSetting().ECPayMerchantID,
+		"MerchantTradeNo":   tradeNo,
+		"MerchantTradeDate": time.Now().Format("2006/01/02 15:04:05"),
+		"PaymentType":       "aio",
+		"TotalAmount":       strconv.FormatInt(req.Amount, 10),
+		"TradeDesc":         "API top-up",
+		"ItemName":          fmt.Sprintf("Quota %d", req.Amount),
+		"ReturnURL":         callback,
+		"ClientBackURL":     paymentReturnPath("/usage-logs"),
+		"ChoosePayment":     "ALL",
+		"EncryptType":       "1",
+	}
+	fields["CheckMacValue"] = operation_setting.ECPayCheckMacValue(fields, operation_setting.GetPaymentSetting().ECPayHashKey, operation_setting.GetPaymentSetting().ECPayHashIV)
+	topUp := &model.TopUp{UserId: c.GetInt("id"), Amount: req.Amount, Money: float64(req.Amount), TradeNo: tradeNo, PaymentProvider: model.PaymentProviderECPay, PaymentMethod: "ecpay", CreateTime: common.GetTimestamp(), Status: common.TopUpStatusPending}
+	if err := topUp.Insert(); err != nil {
+		paymentError(c, common.NewMessage("Failed to create order"))
+		return
+	}
+	endpoint := operation_setting.GetPaymentSetting().ECPayEndpoint
+	if endpoint == "" {
+		endpoint = "https://payment.ecpay.com.tw/Cashier/AioCheckOut/V5"
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "success", "url": endpoint, "params": fields})
+}
+
+func ECPayNotify(c *gin.Context) {
+	if !operation_setting.IsECPayEnabled() {
+		c.String(http.StatusForbidden, "0|disabled")
+		return
+	}
+	if err := c.Request.ParseForm(); err != nil {
+		c.String(http.StatusBadRequest, "0|invalid")
+		return
+	}
+	fields := make(map[string]string, len(c.Request.PostForm))
+	for key := range c.Request.PostForm {
+		fields[key] = c.Request.PostForm.Get(key)
+	}
+	if fields["MerchantID"] != operation_setting.GetPaymentSetting().ECPayMerchantID || fields["CheckMacValue"] != operation_setting.ECPayCheckMacValue(fields, operation_setting.GetPaymentSetting().ECPayHashKey, operation_setting.GetPaymentSetting().ECPayHashIV) || fields["RtnCode"] != "1" {
+		c.String(http.StatusUnauthorized, "0|invalid")
+		return
+	}
+	if _, err := model.RechargeECPay(fields["MerchantTradeNo"], c.ClientIP()); err != nil && !errors.Is(err, model.ErrTopUpStatusInvalid) {
+		c.String(http.StatusBadRequest, "0|failed")
+		return
+	}
+	c.String(http.StatusOK, "1|OK")
+}
+
 func GetEpayClient() *epay.Client {
 	if operation_setting.PayAddress == "" || operation_setting.EpayId == "" {
 		return nil

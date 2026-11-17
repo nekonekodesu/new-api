@@ -38,6 +38,12 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+### ECPay order and callback vertical slice
+
+Added ECPay payment and notify routes using the provider-specific form contract. Orders persist `PaymentProvider=ecpay`, callbacks verify MerchantID, CheckMacValue, and successful return code, and settlement uses a database row lock plus pending/success status transition so repeated callbacks cannot credit the wallet twice. The callback returns provider-compatible success/failure responses.
+
+Validation: `go test ./controller ./model ./router ./setting/operation_setting -run 'ECPay|Topup|Payment|AccessTokenScope' -count=1` passed. Provider credentials remain configuration-only and are not present in source.
+
 ### Navigation and sidebar behavior
 
 Migrated active URL matching, query-aware navigation state, sidebar grouping, audit/task log links, and model-pricing badges. Existing project attribution and home-page branding were intentionally excluded from this increment.

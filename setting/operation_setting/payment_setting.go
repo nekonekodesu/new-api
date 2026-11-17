@@ -53,6 +53,12 @@ func ECPayCheckMacValue(fields map[string]string, hashKey, hashIV string) string
 	return strings.ToUpper(hex.EncodeToString(hash[:]))
 }
 
+func IsECPayEnabled() bool {
+	return strings.TrimSpace(paymentSetting.ECPayMerchantID) != "" &&
+		strings.TrimSpace(paymentSetting.ECPayHashKey) != "" &&
+		strings.TrimSpace(paymentSetting.ECPayHashIV) != ""
+}
+
 type PaymentMethodSetting struct {
 	Currency     string  `json:"currency"`
 	ExchangeRate float64 `json:"exchange_rate"`
