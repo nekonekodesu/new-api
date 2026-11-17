@@ -204,9 +204,9 @@ function InstanceEditorDialog(props: RequestPluginInstanceEditorProps) {
   const plugin = props.plugins.find((item) => item.key === pluginKey)
   const [draft, setDraft] = useState(() =>
     toRequestPluginConfigDraft(
-      plugin?.configSchema,
+      plugin?.configSchema ?? undefined,
       props.instance?.config ??
-        requestPluginConfigDefaults(plugin?.configSchema)
+        requestPluginConfigDefaults(plugin?.configSchema ?? undefined)
     )
   )
   // Problems show as the admin edits; the rest show once a save is tried.
@@ -214,7 +214,7 @@ function InstanceEditorDialog(props: RequestPluginInstanceEditorProps) {
   // An instance whose plugin is gone keeps its saved settings untouched.
   const pluginMissing = Boolean(pluginKey) && !plugin
   const parsed = useMemo(
-    () => fromRequestPluginConfigDraft(plugin?.configSchema, draft),
+    () => fromRequestPluginConfigDraft(plugin?.configSchema ?? undefined, draft),
     [plugin?.configSchema, draft]
   )
   const pluginName = plugin
@@ -229,8 +229,8 @@ function InstanceEditorDialog(props: RequestPluginInstanceEditorProps) {
     setName(next ? localizedPluginName(next, i18n.language) : key)
     setDraft(
       toRequestPluginConfigDraft(
-        next?.configSchema,
-        requestPluginConfigDefaults(next?.configSchema)
+        next?.configSchema ?? undefined,
+        requestPluginConfigDefaults(next?.configSchema ?? undefined)
       )
     )
     setShowAllErrors(false)
@@ -413,7 +413,7 @@ function InstanceEditorDialog(props: RequestPluginInstanceEditorProps) {
             {plugin ? (
               <RequestPluginConfigForm
                 pluginKey={pluginKey}
-                schema={plugin.configSchema}
+                schema={plugin.configSchema ?? undefined}
                 draft={draft}
                 errors={parsed.errors}
                 showAllErrors={showAllErrors}

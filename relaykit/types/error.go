@@ -5,9 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
+)
+
+const maxUpstreamResponseBytes = 4096
+
+var (
+	upstreamBearerTokenPattern = regexp.MustCompile(`(?i)\bBearer\s+[^\s"',;<>]+`)
+	upstreamSkKeyPattern       = regexp.MustCompile(`\bsk-[A-Za-z0-9_*-]{8,}\b`)
 )
 
 type OpenAIError struct {
@@ -91,14 +100,58 @@ const (
 )
 
 type NewAPIError struct {
-	Err            error
-	RelayError     any
-	skipRetry      bool
-	recordErrorLog *bool
-	errorType      ErrorType
-	errorCode      ErrorCode
-	StatusCode     int
-	Metadata       json.RawMessage
+	Err              error
+	RelayError       any
+	upstreamResponse string
+	skipRetry        bool
+	recordErrorLog   *bool
+	errorType        ErrorType
+	errorCode        ErrorCode
+	StatusCode       int
+	Metadata         json.RawMessage
+}
+
+func (e *NewAPIError) SetUpstreamResponse(raw string) {
+	if e != nil {
+		e.upstreamResponse = raw
+	}
+}
+
+func (e *NewAPIError) GetUpstreamResponse() string {
+	if e == nil {
+		return ""
+	}
+	return e.upstreamResponse
+}
+
+func truncateUpstreamResponse(s string, maxBytes int) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return strings.TrimRight(s[:cut], " \t\r\n") + "\n... [truncated]"
+}
+
+func (e *NewAPIError) MaskSensitiveUpstreamResponse(upstreamURLs ...string) string {
+	if e == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(e.upstreamResponse)
+	if raw == "" {
+		raw = strings.TrimSpace(e.MaskSensitiveError(upstreamURLs...))
+	}
+	if raw == "" {
+		return ""
+	}
+	masked := upstreamBearerTokenPattern.ReplaceAllString(raw, "Bearer ***")
+	masked = upstreamSkKeyPattern.ReplaceAllString(masked, "sk-***")
+	if e.errorCode != ErrorCodeCountTokenFailed {
+		masked = kitutil.MaskSensitiveInfo(masked, upstreamURLs...)
+	}
+	return truncateUpstreamResponse(masked, maxUpstreamResponseBytes)
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.
@@ -410,6 +463,12 @@ func ErrOptionWithHideErrMsg(replaceStr string) NewAPIErrorOptions {
 			fmt.Printf("ErrOptionWithHideErrMsg: %s, origin error: %s", replaceStr, e.Err)
 		}
 		e.Err = errors.New(replaceStr)
+	}
+}
+
+func ErrOptionWithUpstreamResponse(raw string) NewAPIErrorOptions {
+	return func(e *NewAPIError) {
+		e.upstreamResponse = raw
 	}
 }
 
