@@ -1,8 +1,11 @@
 package operation_setting
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"sort"
 	"strings"
@@ -16,11 +19,15 @@ type PaymentSetting struct {
 	AmountOptions  []int           `json:"amount_options"`
 	AmountDiscount map[int]float64 `json:"amount_discount"` // 充值金额对应的折扣，例如 100 元 0.9 表示 100 元充值享受 9 折优惠
 	// Per-channel quote settings. Rates are provider-currency units per USD.
-	PaymentMethods  map[string]PaymentMethodSetting `json:"payment_methods"`
-	ECPayMerchantID string                          `json:"ecpay_merchant_id"`
-	ECPayHashKey    string                          `json:"ecpay_hash_key"`
-	ECPayHashIV     string                          `json:"ecpay_hash_iv"`
-	ECPayEndpoint   string                          `json:"ecpay_endpoint"`
+	PaymentMethods     map[string]PaymentMethodSetting `json:"payment_methods"`
+	ECPayMerchantID    string                          `json:"ecpay_merchant_id"`
+	ECPayHashKey       string                          `json:"ecpay_hash_key"`
+	ECPayHashIV        string                          `json:"ecpay_hash_iv"`
+	ECPayEndpoint      string                          `json:"ecpay_endpoint"`
+	NewebPayMerchantID string                          `json:"newebpay_merchant_id"`
+	NewebPayHashKey    string                          `json:"newebpay_hash_key"`
+	NewebPayHashIV     string                          `json:"newebpay_hash_iv"`
+	NewebPayEndpoint   string                          `json:"newebpay_endpoint"`
 
 	ComplianceConfirmed    bool   `json:"compliance_confirmed"`
 	ComplianceTermsVersion string `json:"compliance_terms_version"`
@@ -32,6 +39,85 @@ type PaymentSetting struct {
 	EpaySignType           string `json:"epay_sign_type"`
 	EpayMerchantPrivateKey string `json:"epay_merchant_private_key"`
 	EpayPlatformPublicKey  string `json:"epay_platform_public_key"`
+}
+
+func IsNewebPayEnabled() bool {
+	return strings.TrimSpace(paymentSetting.NewebPayMerchantID) != "" && strings.TrimSpace(paymentSetting.NewebPayHashKey) != "" && strings.TrimSpace(paymentSetting.NewebPayHashIV) != ""
+}
+
+func NewebPayEncryptInfo(plain, hashKey, hashIV string) (string, error) {
+	key := []byte(hashKey)
+	iv := []byte(hashIV)
+	if len(key) != 32 || len(iv) != aes.BlockSize {
+		return "", fmt.Errorf("invalid NewebPay AES key or IV length")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	padding := aes.BlockSize - len(plain)%aes.BlockSize
+	data := []byte(plain + strings.Repeat(string(rune(padding)), padding))
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(data, data)
+	return hex.EncodeToString(data), nil
+}
+
+func NewebPayDecryptInfo(encoded, hashKey, hashIV string) (string, error) {
+	key := []byte(hashKey)
+	iv := []byte(hashIV)
+	if len(key) != 32 || len(iv) != aes.BlockSize {
+		return "", fmt.Errorf("invalid NewebPay HashKey or HashIV")
+	}
+	data, err := hex.DecodeString(encoded)
+	if err != nil || len(data) == 0 || len(data)%aes.BlockSize != 0 {
+		return "", fmt.Errorf("invalid NewebPay TradeInfo")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(data, data)
+	padding := int(data[len(data)-1])
+	if padding == 0 || padding > aes.BlockSize || padding > len(data) {
+		return "", fmt.Errorf("invalid NewebPay padding")
+	}
+	for _, value := range data[len(data)-padding:] {
+		if int(value) != padding {
+			return "", fmt.Errorf("invalid NewebPay padding")
+		}
+	}
+	return string(data[:len(data)-padding]), nil
+}
+
+func NewebPayCheckValue(tradeInfo, hashKey, hashIV string) string {
+	value := sha256.Sum256([]byte("HashKey=" + hashKey + "&" + tradeInfo + "&HashIV=" + hashIV))
+	return strings.ToUpper(hex.EncodeToString(value[:]))
+}
+
+func NewebPayVerifyCheckValue(tradeInfo, checkValue, hashKey, hashIV string) bool {
+	return strings.EqualFold(NewebPayCheckValue(tradeInfo, hashKey, hashIV), checkValue)
+}
+
+func NewebPayEncodeTradeInfo(fields map[string]string) (string, string, error) {
+	values := url.Values{}
+	for key, value := range fields {
+		values.Set(key, value)
+	}
+	encoded, err := NewebPayEncryptInfo(values.Encode(), paymentSetting.NewebPayHashKey, paymentSetting.NewebPayHashIV)
+	if err != nil {
+		return "", "", err
+	}
+	return encoded, NewebPayCheckValue(encoded, paymentSetting.NewebPayHashKey, paymentSetting.NewebPayHashIV), nil
+}
+
+func NewebPayDecodeTradeInfo(tradeInfo, checkValue string) (url.Values, error) {
+	if !NewebPayVerifyCheckValue(tradeInfo, checkValue, paymentSetting.NewebPayHashKey, paymentSetting.NewebPayHashIV) {
+		return nil, fmt.Errorf("NewebPay CheckValue verification failed")
+	}
+	plain, err := NewebPayDecryptInfo(tradeInfo, paymentSetting.NewebPayHashKey, paymentSetting.NewebPayHashIV)
+	if err != nil {
+		return nil, err
+	}
+	return url.ParseQuery(plain)
 }
 
 // ECPayCheckMacValue returns the SHA256 signature used by ECPay's form API.

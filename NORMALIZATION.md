@@ -38,6 +38,12 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+### NewebPay gateway preparation
+
+Added configurable NewebPay MerchantID, HashKey, HashIV, and endpoint fields plus AES-CBC TradeInfo encryption/decryption and SHA-256 CheckValue helpers. The helpers validate key/IV lengths, PKCS-style padding, and signatures. No NewebPay route is enabled yet; order and callback idempotency will be added as a separate increment.
+
+Validation: `go test ./setting/operation_setting -run 'TestNewebPay|TestECPay|TestQuotePaymentAmount' -count=1` passed.
+
 ### ECPay order and callback vertical slice
 
 Added ECPay payment and notify routes using the provider-specific form contract. Orders persist `PaymentProvider=ecpay`, callbacks verify MerchantID, CheckMacValue, and successful return code, and settlement uses a database row lock plus pending/success status transition so repeated callbacks cannot credit the wallet twice. The callback returns provider-compatible success/failure responses.
