@@ -1,6 +1,10 @@
 package operation_setting
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/Calcium-Ion/go-epay/epay"
@@ -12,7 +16,11 @@ type PaymentSetting struct {
 	AmountOptions  []int           `json:"amount_options"`
 	AmountDiscount map[int]float64 `json:"amount_discount"` // 充值金额对应的折扣，例如 100 元 0.9 表示 100 元充值享受 9 折优惠
 	// Per-channel quote settings. Rates are provider-currency units per USD.
-	PaymentMethods map[string]PaymentMethodSetting `json:"payment_methods"`
+	PaymentMethods  map[string]PaymentMethodSetting `json:"payment_methods"`
+	ECPayMerchantID string                          `json:"ecpay_merchant_id"`
+	ECPayHashKey    string                          `json:"ecpay_hash_key"`
+	ECPayHashIV     string                          `json:"ecpay_hash_iv"`
+	ECPayEndpoint   string                          `json:"ecpay_endpoint"`
 
 	ComplianceConfirmed    bool   `json:"compliance_confirmed"`
 	ComplianceTermsVersion string `json:"compliance_terms_version"`
@@ -24,6 +32,25 @@ type PaymentSetting struct {
 	EpaySignType           string `json:"epay_sign_type"`
 	EpayMerchantPrivateKey string `json:"epay_merchant_private_key"`
 	EpayPlatformPublicKey  string `json:"epay_platform_public_key"`
+}
+
+// ECPayCheckMacValue returns the SHA256 signature used by ECPay's form API.
+// Secrets are passed by the caller and are never logged or persisted by this helper.
+func ECPayCheckMacValue(fields map[string]string, hashKey, hashIV string) string {
+	values := make([]string, 0, len(fields))
+	for key, value := range fields {
+		if strings.EqualFold(key, "CheckMacValue") {
+			continue
+		}
+		values = append(values, url.QueryEscape(key)+"="+url.QueryEscape(value))
+	}
+	sort.Strings(values)
+	payload := "HashKey=" + url.QueryEscape(hashKey) + "&" + strings.Join(values, "&") + "&HashIV=" + url.QueryEscape(hashIV)
+	payload = strings.ToLower(payload)
+	payload = strings.ReplaceAll(payload, "%2d", "-")
+	payload = strings.ReplaceAll(payload, "%5f", "_")
+	hash := sha256.Sum256([]byte(payload))
+	return strings.ToUpper(hex.EncodeToString(hash[:]))
 }
 
 type PaymentMethodSetting struct {

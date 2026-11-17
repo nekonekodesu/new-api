@@ -38,6 +38,12 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+### ECPay gateway preparation
+
+Added provider configuration fields and a pure ECPay `CheckMacValue` SHA-256 helper. The helper sorts fields, excludes an existing signature, URL-escapes values, and keeps secrets out of logs. No ECPay payment route or callback is enabled yet; order persistence, amount snapshots, callback authentication, and idempotency are required before activation.
+
+Validation: `go test ./setting/operation_setting -run 'TestECPayCheckMacValue|TestQuotePaymentAmount' -count=1` passed.
+
 ### Payment method currency and fee contract
 
 Added a provider-neutral payment method setting with provider currency, USD exchange rate, percentage fee, and fixed fee. Added a validated quote helper so future gateways, including Taiwan providers, use the same amount calculation and reject invalid rates or fees.
