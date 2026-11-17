@@ -44,3 +44,12 @@ relaykit/relayconvert/chat_responses_live_local_test.go
 service/openaicompat/chat_responses_live_local_test.go
 go.work
 go.work.sum
+
+# Private deployment configuration and local agent artifacts.
+.env.*
+!.env.example
+!.env.*.example
+.lcm/
+.tmp_*
+.agents/skills/serverLink/
+/new-api-linux-*
