@@ -51,3 +51,11 @@ Validation: `bun run typecheck` passed, `bun run build` passed, and targeted Oxl
 Migrated the source checkout's response size limit into the shared channel balance HTTP reader, reusing the existing 256 KiB balance response limit. Responses above that limit fail instead of being read without a bound. Response bodies now close on every return path, including non-200 responses and read failures.
 
 Validation: `go test ./controller -run 'TestGetResponseBodySizeLimit' -count=1` passed. The regression cases cover acceptance at the limit and rejection above it. `git diff --check` passed. This increment does not change database schemas or balance conversion rules.
+
+### Payment webhook hardening
+
+Migrated webhook log truncation and request-body bounds for Creem, Stripe, Waffo, and Waffo Pancake callbacks. Creem now rejects callbacks when its webhook secret is unset, including test mode. JSON handling uses the project wrapper, and callback logs no longer emit unbounded payloads.
+
+The migration also completed the log-query cache and scheduled balance runner compatibility required by the earlier backend batch.
+
+Validation: `go test ./controller -run 'Topup|Epay|Creem|Stripe|Waffo' -count=1` passed. ECPay and NewebPay are not included in this increment; no implementation existed in the source checkout and they require a separate gateway implementation with provider-specific signature and idempotency tests.

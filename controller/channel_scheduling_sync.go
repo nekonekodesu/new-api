@@ -2069,7 +2069,7 @@ func ExecuteCronJob(ctx context.Context, jobID string) (*model.CronJob, error) {
 		}
 
 	case model.CronJobTypeChannelBalance:
-		err := updateAllChannelsBalance()
+		_, err := updateAllChannelsBalance(runCtx, func(processed, total int) {})
 		if err != nil {
 			runErr = err
 			output = fmt.Sprintf("Balance update failed: %v", err)

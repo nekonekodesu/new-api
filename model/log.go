@@ -2,7 +2,9 @@ package model
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -18,9 +20,35 @@ import (
 
 var logWriteVersion atomic.Uint64
 
+type cachedLogQueryResult struct {
+	version uint64
+	logs    []*Log
+	total   int64
+}
+
+var (
+	logQueryCacheMu sync.RWMutex
+	logQueryCache   = make(map[string]cachedLogQueryResult)
+)
+
 // GetLogWriteVersion returns a monotonically increasing counter bumped when a log row is inserted.
 func GetLogWriteVersion() uint64 {
 	return logWriteVersion.Load()
+}
+
+func cloneLogSlice(src []*Log) []*Log {
+	if len(src) == 0 {
+		return []*Log{}
+	}
+	out := make([]*Log, len(src))
+	for i, item := range src {
+		if item == nil {
+			continue
+		}
+		copy := *item
+		out[i] = &copy
+	}
+	return out
 }
 
 func applyExplicitLogTextFilter(tx *gorm.DB, column string, value string) (*gorm.DB, error) {
@@ -502,6 +530,40 @@ type LogFilter struct {
 	Group             string
 	RequestId         string
 	UpstreamRequestId string
+}
+
+func BuildLogQueryCacheKey(prefix string, userId int, role int, filter LogFilter, startIdx int, num int) string {
+	endKey := filter.EndTimestamp
+	if endKey > 0 && endKey >= time.Now().Unix()-5 {
+		endKey = -1
+	}
+	return fmt.Sprintf("%s|u=%d|r=%d|s=%d|n=%d|t=%d|st=%d|et=%d|m=%s|un=%s|tn=%s|ch=%d|g=%s|req=%s|up=%s",
+		prefix, userId, role, startIdx, num, filter.Type, filter.StartTimestamp, endKey,
+		filter.ModelName, filter.Username, filter.TokenName, filter.Channel, filter.Group,
+		filter.RequestId, filter.UpstreamRequestId)
+}
+
+func GetCachedLogPage(key string) ([]*Log, int64, bool) {
+	version := logWriteVersion.Load()
+	logQueryCacheMu.RLock()
+	entry, ok := logQueryCache[key]
+	logQueryCacheMu.RUnlock()
+	if !ok || entry.version != version {
+		return nil, 0, false
+	}
+	return cloneLogSlice(entry.logs), entry.total, true
+}
+
+func SetCachedLogPage(key string, version uint64, logs []*Log, total int64) {
+	if logWriteVersion.Load() != version {
+		return
+	}
+	logQueryCacheMu.Lock()
+	defer logQueryCacheMu.Unlock()
+	if len(logQueryCache) > 256 {
+		clear(logQueryCache)
+	}
+	logQueryCache[key] = cachedLogQueryResult{version: version, logs: cloneLogSlice(logs), total: total}
 }
 
 func (f LogFilter) apply(tx *gorm.DB) (*gorm.DB, error) {
