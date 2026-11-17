@@ -126,6 +126,7 @@ func newRelayHTTPTransport() *http.Transport {
 	if common.TLSInsecureSkipVerify {
 		transport.TLSClientConfig = common.InsecureTLSConfig.Clone()
 	}
+	transport.DialContext = dialContextWithConfiguredDNS(transport.DialContext, defaultOutboundDNSResolver)
 	return transport
 }
 

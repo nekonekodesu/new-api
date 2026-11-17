@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
@@ -206,4 +207,135 @@ func TestChannelPriorityDatabaseMatrix(t *testing.T) {
 			assert.Equal(t, nullable.Items, restored.Items)
 		})
 	}
+}
+
+func TestGroupChannelSchedulingAndCostCalculation(t *testing.T) {
+	chOfficial := &Channel{
+		Id:     101,
+		Name:   "OpenAI Official",
+		Type:   1, // OpenAI official -> defaults to 1x multiplier
+		Models: "deepseek-v4",
+		Status: common.ChannelStatusEnabled,
+	}
+	chLowCost := &Channel{
+		Id:     102,
+		Name:   "NewAPI Upstream Cheap",
+		Type:   60, // NewAPI
+		Models: "deepseek-v4",
+		Status: common.ChannelStatusEnabled,
+	}
+	chFast := &Channel{
+		Id:     103,
+		Name:   "NewAPI Upstream Fast",
+		Type:   60,
+		Models: "deepseek-v4",
+		Status: common.ChannelStatusEnabled,
+	}
+
+	// Official API defaults to 1x multiplier
+	officialEntry := computeDefaultModelCostEntry(chOfficial, "deepseek-v4", 1000)
+	assert.Equal(t, 1.0, officialEntry.BaseMultiplier)
+	SetChannelUpstreamModelCosts(chOfficial.Id, map[string]ChannelModelCostEntry{
+		"deepseek-v4": officialEntry,
+	}, false)
+
+	// NewAPI upstream with explicit 1x model price (input $0.1/1M, output $0.3/1M)
+	SetChannelUpstreamModelCosts(chLowCost.Id, map[string]ChannelModelCostEntry{
+		"deepseek-v4": {
+			ChannelID:       chLowCost.Id,
+			ChannelName:     chLowCost.Name,
+			ChannelType:     chLowCost.Type,
+			Model:           "deepseek-v4",
+			InputCost:       0.1,
+			OutputCost:      0.3,
+			ModelRatio:      0.05, // $0.1 / 1M tokens ($2 * 0.05)
+			CompletionRatio: 3.0,  // $0.3 / 1M tokens
+			BaseMultiplier:  1.0,
+			Currency:        "USD",
+			ExchangeRate:    1.0,
+			FromUpstream:    true,
+		},
+	}, false)
+	cheapCost, ok := GetChannelModelCost(chLowCost.Id, "deepseek-v4")
+	require.True(t, ok)
+	assert.InDelta(t, 0.1, cheapCost.InputCost, 1e-6)
+	assert.InDelta(t, 0.3, cheapCost.OutputCost, 1e-6)
+
+	SetChannelUpstreamModelCosts(chFast.Id, map[string]ChannelModelCostEntry{
+		"deepseek-v4": {
+			ChannelID:       chFast.Id,
+			ChannelName:     chFast.Name,
+			ChannelType:     chFast.Type,
+			Model:           "deepseek-v4",
+			InputCost:       0.5,
+			OutputCost:      1.5,
+			ModelRatio:      0.25, // $0.5 / 1M tokens
+			CompletionRatio: 3.0,  // $1.5 / 1M tokens
+			BaseMultiplier:  1.0,
+			Currency:        "USD",
+			ExchangeRate:    1.0,
+			FromUpstream:    true,
+		},
+	}, false)
+
+	// Record telemetry: chLowCost has 100% availability, TPS min=60, avg=126.67, max=200, avg TTFT=2.0s
+	RecordChannelModelTelemetry(chLowCost.Id, "deepseek-v4", true, 2500, true, 60, 1000)
+	RecordChannelModelTelemetry(chLowCost.Id, "deepseek-v4", true, 1500, true, 120, 1000)
+	RecordChannelModelTelemetry(chLowCost.Id, "deepseek-v4", true, 2000, true, 200, 1000)
+
+	// chFast has higher TPS (300 TPS) and lower TTFT (400ms), with 1 failure after 1 success
+	RecordChannelModelTelemetry(chFast.Id, "deepseek-v4", true, 400, true, 300, 1000)
+	RecordChannelModelTelemetry(chFast.Id, "deepseek-v4", false, 500, true, 0, 1000)
+
+	snap := GetChannelModelTelemetry(chLowCost.Id, "deepseek-v4")
+	assert.InDelta(t, 100.0, snap.Availability, 0.01)
+	assert.InDelta(t, 60.0, snap.TpsMin, 0.1)
+	assert.InDelta(t, 200.0, snap.TpsMax, 0.1)
+	assert.InDelta(t, 2.0, snap.AvgTtftSec, 0.1)
+
+	candidates := []*Channel{chOfficial, chLowCost, chFast}
+
+	// LowerCost scheduling picks chLowCost
+	groupSchedulingMu.Lock()
+	groupSchedulingModes["vip"] = SchedulingModeLowerCost
+	groupSchedulingMu.Unlock()
+	pickedCost := selectChannelByGroupSchedule("vip", "deepseek-v4", 0, candidates, nil)
+	require.NotNil(t, pickedCost)
+	assert.Equal(t, chLowCost.Id, pickedCost.Id)
+
+	// When chLowCost was already tried on an earlier attempt, retry skips it and picks the next best
+	pickedCostRetry := selectChannelByGroupSchedule("vip", "deepseek-v4", 1, candidates, []int{chLowCost.Id})
+	require.NotNil(t, pickedCostRetry)
+	assert.NotEqual(t, chLowCost.Id, pickedCostRetry.Id)
+
+	// Speed scheduling picks chFast (highest TPS=300 & lowest TTFT=400ms)
+	groupSchedulingMu.Lock()
+	groupSchedulingModes["vip"] = SchedulingModeSpeed
+	groupSchedulingMu.Unlock()
+	pickedSpeed := selectChannelByGroupSchedule("vip", "deepseek-v4", 0, candidates, nil)
+	require.NotNil(t, pickedSpeed)
+	assert.Equal(t, chFast.Id, pickedSpeed.Id)
+
+	// Availability scheduling picks chLowCost (100% availability vs 50% on chFast)
+	groupSchedulingMu.Lock()
+	groupSchedulingModes["vip"] = SchedulingModeAvailability
+	groupSchedulingMu.Unlock()
+	pickedAvail := selectChannelByGroupSchedule("vip", "deepseek-v4", 0, []*Channel{chLowCost, chFast}, nil)
+	require.NotNil(t, pickedAvail)
+	assert.Equal(t, chLowCost.Id, pickedAvail.Id)
+
+	// Simulate severe degradation on chFast so BBR congestion control penalizes it
+	for range 5 {
+		RecordChannelModelTelemetry(chFast.Id, "deepseek-v4", false, 3000, true, 0, 1000)
+	}
+	groupSchedulingMu.Lock()
+	groupSchedulingModes["vip"] = SchedulingModeBBR
+	groupSchedulingMu.Unlock()
+	pickedBBR := selectChannelByGroupSchedule("vip", "deepseek-v4", 0, []*Channel{chLowCost, chFast}, nil)
+	require.NotNil(t, pickedBBR)
+	assert.Equal(t, chLowCost.Id, pickedBBR.Id)
+
+	// Verify EMA recovery over time so a degraded channel is not permanently dead
+	recovered := recoverChannelSuccessRate(0.2, time.Now().Add(-15*time.Minute), time.Now())
+	assert.Greater(t, recovered, 0.85)
 }

@@ -131,7 +131,7 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 			cancel()
 			continue
 		}
-		responseBody, err := io.ReadAll(resp.Body)
+		responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 		if err != nil {
 			logger.LogError(ctx, common.LogText("Get Mjp Task parse body error: %v", err))
 			resp.Body.Close()
@@ -294,7 +294,14 @@ func GetAllMidjourney(c *gin.Context) {
 
 	if setting.MjForwardUrlEnabled {
 		for i, midjourney := range items {
-			midjourney.ImageUrl = system_setting.ServerAddress + "/mj/image/" + midjourney.MjId
+			if midjourney.ImageUrl == "" {
+				continue
+			}
+			if bound, bindErr := service.BindMidjourneyImageAccess(system_setting.ServerAddress+"/mj/image/"+midjourney.MjId, midjourney.MjId); bindErr == nil {
+				midjourney.ImageUrl = bound
+			} else {
+				midjourney.ImageUrl = ""
+			}
 			items[i] = midjourney
 		}
 	}
@@ -319,7 +326,14 @@ func GetUserMidjourney(c *gin.Context) {
 
 	if setting.MjForwardUrlEnabled {
 		for i, midjourney := range items {
-			midjourney.ImageUrl = system_setting.ServerAddress + "/mj/image/" + midjourney.MjId
+			if midjourney.ImageUrl == "" {
+				continue
+			}
+			if bound, bindErr := service.BindMidjourneyImageAccess(system_setting.ServerAddress+"/mj/image/"+midjourney.MjId, midjourney.MjId); bindErr == nil {
+				midjourney.ImageUrl = bound
+			} else {
+				midjourney.ImageUrl = ""
+			}
 			items[i] = midjourney
 		}
 	}

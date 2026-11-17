@@ -169,6 +169,11 @@ func FetchCustomOAuthDiscovery(c *gin.Context) {
 		return
 	}
 
+	if err = service.ValidateSSRFProtectedFetchURL(targetURL); err != nil {
+		common.ApiErrorT(c, "Discovery URL blocked by SSRF protection: {{error}}", map[string]any{"error": err.Error()})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
 
@@ -179,8 +184,7 @@ func FetchCustomOAuthDiscovery(c *gin.Context) {
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(httpReq)
+	resp, err := service.GetSSRFProtectedHTTPClient().Do(httpReq)
 	if err != nil {
 		common.ApiErrorT(c, "Failed to fetch the Discovery configuration: {{error}}", map[string]any{"error": err.Error()})
 		return
@@ -198,7 +202,7 @@ func FetchCustomOAuthDiscovery(c *gin.Context) {
 	}
 
 	var discovery map[string]any
-	if err = common.DecodeJson(resp.Body, &discovery); err != nil {
+	if err = common.DecodeJson(io.LimitReader(resp.Body, 1<<20), &discovery); err != nil {
 		common.ApiErrorT(c, "Failed to parse the Discovery configuration: {{error}}", map[string]any{"error": err.Error()})
 		return
 	}

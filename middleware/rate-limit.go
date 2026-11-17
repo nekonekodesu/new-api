@@ -6,14 +6,20 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-contrib/static"
 	"github.com/gin-gonic/gin"
 )
 
-const redisRateLimitNamespace = "rateLimit:v2"
+const (
+	redisRateLimitNamespace           = "rateLimit:v2"
+	newAccountIPRateLimitWindowSecond = int64(7 * 24 * 3600)
+)
 
 // Redis rate limiting intentionally uses a fixed window. The single Lua script
 // makes increment, expiry, and the limit decision atomic, while retaining the
@@ -158,18 +164,96 @@ func rateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gi
 	}
 }
 
-// GlobalWebRateLimit limits dashboard pages and other fallback paths per IP.
+func resolveRateLimitUser(c *gin.Context) (int, int64, bool) {
+	if userID := c.GetInt("id"); userID > 0 {
+		createdAt := c.GetInt64("user_created_at")
+		if createdAt == 0 && (common.RedisEnabled || model.DB != nil) {
+			if userCache, err := model.GetUserCache(userID); err == nil && userCache != nil {
+				createdAt = userCache.CreatedAt
+			}
+		}
+		return userID, createdAt, true
+	}
+
+	raw, ok := authorizationToken(c.GetHeader("Authorization"))
+	if !ok {
+		return 0, 0, false
+	}
+
+	identity, internal, err := service.ParseDashboardAccessToken(raw)
+	if internal {
+		if err != nil || (!common.RedisEnabled && model.DB == nil) {
+			return 0, 0, false
+		}
+		_, user, err := service.ValidateLoginSession(identity)
+		if err != nil || user == nil || user.Id <= 0 || user.Status != common.UserStatusEnabled {
+			return 0, 0, false
+		}
+		return user.Id, user.CreatedAt, true
+	}
+
+	if model.DB == nil {
+		return 0, 0, false
+	}
+	lookup := lookupAccessToken(c, raw)
+	if lookup == nil || lookup.err != nil || lookup.user == nil || lookup.user.Id <= 0 || lookup.user.Status != common.UserStatusEnabled {
+		return 0, 0, false
+	}
+	return lookup.user.Id, lookup.user.CreatedAt, true
+}
+
+func shouldRateLimitByAccount(userID int, userCreatedAt int64, nowUnix int64) bool {
+	if userID <= 0 {
+		return false
+	}
+	if userCreatedAt > 0 && nowUnix-userCreatedAt < newAccountIPRateLimitWindowSecond {
+		return false
+	}
+	return true
+}
+
+// accountOrIPRateLimitFactory limits logged-in accounts (>= 1 week old) per
+// user ID so multiple accounts sharing an IP do not exhaust each other's
+// web/API quota, while unauthenticated requests and accounts registered less
+// than 1 week ago are limited by client IP.
+func accountOrIPRateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gin.Context) {
+	if common.RedisEnabled {
+		return func(c *gin.Context) {
+			userID, createdAt, ok := resolveRateLimitUser(c)
+			if ok && shouldRateLimitByAccount(userID, createdAt, time.Now().Unix()) {
+				userRedisRateLimiter(c, maxRequestNum, duration, redisUserRateLimitKey(mark, userID))
+				return
+			}
+			redisRateLimiter(c, maxRequestNum, duration, mark)
+		}
+	}
+	inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
+	return func(c *gin.Context) {
+		userID, createdAt, ok := resolveRateLimitUser(c)
+		if ok && shouldRateLimitByAccount(userID, createdAt, time.Now().Unix()) {
+			key := fmt.Sprintf("%s:user:%d", mark, userID)
+			if !inMemoryRateLimiter.Request(key, maxRequestNum, duration) {
+				writeRateLimited(c, duration)
+			}
+			return
+		}
+		memoryRateLimiter(c, maxRequestNum, duration, mark)
+	}
+}
+
+// GlobalWebRateLimit limits dashboard pages and other fallback paths per
+// account (when logged in and registered >= 1 week ago) or per IP.
 // Files that exist in the frontend build count against a separate static
 // limiter instead, so lazy-loaded chunks and icons do not use up the page
 // budget. The static limiter is disabled by default.
 func GlobalWebRateLimit(frontendFS static.ServeFileSystem) func(c *gin.Context) {
 	webLimit := defNext
 	if common.GlobalWebRateLimitEnable {
-		webLimit = rateLimitFactory(common.GlobalWebRateLimitNum, common.GlobalWebRateLimitDuration, "GW")
+		webLimit = accountOrIPRateLimitFactory(common.GlobalWebRateLimitNum, common.GlobalWebRateLimitDuration, "GW")
 	}
 	staticLimit := defNext
 	if common.GlobalStaticRateLimitEnable {
-		staticLimit = rateLimitFactory(common.GlobalStaticRateLimitNum, common.GlobalStaticRateLimitDuration, "GS")
+		staticLimit = accountOrIPRateLimitFactory(common.GlobalStaticRateLimitNum, common.GlobalStaticRateLimitDuration, "GS")
 	}
 	return func(c *gin.Context) {
 		if frontendFS.Exists("/", c.Request.URL.Path) {
@@ -182,7 +266,18 @@ func GlobalWebRateLimit(frontendFS static.ServeFileSystem) func(c *gin.Context) 
 
 func GlobalAPIRateLimit() func(c *gin.Context) {
 	if common.GlobalApiRateLimitEnable {
-		return rateLimitFactory(common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration, "GA")
+		baseLimiter := accountOrIPRateLimitFactory(common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration, "GA")
+		fastLogLimiter := accountOrIPRateLimitFactory(max(common.GlobalApiRateLimitNum*10, 3600), common.GlobalApiRateLimitDuration, "GA:LOG")
+		return func(c *gin.Context) {
+			if c.Request != nil && c.Request.Method == http.MethodGet &&
+				(c.Request.URL.Path == "/api/log" || c.Request.URL.Path == "/api/log/" ||
+					c.Request.URL.Path == "/api/log/self" ||
+					c.Request.URL.Path == "/api/log/stat" || c.Request.URL.Path == "/api/log/self/stat") {
+				fastLogLimiter(c)
+				return
+			}
+			baseLimiter(c)
+		}
 	}
 	return defNext
 }
@@ -260,11 +355,12 @@ func userRedisRateLimiter(c *gin.Context, maxRequestNum int, duration int64, key
 	}
 }
 
-// SearchRateLimit returns a per-user rate limiter for search endpoints.
+// SearchRateLimit returns a rate limiter for search endpoints (per-account for
+// accounts >= 1 week old, per-IP for accounts registered < 1 week ago).
 // Configurable via SEARCH_RATE_LIMIT_ENABLE / SEARCH_RATE_LIMIT / SEARCH_RATE_LIMIT_DURATION.
 func SearchRateLimit() func(c *gin.Context) {
 	if !common.SearchRateLimitEnable {
 		return defNext
 	}
-	return userRateLimitFactory(common.SearchRateLimitNum, common.SearchRateLimitDuration, "SR")
+	return accountOrIPRateLimitFactory(common.SearchRateLimitNum, common.SearchRateLimitDuration, "SR")
 }

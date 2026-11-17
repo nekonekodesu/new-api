@@ -125,3 +125,40 @@ func TestConfigureTrustedProxiesRejectsInvalidConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeClientIPHandlesLoadBalancersAndRejectsSpoofing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("TRUSTED_PROXIES", "")
+	router := gin.New()
+	require.NoError(t, ConfigureTrustedProxies(router))
+	router.Use(NormalizeClientIP())
+	router.GET("/client-ip", func(c *gin.Context) {
+		c.String(http.StatusOK, c.ClientIP())
+	})
+
+	// Non-Cloudflare upstream hop behind local Nginx: spoofed CF-Connecting-IP must be ignored.
+	spoofReq := httptest.NewRequest(http.MethodGet, "/client-ip", nil)
+	spoofReq.RemoteAddr = "172.20.0.2:12345"
+	spoofReq.Header.Set("X-Forwarded-For", "192.0.2.99, 203.0.113.88")
+	spoofReq.Header.Set("CF-Connecting-IP", "198.51.100.1")
+	spoofRec := httptest.NewRecorder()
+	router.ServeHTTP(spoofRec, spoofReq)
+	assert.Equal(t, "203.0.113.88", spoofRec.Body.String())
+
+	// Cloudflare upstream hop where local Nginx overwrote X-Forwarded-For with $remote_addr.
+	cfReq := httptest.NewRequest(http.MethodGet, "/client-ip", nil)
+	cfReq.RemoteAddr = "172.20.0.2:12345"
+	cfReq.Header.Set("X-Forwarded-For", "172.69.33.10")
+	cfReq.Header.Set("CF-Connecting-IP", "203.0.113.89")
+	cfRec := httptest.NewRecorder()
+	router.ServeHTTP(cfRec, cfReq)
+	assert.Equal(t, "203.0.113.89", cfRec.Body.String())
+
+	// Load balancer forwarding IP:port entries in X-Forwarded-For.
+	portReq := httptest.NewRequest(http.MethodGet, "/client-ip", nil)
+	portReq.RemoteAddr = "100.68.10.2:12345"
+	portReq.Header.Set("X-Forwarded-For", "192.0.2.99:1111, 203.0.113.90:54321")
+	portRec := httptest.NewRecorder()
+	router.ServeHTTP(portRec, portReq)
+	assert.Equal(t, "203.0.113.90", portRec.Body.String())
+}

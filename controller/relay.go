@@ -163,6 +163,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.SetRequestPluginIngress(ingressSteps, ingressRecord)
 
+	unregisterActive := service.RegisterActiveRelayRequest(c, relayInfo)
+	defer unregisterActive()
+
 	defer func() {
 		recovered := recover()
 		resultErr := newAPIError
@@ -200,11 +203,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; retryParam.CanAttempt(); retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
 		relayInfo.RetryIndex = retryParam.GetRetry()
+		relayInfo.AttemptStartTime = time.Now()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
@@ -253,8 +257,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
-		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
+		decision := service.DecideRelayRetry(c, newAPIError, retryParam.RemainingRetries())
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
+		service.RecordChannelCooldownFailure(c, channel.Id, relayInfo.OriginModelName, newAPIError)
+		model.RecordChannelModelTelemetry(channel.Id, relayInfo.OriginModelName, false, 0, false, 0, 0)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
 		if decision.Action != "retry" {
@@ -342,6 +348,9 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return channel, nil
 	}
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
+	if errors.Is(err, service.ErrChannelsCoolingDown) {
+		return nil, types.NewErrorWithStatusCode(errors.New(i18n.T(c, i18n.MsgChannelsCoolingDown, map[string]any{"Group": selectGroup, "Model": info.OriginModelName})), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+	}
 	if err != nil {
 		return nil, types.NewError(errors.New(i18n.T(c, i18n.MsgRelayRetryGetChannelFailed, map[string]any{"Group": selectGroup, "Model": info.OriginModelName, "Error": err.Error()})), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
@@ -664,7 +673,13 @@ func executeTaskSubmissionWith(
 		Retry:       common.GetPointer(0),
 	}
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	// Origin-task retries remain on a fixed channel, so they cannot consume a
+	// finite routing round and must keep the ordinary attempt budget.
+	if relayInfo.LockedChannel != nil {
+		common.SetContextKey(c, constant.ContextKeyChannelCooldownBypassed, false)
+	}
+
+	for ; retryParam.CanAttempt(); retryParam.IncreaseRetry() {
 		stage = "select_channel"
 		if requestErr := c.Request.Context().Err(); requestErr != nil {
 			diagnostics.cancelled("before_attempt", retryParam.GetRetry()+1)
@@ -720,9 +735,10 @@ func executeTaskSubmissionWith(
 
 		taskAPIError := taskSubmissionAPIError(taskErr)
 		relayInfo.LastError = taskAPIError
-		decision := decideTaskRetry(c, taskErr, common.RetryTimes-retryParam.GetRetry())
+		decision := decideTaskRetry(c, taskErr, retryParam.RemainingRetries())
 		service.RecordPolicyFailure(c, channel.Id, taskAPIError, decision)
 		if !taskErr.LocalError {
+			service.RecordChannelCooldownFailure(c, channel.Id, relayInfo.OriginModelName, taskAPIError)
 			processChannelError(c,
 				*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey,
 					common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()),

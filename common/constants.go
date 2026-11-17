@@ -11,7 +11,7 @@ import (
 )
 
 var StartTime = time.Now().Unix() // unit: second
-var Version = "v0.0.0"            // this hard coding will be replaced automatically when building, no need to manually change
+var Version = "Ver1.2.0R"         // this hard coding will be replaced automatically when building, no need to manually change
 var SystemName = "New API"
 var Footer = ""
 var Logo = ""
@@ -141,6 +141,14 @@ var QuotaRemindThreshold = 1000
 var PreConsumedQuota = 500
 
 var RetryTimes = 0
+
+// Channel failure cooldown: RetryCooldownFailureThreshold failures of one
+// channel and model within RetryCooldownWindowSeconds keep that channel out of
+// routing for the model for RetryCooldownSeconds.
+var RetryCooldownEnabled = false
+var RetryCooldownWindowSeconds = 10
+var RetryCooldownFailureThreshold = 3
+var RetryCooldownSeconds = 30
 
 //var RootUserEmail = ""
 

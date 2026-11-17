@@ -59,6 +59,9 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	ctx.Set("channel_name", "mutable-context-channel")
 	ctx.Set("channel_type", 9)
 	ctx.Set("use_channel", []string{"101"})
+	ctx.Set(common.RequestIdKey, "req-test-101")
+	common.SetContextKey(ctx, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+	common.SetContextKey(ctx, constant.ContextKeyChannelBaseUrl, "https://relay.private.example")
 	common.SetContextKey(ctx, constant.ContextKeyRequestStartTime, time.Now().Add(-time.Second))
 
 	channelSnapshot := types.ChannelError{
@@ -67,7 +70,12 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 		ChannelName: "snapshot-channel",
 		AutoBan:     false,
 	}
-	apiErr := types.NewOpenAIError(errors.New("upstream failed"), types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway)
+	apiErr := types.NewOpenAIError(
+		errors.New("upstream https://relay.private.example/v1/chat failed with sk-secret12345678"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadGateway,
+		types.ErrOptionWithUpstreamResponse(`{"error":{"message":"upstream https://relay.private.example/v1/chat rejected Bearer tok-abc","code":"upstream_502"}}`),
+	)
 
 	processChannelError(ctx, channelSnapshot, apiErr, nil)
 
@@ -83,6 +91,12 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	adminInfo, ok := storedOther["admin_info"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, []any{"101"}, adminInfo["use_channel"])
+	adminUpstreamResp, ok := adminInfo["upstream_error_response"].(string)
+	require.True(t, ok)
+	assert.Contains(t, adminUpstreamResp, "upstream_502")
+	assert.Contains(t, adminUpstreamResp, "Bearer ***")
+	assert.NotContains(t, adminUpstreamResp, "relay.private.example")
+	assert.NotContains(t, adminUpstreamResp, "tok-abc")
 
 	logs, total, err := model.GetUserLogs(7, model.LogFilter{Type: model.LogTypeError}, 0, 10)
 	require.NoError(t, err)
@@ -96,4 +110,12 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	for _, key := range []string{"channel_id", "channel_name", "channel_type"} {
 		assert.NotContains(t, userOther, key)
 	}
+	lastErrResp, ok := userOther["last_error_response"].(string)
+	require.True(t, ok)
+	assert.Contains(t, lastErrResp, "req-test-101")
+	assert.Contains(t, lastErrResp, "sk-***")
+	assert.NotContains(t, lastErrResp, "relay.private.example")
+	assert.NotContains(t, lastErrResp, "sk-secret12345678")
+	assert.NotContains(t, lastErrResp, "upstream_502")
+	assert.NotContains(t, lastErrResp, "snapshot-channel")
 }

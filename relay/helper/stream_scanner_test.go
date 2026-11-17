@@ -14,11 +14,14 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type headerCommitWriter struct {
@@ -723,4 +726,49 @@ func TestSetEventStreamHeadersBoundsStreamWritesByBudget(t *testing.T) {
 	require.NotEmpty(t, recorder.deadlines)
 	assert.False(t, recorder.deadlines[0].Before(before.Add(streamWriteTimeout+450*time.Second)))
 	assert.Contains(t, recorder.Body.String(), "data: AAAA")
+}
+
+func TestStreamScannerHandler_TracksActiveRelayProgressAndTPS(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello world from streaming response "}}]}`,
+		`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"with live token and TPS metrics."}}]}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+	info.RequestId = "req-live-stream-1"
+	info.UserId = 77
+	info.OriginModelName = "gpt-4o"
+	info.UsingGroup = "default"
+	info.IsStream = true
+	info.StartTime = time.Now().Add(-500 * time.Millisecond)
+	info.FirstResponseTime = info.StartTime.Add(-time.Second)
+	info.SetEstimatePromptTokens(42)
+	c.Set("username", "alice")
+	c.Set("token_name", "dev-key")
+
+	unregister := service.RegisterActiveRelayRequest(c, info)
+	defer unregister()
+
+	var chunksSeen int
+	var midStreamLogs []*model.Log
+	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		chunksSeen++
+		if chunksSeen == 2 {
+			midStreamLogs = service.GetActiveRelayLogs(model.LogFilter{RequestId: "req-live-stream-1"}, 77, false)
+		}
+	})
+
+	require.Len(t, midStreamLogs, 1)
+	activeLog := midStreamLogs[0]
+	assert.Equal(t, 42, activeLog.PromptTokens)
+	assert.Greater(t, activeLog.CompletionTokens, 0)
+	assert.True(t, activeLog.IsStream)
+	assert.True(t, gjson.Get(activeLog.Other, "in_progress").Bool())
+	assert.Greater(t, gjson.Get(activeLog.Other, "live_tps").Float(), 0.0)
+
+	unregister()
+	afterLogs := service.GetActiveRelayLogs(model.LogFilter{RequestId: "req-live-stream-1"}, 77, false)
+	assert.Empty(t, afterLogs)
 }

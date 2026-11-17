@@ -286,7 +286,7 @@ func TestFetchModelsAdvancedCustomEditPreviewUsesSavedKeyAndExplicitClears(t *te
 		ChannelID:      savedChannel.Id,
 		BaseURL:        &baseURL,
 		Type:           constant.ChannelTypeAdvancedCustom,
-		Key:            "request-key-must-be-ignored",
+		Key:            "explicit-request-key",
 		AdvancedCustom: &rawConfig,
 		HeaderOverride: &explicitEmpty,
 		Proxy:          &explicitEmpty,
@@ -323,10 +323,10 @@ func TestFetchModelsAdvancedCustomEditPreviewUsesSavedKeyAndExplicitClears(t *te
 	require.True(t, response.Success, response.Message)
 	require.Equal(t, []string{"edited-preview-model"}, response.Data)
 	require.NotContains(t, recorder.Body.String(), "enabled-saved-key")
-	require.NotContains(t, recorder.Body.String(), "request-key-must-be-ignored")
+	require.NotContains(t, recorder.Body.String(), "explicit-request-key")
 
 	headers := <-receivedHeaders
-	require.Equal(t, "Bearer enabled-saved-key", headers.Get("Authorization"))
+	require.Equal(t, "Bearer explicit-request-key", headers.Get("Authorization"), "a request that redirects the preview must authenticate with its own key, never the saved one")
 	require.Empty(t, headers.Get("X-Saved"))
 }
 

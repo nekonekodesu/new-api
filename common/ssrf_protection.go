@@ -9,6 +9,11 @@ import (
 	"strings"
 )
 
+// LookupIPFunc resolves a domain name to IP addresses. Overridden by service
+// initialization to prioritize configured custom DNS servers before falling
+// back to the system resolver.
+var LookupIPFunc func(host string) ([]net.IP, error) = net.LookupIP
+
 // SSRFProtection SSRF防护配置
 type SSRFProtection struct {
 	AllowPrivateIp         bool
@@ -360,7 +365,11 @@ func (p *SSRFProtection) ValidateURL(urlStr string) error {
 	}
 
 	// 解析域名对应IP并检查
-	ips, err := net.LookupIP(host)
+	lookupIP := LookupIPFunc
+	if lookupIP == nil {
+		lookupIP = net.LookupIP
+	}
+	ips, err := lookupIP(host)
 	if err != nil {
 		return fmt.Errorf("DNS resolution failed for %s: %v", host, err)
 	}

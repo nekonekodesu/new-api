@@ -120,3 +120,30 @@ func TestRequestPolicyDatabaseMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestPolicyValidatesChannelCooldown(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options map[string]string
+		valid   bool
+	}{
+		{"defaults", map[string]string{}, true},
+		{"enabled with positive values", map[string]string{"RetryCooldownEnabled": "true", "RetryCooldownWindowSeconds": "10", "RetryCooldownFailureThreshold": "3", "RetryCooldownSeconds": "30"}, true},
+		{"disabled allows zero", map[string]string{"RetryCooldownEnabled": "false", "RetryCooldownSeconds": "0"}, true},
+		{"enabled rejects zero window", map[string]string{"RetryCooldownEnabled": "true", "RetryCooldownWindowSeconds": "0"}, false},
+		{"enabled rejects zero threshold", map[string]string{"RetryCooldownEnabled": "true", "RetryCooldownFailureThreshold": "0"}, false},
+		{"enabled rejects zero cooldown", map[string]string{"RetryCooldownEnabled": "true", "RetryCooldownSeconds": "0"}, false},
+		{"negative value", map[string]string{"RetryCooldownSeconds": "-1"}, false},
+		{"fractional value", map[string]string{"RetryCooldownWindowSeconds": "1.5"}, false},
+		{"invalid boolean", map[string]string{"RetryCooldownEnabled": "yes"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := BuildRequestPolicy(tc.options)
+			if tc.valid {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+}

@@ -49,6 +49,10 @@ func requestPolicyDefaultOptions() map[string]string {
 		}
 	}
 	defaults["RetryTimes"] = strconv.Itoa(common.RetryTimes)
+	defaults["RetryCooldownEnabled"] = strconv.FormatBool(common.RetryCooldownEnabled)
+	defaults["RetryCooldownWindowSeconds"] = strconv.Itoa(common.RetryCooldownWindowSeconds)
+	defaults["RetryCooldownFailureThreshold"] = strconv.Itoa(common.RetryCooldownFailureThreshold)
+	defaults["RetryCooldownSeconds"] = strconv.Itoa(common.RetryCooldownSeconds)
 	defaults["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
 	defaults["AutomaticDisableStatusCodes"] = operation_setting.AutomaticDisableStatusCodesToString()
 	defaults["AutomaticDisableKeywords"] = operation_setting.AutomaticDisableKeywordsToString()
@@ -63,6 +67,8 @@ func IsRequestPolicyOption(key string) bool {
 		return true
 	}
 	switch key {
+	case "RetryCooldownEnabled", "RetryCooldownWindowSeconds", "RetryCooldownFailureThreshold", "RetryCooldownSeconds":
+		return true
 	case "AutomaticEnableChannelEnabled", "ChannelDisableThreshold", "monitor_setting.auto_test_channel_enabled", "monitor_setting.auto_test_channel_minutes", "monitor_setting.channel_test_concurrency", "monitor_setting.channel_test_mode", "RetryTimes", "AutomaticRetryStatusCodes", "AutomaticDisableChannelEnabled", "AutomaticDisableStatusCodes", "AutomaticDisableKeywords":
 		return true
 	}
@@ -137,6 +143,19 @@ func BuildRequestPolicy(options map[string]string) (*RequestPolicySnapshot, erro
 		return nil, err
 	}
 	snapshot.DisableKeywords = strings.Split(raw["AutomaticDisableKeywords"], "\n")
+	cooldownEnabled, err := strconv.ParseBool(raw["RetryCooldownEnabled"])
+	if err != nil {
+		return nil, fmt.Errorf("invalid boolean: RetryCooldownEnabled")
+	}
+	for _, key := range []string{"RetryCooldownWindowSeconds", "RetryCooldownFailureThreshold", "RetryCooldownSeconds"} {
+		value, err := strconv.Atoi(raw[key])
+		if err != nil || value < 0 {
+			return nil, fmt.Errorf("%s must be a non-negative integer", key)
+		}
+		if cooldownEnabled && value < 1 {
+			return nil, fmt.Errorf("%s must be at least 1 when channel cooldown is enabled", key)
+		}
+	}
 	for _, key := range []string{"AutomaticEnableChannelEnabled", "monitor_setting.auto_test_channel_enabled"} {
 		if _, err := strconv.ParseBool(raw[key]); err != nil {
 			return nil, fmt.Errorf("invalid boolean: %s", key)

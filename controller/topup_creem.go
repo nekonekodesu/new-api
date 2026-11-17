@@ -6,7 +6,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/QuantumNous/new-api/common"
@@ -36,11 +35,7 @@ func generateCreemSignature(payload string, secret string) string {
 // 验证Creem webhook签名
 func verifyCreemSignature(payload string, signature string, secret string) bool {
 	if secret == "" {
-		logger.LogWarn(context.Background(), common.LogText("Creem webhook secret is not configured test_mode=%t signature=%q body=%q", setting.CreemTestMode, signature, payload))
-		if setting.CreemTestMode {
-			logger.LogInfo(context.Background(), common.LogText("Creem webhook signature check skipped reason=test_mode signature=%q body=%q", signature, payload))
-			return true
-		}
+		logger.LogWarn(context.Background(), common.LogText("Creem webhook rejected reason=secret_not_configured test_mode=%t", setting.CreemTestMode))
 		return false
 	}
 
@@ -77,7 +72,7 @@ func (*CreemAdaptor) RequestPay(c *gin.Context, req *CreemPayRequest) {
 
 	// 解析产品列表
 	var products []CreemProduct
-	err := json.Unmarshal([]byte(setting.CreemProducts), &products)
+	err := common.Unmarshal([]byte(setting.CreemProducts), &products)
 	if err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("Creem failed to parse product config user_id=%d error=%q", c.GetInt("id"), err.Error()))
 		paymentError(c, common.NewMessage("Product configuration error"))
@@ -154,14 +149,14 @@ func RequestCreemPay(c *gin.Context) {
 	var req CreemPayRequest
 
 	// 读取body内容用于打印，同时保留原始数据供后续使用
-	bodyBytes, err := io.ReadAll(c.Request.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(c.Request.Body, 64<<10))
 	if err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("Creem failed to read payment request error=%q", err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "read query error"})
 		return
 	}
 
-	logger.LogInfo(c.Request.Context(), common.LogText("Creem payment request received user_id=%d body=%q", c.GetInt("id"), string(bodyBytes)))
+	logger.LogInfo(c.Request.Context(), common.LogText("Creem payment request received user_id=%d body=%q", c.GetInt("id"), webhookLogBody(bodyBytes)))
 
 	// 重新设置body供后续的ShouldBindJSON使用
 	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
@@ -252,16 +247,16 @@ func CreemWebhook(c *gin.Context) {
 
 	// 获取签名头
 	signature := c.GetHeader(CreemSignatureHeader)
-	logger.LogInfo(c.Request.Context(), common.LogText("Creem webhook received request path=%q client_ip=%s signature=%q body=%q", c.Request.RequestURI, c.ClientIP(), signature, string(bodyBytes)))
+	logger.LogInfo(c.Request.Context(), common.LogText("Creem webhook received request path=%q client_ip=%s signature=%q body=%q", c.Request.RequestURI, c.ClientIP(), signature, webhookLogBody(bodyBytes)))
 	if signature == "" {
-		logger.LogWarn(c.Request.Context(), common.LogText("Creem webhook missing signature path=%q client_ip=%s body=%q", c.Request.RequestURI, c.ClientIP(), string(bodyBytes)))
+		logger.LogWarn(c.Request.Context(), common.LogText("Creem webhook missing signature path=%q client_ip=%s body=%q", c.Request.RequestURI, c.ClientIP(), webhookLogBody(bodyBytes)))
 		c.AbortWithStatus(http.StatusUnauthorized)
 		return
 	}
 
 	// 验证签名
 	if !verifyCreemSignature(string(bodyBytes), signature, setting.CreemWebhookSecret) {
-		logger.LogWarn(c.Request.Context(), common.LogText("Creem webhook signature verification failed path=%q client_ip=%s signature=%q body=%q", c.Request.RequestURI, c.ClientIP(), signature, string(bodyBytes)))
+		logger.LogWarn(c.Request.Context(), common.LogText("Creem webhook signature verification failed path=%q client_ip=%s signature=%q body=%q", c.Request.RequestURI, c.ClientIP(), signature, webhookLogBody(bodyBytes)))
 		c.AbortWithStatus(http.StatusUnauthorized)
 		return
 	}
@@ -274,7 +269,7 @@ func CreemWebhook(c *gin.Context) {
 	// 解析新格式的webhook数据
 	var webhookEvent CreemWebhookEvent
 	if err := c.ShouldBindJSON(&webhookEvent); err != nil {
-		logger.LogError(c.Request.Context(), common.LogText("Creem webhook failed to parse path=%q client_ip=%s error=%q body=%q", c.Request.RequestURI, c.ClientIP(), err.Error(), string(bodyBytes)))
+		logger.LogError(c.Request.Context(), common.LogText("Creem webhook failed to parse path=%q client_ip=%s error=%q body=%q", c.Request.RequestURI, c.ClientIP(), err.Error(), webhookLogBody(bodyBytes)))
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
@@ -411,7 +406,7 @@ func genCreemLink(ctx context.Context, referenceId string, product *CreemProduct
 	}
 
 	// 序列化请求数据
-	jsonData, err := json.Marshal(requestData)
+	jsonData, err := common.Marshal(requestData)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal request data: %v", err)
 	}
@@ -439,12 +434,12 @@ func genCreemLink(ctx context.Context, referenceId string, product *CreemProduct
 	defer resp.Body.Close()
 
 	// 读取响应
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %v", err)
 	}
 
-	logger.LogInfo(ctx, common.LogText("Creem API response received trade_no=%s status_code=%d body=%q", referenceId, resp.StatusCode, string(body)))
+	logger.LogInfo(ctx, common.LogText("Creem API response received trade_no=%s status_code=%d body=%q", referenceId, resp.StatusCode, webhookLogBody(body)))
 
 	// 检查响应状态
 	if resp.StatusCode/100 != 2 {
@@ -452,7 +447,7 @@ func genCreemLink(ctx context.Context, referenceId string, product *CreemProduct
 	}
 	// 解析响应
 	var checkoutResp CreemCheckoutResponse
-	err = json.Unmarshal(body, &checkoutResp)
+	err = common.Unmarshal(body, &checkoutResp)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse response: %v", err)
 	}

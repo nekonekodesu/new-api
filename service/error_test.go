@@ -105,6 +105,21 @@ func TestRelayErrorHandlerKeepsStructuredErrorMessage(t *testing.T) {
 
 	require.NotNil(t, newAPIError)
 	require.Equal(t, message, newAPIError.Error())
+	require.Equal(t, body, newAPIError.GetUpstreamResponse())
+}
+
+func TestRelayErrorHandlerPreservesRawBodyForAdminUpstreamDiagnostics(t *testing.T) {
+	body := `<html><body>403 Forbidden - upstream gateway blocked request</body></html>`
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, false)
+
+	require.NotNil(t, newAPIError)
+	require.Equal(t, "bad response status code 403", newAPIError.Error())
+	require.Equal(t, body, newAPIError.GetUpstreamResponse())
 }
 
 func TestRelayErrorHandlerKeepsOpenAIErrorMessage(t *testing.T) {
@@ -119,6 +134,7 @@ func TestRelayErrorHandlerKeepsOpenAIErrorMessage(t *testing.T) {
 
 	require.NotNil(t, newAPIError)
 	require.Equal(t, message, newAPIError.Error())
+	require.Equal(t, body, newAPIError.GetUpstreamResponse())
 }
 
 func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {

@@ -290,3 +290,114 @@ func TestGlobalWebRateLimitCountsFrontendFilesInStaticBucket(t *testing.T) {
 		assert.Equal(t, "1", webCount)
 	})
 }
+
+func TestGlobalAPIRateLimitByIPForAnonymousAndNewAccountsAndByAccountForEstablishedUsers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousEnable, previousNum, previousDuration := common.GlobalApiRateLimitEnable, common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration
+	t.Cleanup(func() {
+		common.GlobalApiRateLimitEnable, common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration = previousEnable, previousNum, previousDuration
+	})
+	common.GlobalApiRateLimitEnable, common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration = true, 2, 30
+
+	const clientIP = "192.0.2.88"
+	const remoteAddr = clientIP + ":12345"
+	nowUnix := time.Now().Unix()
+	establishedCreatedAt := nowUnix - (8 * 24 * 3600) // 8 days ago (>= 1 week)
+	newAccountCreatedAt := nowUnix - (2 * 24 * 3600)  // 2 days ago (< 1 week)
+
+	t.Run("redis mode", func(t *testing.T) {
+		redisServer, _ := useRateLimitMiniRedis(t)
+		router := gin.New()
+		require.NoError(t, router.SetTrustedProxies(nil))
+
+		var currentUserID int
+		var currentCreatedAt int64
+		router.Use(func(c *gin.Context) {
+			if currentUserID > 0 {
+				c.Set("id", currentUserID)
+				c.Set("user_created_at", currentCreatedAt)
+			}
+			c.Next()
+		})
+		router.GET("/api/test", GlobalAPIRateLimit(), func(c *gin.Context) {
+			c.Status(http.StatusNoContent)
+		})
+
+		// 1. Established user #101 (>= 1 week) consumes its 2-request quota on clientIP.
+		currentUserID = 101
+		currentCreatedAt = establishedCreatedAt
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", remoteAddr).Code)
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", remoteAddr).Code)
+		assert.Equal(t, http.StatusTooManyRequests, performRateLimitRequest(router, "/api/test", remoteAddr).Code)
+
+		// 2. Established user #102 (>= 1 week) on the SAME IP is unaffected and has its own bucket.
+		currentUserID = 102
+		currentCreatedAt = establishedCreatedAt
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", remoteAddr).Code)
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", remoteAddr).Code)
+		assert.Equal(t, http.StatusTooManyRequests, performRateLimitRequest(router, "/api/test", remoteAddr).Code)
+
+		assert.True(t, redisServer.Exists(redisUserRateLimitKey("GA", 101)))
+		assert.True(t, redisServer.Exists(redisUserRateLimitKey("GA", 102)))
+		assert.False(t, redisServer.Exists(redisIPRateLimitKey("GA", clientIP)))
+
+		// 3. New account #201 (< 1 week) and anonymous requests on the same IP share the IP bucket.
+		currentUserID = 201
+		currentCreatedAt = newAccountCreatedAt
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", remoteAddr).Code)
+
+		currentUserID = 0
+		currentCreatedAt = 0
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", remoteAddr).Code)
+
+		// Next request from another new account #202 (< 1 week) on the same IP hits the IP limit.
+		currentUserID = 202
+		currentCreatedAt = newAccountCreatedAt
+		assert.Equal(t, http.StatusTooManyRequests, performRateLimitRequest(router, "/api/test", remoteAddr).Code)
+		assert.True(t, redisServer.Exists(redisIPRateLimitKey("GA", clientIP)))
+		assert.False(t, redisServer.Exists(redisUserRateLimitKey("GA", 201)))
+	})
+
+	t.Run("in-memory mode", func(t *testing.T) {
+		previousRedisEnabled := common.RedisEnabled
+		common.RedisEnabled = false
+		t.Cleanup(func() {
+			common.RedisEnabled = previousRedisEnabled
+		})
+
+		const memRemoteAddr = "192.0.2.89:12345"
+		router := gin.New()
+		require.NoError(t, router.SetTrustedProxies(nil))
+
+		var currentUserID int
+		var currentCreatedAt int64
+		router.Use(func(c *gin.Context) {
+			if currentUserID > 0 {
+				c.Set("id", currentUserID)
+				c.Set("user_created_at", currentCreatedAt)
+			}
+			c.Next()
+		})
+		router.GET("/api/test", GlobalAPIRateLimit(), func(c *gin.Context) {
+			c.Status(http.StatusNoContent)
+		})
+
+		currentUserID = 301
+		currentCreatedAt = establishedCreatedAt
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", memRemoteAddr).Code)
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", memRemoteAddr).Code)
+		assert.Equal(t, http.StatusTooManyRequests, performRateLimitRequest(router, "/api/test", memRemoteAddr).Code)
+
+		currentUserID = 302
+		currentCreatedAt = establishedCreatedAt
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", memRemoteAddr).Code)
+
+		currentUserID = 401
+		currentCreatedAt = newAccountCreatedAt
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", memRemoteAddr).Code)
+		currentUserID = 0
+		currentCreatedAt = 0
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/api/test", memRemoteAddr).Code)
+		assert.Equal(t, http.StatusTooManyRequests, performRateLimitRequest(router, "/api/test", memRemoteAddr).Code)
+	})
+}

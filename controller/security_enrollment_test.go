@@ -1569,6 +1569,10 @@ func TestSecurityEnrollmentOAuthQueriesReachHandlerWithoutLeakingToAccessLogs(t 
 
 func TestSecurityEnrollmentCustomOAuthUsesExistingBinding(t *testing.T) {
 	user, identity := setupSecurityEnrollmentTest(t)
+	originalFetchSetting := *system_setting.GetFetchSetting()
+	system_setting.GetFetchSetting().AllowPrivateIp = true
+	system_setting.GetFetchSetting().AllowedPorts = []string{"1-65535"}
+	t.Cleanup(func() { *system_setting.GetFetchSetting() = originalFetchSetting })
 	require.NoError(t, model.DB.Model(user).Update("password", "").Error)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

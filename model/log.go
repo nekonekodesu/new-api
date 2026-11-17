@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -14,6 +15,13 @@ import (
 
 	"gorm.io/gorm"
 )
+
+var logWriteVersion atomic.Uint64
+
+// GetLogWriteVersion returns a monotonically increasing counter bumped when a log row is inserted.
+func GetLogWriteVersion() uint64 {
+	return logWriteVersion.Load()
+}
 
 func applyExplicitLogTextFilter(tx *gorm.DB, column string, value string) (*gorm.DB, error) {
 	if value == "" {
@@ -99,7 +107,11 @@ func ensureLogRequestId(log *Log) {
 
 func createLog(log *Log) error {
 	ensureLogRequestId(log)
-	return LOG_DB.Create(log).Error
+	err := LOG_DB.Create(log).Error
+	if err == nil {
+		logWriteVersion.Add(1)
+	}
+	return err
 }
 
 func clickHouseLogOrder(prefix string) string {

@@ -86,6 +86,36 @@ func (p *GenericOAuthProvider) GetConfig() *model.CustomOAuthProvider {
 	return p.config
 }
 
+func validateOAuthEndpointURL(rawURL string) error {
+	fetchSetting := system_setting.GetFetchSetting()
+	return common.ValidateURLWithFetchSetting(
+		rawURL,
+		fetchSetting.EnableSSRFProtection,
+		fetchSetting.AllowPrivateIp,
+		fetchSetting.DomainFilterMode,
+		fetchSetting.IpFilterMode,
+		fetchSetting.DomainList,
+		fetchSetting.IpList,
+		fetchSetting.AllowedPorts,
+		fetchSetting.ApplyIPFilterForDomain,
+	)
+}
+
+func newOAuthHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			if req != nil && req.URL != nil {
+				return validateOAuthEndpointURL(req.URL.String())
+			}
+			return nil
+		},
+	}
+}
+
 func (p *GenericOAuthProvider) ExchangeToken(ctx context.Context, code string, c *gin.Context) (*OAuthToken, error) {
 	if code == "" {
 		return nil, NewOAuthError(common.NewMessage(msgInvalidCode))
@@ -128,10 +158,11 @@ func (p *GenericOAuthProvider) ExchangeToken(ctx context.Context, code string, c
 	logger.LogDebug(ctx, "[OAuth-Generic-%s] ExchangeToken: token_endpoint=%s, redirect_uri=%s, auth_style=%d",
 		p.config.Slug, p.config.TokenEndpoint, redirectUri, authStyle)
 
-	client := http.Client{
-		Timeout: 20 * time.Second,
+	if err := validateOAuthEndpointURL(p.config.TokenEndpoint); err != nil {
+		logger.LogError(ctx, common.LogText("[OAuth-Generic-%s] ExchangeToken SSRF blocked: %s", p.config.Slug, err.Error()))
+		return nil, NewOAuthErrorWithRaw(common.NewMessage(msgConnectFailed, map[string]any{"provider": p.config.Name}), err.Error())
 	}
-	res, err := client.Do(req)
+	res, err := newOAuthHTTPClient(20 * time.Second).Do(req)
 	if err != nil {
 		logger.LogError(ctx, common.LogText("[OAuth-Generic-%s] ExchangeToken error: %s", p.config.Slug, err.Error()))
 		return nil, NewOAuthErrorWithRaw(common.NewMessage(msgConnectFailed, map[string]any{"provider": p.config.Name}), err.Error())
@@ -140,7 +171,7 @@ func (p *GenericOAuthProvider) ExchangeToken(ctx context.Context, code string, c
 
 	logger.LogDebug(ctx, "[OAuth-Generic-%s] ExchangeToken response status: %d", p.config.Slug, res.StatusCode)
 
-	body, err := io.ReadAll(res.Body)
+	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
 		logger.LogError(ctx, common.LogText("[OAuth-Generic-%s] ExchangeToken read body error: %s", p.config.Slug, err.Error()))
 		return nil, err
@@ -208,10 +239,11 @@ func (p *GenericOAuthProvider) GetUserInfo(ctx context.Context, token *OAuthToke
 	req.Header.Set("Authorization", fmt.Sprintf("%s %s", tokenType, token.AccessToken))
 	req.Header.Set("Accept", "application/json")
 
-	client := http.Client{
-		Timeout: 20 * time.Second,
+	if err := validateOAuthEndpointURL(p.config.UserInfoEndpoint); err != nil {
+		logger.LogError(ctx, common.LogText("[OAuth-Generic-%s] GetUserInfo SSRF blocked: %s", p.config.Slug, err.Error()))
+		return nil, NewOAuthErrorWithRaw(common.NewMessage(msgConnectFailed, map[string]any{"provider": p.config.Name}), err.Error())
 	}
-	res, err := client.Do(req)
+	res, err := newOAuthHTTPClient(20 * time.Second).Do(req)
 	if err != nil {
 		logger.LogError(ctx, common.LogText("[OAuth-Generic-%s] GetUserInfo error: %s", p.config.Slug, err.Error()))
 		return nil, NewOAuthErrorWithRaw(common.NewMessage(msgConnectFailed, map[string]any{"provider": p.config.Name}), err.Error())
@@ -225,7 +257,7 @@ func (p *GenericOAuthProvider) GetUserInfo(ctx context.Context, token *OAuthToke
 		return nil, NewOAuthError(common.NewMessage(msgGetUserFailed))
 	}
 
-	body, err := io.ReadAll(res.Body)
+	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
 		logger.LogError(ctx, common.LogText("[OAuth-Generic-%s] GetUserInfo read body error: %s", p.config.Slug, err.Error()))
 		return nil, err

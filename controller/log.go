@@ -56,15 +56,35 @@ func limitLogTimeRange(startTimestamp int64, endTimestamp int64) (int64, error) 
 
 func GetAllLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
-	logs, total, err := model.GetAllLogs(logFilterFromQuery(c, true), pageInfo.GetStartIdx(), pageInfo.GetPageSize())
-	if err != nil {
-		common.ApiError(c, err)
-		return
+	filter := logFilterFromQuery(c, true)
+	role := c.GetInt("role")
+	roleBucket := common.RoleAdminUser
+	if role >= common.RoleRootUser {
+		roleBucket = common.RoleRootUser
 	}
-	if c.GetInt("role") < common.RoleRootUser {
-		model.FormatAdminLogs(logs)
-	} else {
-		model.FormatRootLogs(logs)
+	cacheKey := model.BuildLogQueryCacheKey("all", 0, roleBucket, filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	logs, total, cached := model.GetCachedLogPage(cacheKey)
+	if !cached {
+		verBefore := model.GetLogWriteVersion()
+		var err error
+		logs, total, err = model.GetAllLogs(filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if role < common.RoleRootUser {
+			model.FormatAdminLogs(logs)
+		} else {
+			model.FormatRootLogs(logs)
+		}
+		model.SetCachedLogPage(cacheKey, verBefore, logs, total)
+	}
+	if pageInfo.GetStartIdx() == 0 {
+		activeLogs := service.GetActiveRelayLogs(filter, 0, true)
+		if len(activeLogs) > 0 {
+			logs = append(activeLogs, logs...)
+			total += int64(len(activeLogs))
+		}
 	}
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(logs)
@@ -83,10 +103,25 @@ func GetUserLogs(c *gin.Context) {
 		}
 		filter.StartTimestamp = startTimestamp
 	}
-	logs, total, err := model.GetUserLogs(c.GetInt("id"), filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
-	if err != nil {
-		common.ApiError(c, err)
-		return
+	userId := c.GetInt("id")
+	cacheKey := model.BuildLogQueryCacheKey("user", userId, common.RoleCommonUser, filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	logs, total, cached := model.GetCachedLogPage(cacheKey)
+	if !cached {
+		verBefore := model.GetLogWriteVersion()
+		var err error
+		logs, total, err = model.GetUserLogs(userId, filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		model.SetCachedLogPage(cacheKey, verBefore, logs, total)
+	}
+	if pageInfo.GetStartIdx() == 0 {
+		activeLogs := service.GetActiveRelayLogs(filter, userId, false)
+		if len(activeLogs) > 0 {
+			logs = append(activeLogs, logs...)
+			total += int64(len(activeLogs))
+		}
 	}
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(logs)

@@ -2,8 +2,8 @@ package oauth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -71,10 +71,11 @@ func (p *OIDCProvider) ExchangeToken(ctx context.Context, code string, c *gin.Co
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	client := http.Client{
-		Timeout: 5 * time.Second,
+	if err := validateOAuthEndpointURL(settings.TokenEndpoint); err != nil {
+		logger.LogError(ctx, common.LogText("[OAuth-OIDC] ExchangeToken SSRF blocked: %s", err.Error()))
+		return nil, NewOAuthErrorWithRaw(common.NewMessage(msgConnectFailed, map[string]any{"provider": "OIDC"}), err.Error())
 	}
-	res, err := client.Do(req)
+	res, err := newOAuthHTTPClient(5 * time.Second).Do(req)
 	if err != nil {
 		logger.LogError(ctx, common.LogText("[OAuth-OIDC] ExchangeToken error: %s", err.Error()))
 		return nil, NewOAuthErrorWithRaw(common.NewMessage(msgConnectFailed, map[string]any{"provider": "OIDC"}), err.Error())
@@ -84,7 +85,7 @@ func (p *OIDCProvider) ExchangeToken(ctx context.Context, code string, c *gin.Co
 	logger.LogDebug(ctx, "[OAuth-OIDC] ExchangeToken response status: %d", res.StatusCode)
 
 	var oidcResponse oidcOAuthResponse
-	err = json.NewDecoder(res.Body).Decode(&oidcResponse)
+	err = common.DecodeJson(io.LimitReader(res.Body, 1<<20), &oidcResponse)
 	if err != nil {
 		logger.LogError(ctx, common.LogText("[OAuth-OIDC] ExchangeToken decode error: %s", err.Error()))
 		return nil, err
@@ -118,10 +119,11 @@ func (p *OIDCProvider) GetUserInfo(ctx context.Context, token *OAuthToken) (*OAu
 	}
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
-	client := http.Client{
-		Timeout: 5 * time.Second,
+	if err := validateOAuthEndpointURL(settings.UserInfoEndpoint); err != nil {
+		logger.LogError(ctx, common.LogText("[OAuth-OIDC] GetUserInfo SSRF blocked: %s", err.Error()))
+		return nil, NewOAuthErrorWithRaw(common.NewMessage(msgConnectFailed, map[string]any{"provider": "OIDC"}), err.Error())
 	}
-	res, err := client.Do(req)
+	res, err := newOAuthHTTPClient(5 * time.Second).Do(req)
 	if err != nil {
 		logger.LogError(ctx, common.LogText("[OAuth-OIDC] GetUserInfo error: %s", err.Error()))
 		return nil, NewOAuthErrorWithRaw(common.NewMessage(msgConnectFailed, map[string]any{"provider": "OIDC"}), err.Error())
@@ -136,7 +138,7 @@ func (p *OIDCProvider) GetUserInfo(ctx context.Context, token *OAuthToken) (*OAu
 	}
 
 	var oidcUser oidcUser
-	err = json.NewDecoder(res.Body).Decode(&oidcUser)
+	err = common.DecodeJson(io.LimitReader(res.Body, 1<<20), &oidcUser)
 	if err != nil {
 		logger.LogError(ctx, common.LogText("[OAuth-OIDC] GetUserInfo decode error: %s", err.Error()))
 		return nil, err

@@ -169,6 +169,10 @@ func InitOptionMap() {
 	//common.OptionMap["ChatLink2"] = common.ChatLink2
 	common.OptionMap["QuotaPerUnit"] = strconv.FormatFloat(common.QuotaPerUnit, 'f', -1, 64)
 	common.OptionMap["RetryTimes"] = strconv.Itoa(common.RetryTimes)
+	common.OptionMap["RetryCooldownEnabled"] = strconv.FormatBool(common.RetryCooldownEnabled)
+	common.OptionMap["RetryCooldownWindowSeconds"] = strconv.Itoa(common.RetryCooldownWindowSeconds)
+	common.OptionMap["RetryCooldownFailureThreshold"] = strconv.Itoa(common.RetryCooldownFailureThreshold)
+	common.OptionMap["RetryCooldownSeconds"] = strconv.Itoa(common.RetryCooldownSeconds)
 	common.OptionMap["DataExportInterval"] = strconv.Itoa(common.DataExportInterval)
 	common.OptionMap["DataExportDefaultTime"] = common.DataExportDefaultTime
 	common.OptionMap["DefaultCollapseSidebar"] = strconv.FormatBool(common.DefaultCollapseSidebar)
@@ -281,6 +285,12 @@ func validateOptionValue(key string, value string) error {
 	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
+	}
+	if key == system_setting.NetworkPrimaryDNSOptionKey || key == system_setting.NetworkFallbackDNSOptionKey {
+		return system_setting.ValidateDNSServerOption(value)
+	}
+	if strings.HasPrefix(key, "path_scan_setting.") {
+		return system_setting.ValidatePathScanOption(key, value)
 	}
 	return nil
 }
@@ -442,6 +452,8 @@ func updateOptionMap(key string, value string) (err error) {
 			common.AutomaticDisableChannelEnabled = boolValue
 		case "AutomaticEnableChannelEnabled":
 			common.AutomaticEnableChannelEnabled = boolValue
+		case "RetryCooldownEnabled":
+			common.RetryCooldownEnabled = boolValue
 		case "QuotaRemindEnabled":
 			common.QuotaRemindEnabled = boolValue
 		case "LogConsumeEnabled":
@@ -662,12 +674,19 @@ func updateOptionMap(key string, value string) (err error) {
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
 	case "RetryTimes":
 		common.RetryTimes, _ = strconv.Atoi(value)
+	case "RetryCooldownWindowSeconds":
+		common.RetryCooldownWindowSeconds, _ = strconv.Atoi(value)
+	case "RetryCooldownFailureThreshold":
+		common.RetryCooldownFailureThreshold, _ = strconv.Atoi(value)
+	case "RetryCooldownSeconds":
+		common.RetryCooldownSeconds, _ = strconv.Atoi(value)
 	case "DataExportInterval":
 		common.DataExportInterval, _ = strconv.Atoi(value)
 	case "DataExportDefaultTime":
 		common.DataExportDefaultTime = value
 	case "ModelRatio":
 		err = ratio_setting.UpdateModelRatioByJSONString(value)
+		RecalculateAllChannelModelCosts(false)
 	case "GroupRatio":
 		err = ratio_setting.UpdateGroupRatioByJSONString(value)
 	case "GroupGroupRatio":
@@ -676,8 +695,20 @@ func updateOptionMap(key string, value string) (err error) {
 		err = setting.UpdateUserUsableGroupsByJSONString(value)
 	case "CompletionRatio":
 		err = ratio_setting.UpdateCompletionRatioByJSONString(value)
+		RecalculateAllChannelModelCosts(false)
 	case "ModelPrice":
 		err = ratio_setting.UpdateModelPriceByJSONString(value)
+		RecalculateAllChannelModelCosts(false)
+	case GroupSchedulingConfigOptionKey:
+		err = LoadGroupSchedulingConfigFromJSON(value)
+	case GroupCostControlConfigOptionKey:
+		err = LoadGroupCostControlConfigFromJSON(value)
+	case ChannelModelCostsOptionKey:
+		err = LoadChannelModelCostsFromJSON(value)
+	case ModelPriceSyncConfigOptionKey:
+		err = LoadModelPriceSyncConfigFromJSON(value)
+	case CronJobsConfigOptionKey:
+		err = LoadCronJobsConfigFromJSON(value)
 	case "CacheRatio":
 		err = ratio_setting.UpdateCacheRatioByJSONString(value)
 	case "CreateCacheRatio":
@@ -742,7 +773,15 @@ func handleConfigUpdate(key, value string) bool {
 	config.UpdateConfigFromMap(cfg, configMap)
 
 	// 特定配置的后处理
-	if configName == "performance_setting" {
+	if configName == "path_scan_setting" {
+		if pathScanConfig, ok := cfg.(*system_setting.PathScanSetting); ok {
+			system_setting.SetPathScanSetting(*pathScanConfig)
+		}
+	} else if configName == "network_setting" {
+		if netConfig, ok := cfg.(*system_setting.NetworkSetting); ok {
+			system_setting.SetNetworkSetting(netConfig.PrimaryDNS, netConfig.FallbackDNS)
+		}
+	} else if configName == "performance_setting" {
 		performance_setting.UpdateAndSync()
 	} else if configName == "billing_setting" {
 		InvalidatePricingCache()

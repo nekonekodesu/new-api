@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -23,16 +24,17 @@ type PolicyDecision struct {
 }
 
 type PolicyEvent struct {
-	Attempt     int            `json:"attempt"`
-	ChannelID   int            `json:"channel_id,omitempty"`
-	Group       string         `json:"group,omitempty"`
-	Rule        string         `json:"rule,omitempty"`
-	Status      int            `json:"status,omitempty"`
-	ErrorCode   string         `json:"error_code,omitempty"`
-	ErrorSource string         `json:"error_source,omitempty"`
-	ElapsedMS   int64          `json:"elapsed_ms"`
-	Decision    PolicyDecision `json:"decision"`
-	Health      string         `json:"health,omitempty"`
+	Attempt       int            `json:"attempt"`
+	ChannelID     int            `json:"channel_id,omitempty"`
+	Group         string         `json:"group,omitempty"`
+	Rule          string         `json:"rule,omitempty"`
+	Status        int            `json:"status,omitempty"`
+	ErrorCode     string         `json:"error_code,omitempty"`
+	ErrorSource   string         `json:"error_source,omitempty"`
+	UpstreamError string         `json:"upstream_error,omitempty"`
+	ElapsedMS     int64          `json:"elapsed_ms"`
+	Decision      PolicyDecision `json:"decision"`
+	Health        string         `json:"health,omitempty"`
 }
 
 // RequestPolicyState records how one request was routed so administrators can
@@ -94,6 +96,21 @@ func (s *RequestPolicyState) BeginAttempt(channel *model.Channel, group string) 
 	s.AddEvent(PolicyEvent{ChannelID: channel.Id, Decision: PolicyDecision{Action: "attempt", Reason: "channel_selected", Source: "routing"}})
 }
 
+// RecordChannelCooldownFailure counts a failed attempt toward the channel's
+// cooldown for the model. Local rejections and client cancellations do not
+// reflect channel health and are not counted.
+func RecordChannelCooldownFailure(c *gin.Context, channelID int, modelName string, err *types.NewAPIError) {
+	if c == nil || err == nil || c.Request.Context().Err() != nil {
+		return
+	}
+	if !types.IsChannelError(err) && err.GetErrorCode() != types.ErrorCodeDoRequestFailed && err.GetErrorType() == types.ErrorTypeNewAPIError {
+		return
+	}
+	if model.RecordChannelCooldownFailure(channelID, modelName) {
+		logger.LogWarn(c, common.LogText("channel #%d model %s entered cooldown for %d seconds", channelID, modelName, common.RetryCooldownSeconds))
+	}
+}
+
 // RecordPolicyFailure appends the failed attempt and the retry decision made
 // for it. The health entry mirrors the check in ProcessChannelError, which
 // performs the actual disable.
@@ -111,19 +128,34 @@ func RecordPolicyFailure(c *gin.Context, channelID int, err *types.NewAPIError, 
 		source = "local"
 	}
 	state := RequestPolicy(c)
-	event := PolicyEvent{ChannelID: channelID, Status: err.StatusCode, ErrorCode: string(err.GetErrorCode()), ErrorSource: source, Decision: PolicyDecision{Action: "failure", Reason: "upstream_failure", Source: source}}
-	if source == "local" {
-		event.Decision.Reason = "local_rejection"
+	upstreamURLs := common.UpstreamAddresses(c)
+	failureEvent := PolicyEvent{
+		ChannelID:     channelID,
+		Status:        err.StatusCode,
+		ErrorCode:     string(err.GetErrorCode()),
+		ErrorSource:   source,
+		UpstreamError: err.MaskSensitiveUpstreamResponse(upstreamURLs...),
+		Decision:      PolicyDecision{Action: "failure", Reason: "upstream_failure", Source: source},
 	}
-	state.AddEvent(event)
-	event.Decision, event.Health = decision, "unchanged"
+	if source == "local" {
+		failureEvent.Decision.Reason = "local_rejection"
+	}
+	state.AddEvent(failureEvent)
+	decisionEvent := PolicyEvent{
+		ChannelID:   channelID,
+		Status:      err.StatusCode,
+		ErrorCode:   string(err.GetErrorCode()),
+		ErrorSource: source,
+		Decision:    decision,
+		Health:      "unchanged",
+	}
 	if source != "local" && c.GetBool("auto_ban") && ShouldDisableChannel(err) {
-		event.Health = "channel_disable_requested"
+		decisionEvent.Health = "channel_disable_requested"
 		if common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) {
-			event.Health = "key_disable_requested"
+			decisionEvent.Health = "key_disable_requested"
 		}
 	}
-	state.AddEvent(event)
+	state.AddEvent(decisionEvent)
 }
 
 func MarkRequestPolicySuccess(c *gin.Context, stream *relaycommon.StreamStatus) {

@@ -239,9 +239,16 @@ func TestRequestPolicyEventsReachLogAdminInfo(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	c.Set("auto_ban", true)
 	c.Set("channel_id", 7)
+	common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://relay.private.example")
 	state := RequestPolicy(c)
 	state.BeginAttempt(&model.Channel{Id: 7}, "default")
-	apiErr := types.NewOpenAIError(errors.New("invalid credential"), types.ErrorCodeBadResponseStatusCode, http.StatusUnauthorized)
+	apiErr := types.NewOpenAIError(
+		errors.New("invalid credential"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusUnauthorized,
+		types.ErrOptionWithUpstreamResponse(`{"error":{"message":"Forbidden at https://relay.private.example/v1/responses using sk-proj-1234567890abcdef"}}`),
+	)
 	RecordPolicyFailure(c, 7, apiErr, DecideRelayRetry(c, apiErr, 0))
 
 	failed := model.NewLogOther()
@@ -253,6 +260,11 @@ func TestRequestPolicyEventsReachLogAdminInfo(t *testing.T) {
 	assert.Equal(t, "default", events[0].Group)
 	assert.Equal(t, PolicyDecision{Action: "failure", Reason: "upstream_failure", Source: "upstream"}, events[1].Decision)
 	assert.Equal(t, http.StatusUnauthorized, events[1].Status)
+	assert.Contains(t, events[1].UpstreamError, "https://***.example/***/***")
+	assert.Contains(t, events[1].UpstreamError, "sk-***")
+	assert.NotContains(t, events[1].UpstreamError, "relay.private.example")
+	assert.NotContains(t, events[1].UpstreamError, "sk-proj-1234567890abcdef")
+	assert.Empty(t, events[2].UpstreamError)
 	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}, events[2].Decision)
 	assert.Equal(t, "channel_disable_requested", events[2].Health, "the health entry follows the automatic disable rules")
 	common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)

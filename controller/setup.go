@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -9,6 +10,8 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 )
+
+var setupMutex sync.Mutex
 
 type Setup struct {
 	Status       bool   `json:"status"`
@@ -25,6 +28,9 @@ type SetupRequest struct {
 }
 
 func GetSetup(c *gin.Context) {
+	if !constant.Setup && model.GetSetup() != nil {
+		constant.Setup = true
+	}
 	setup := Setup{
 		Status: constant.Setup,
 	}
@@ -44,8 +50,15 @@ func GetSetup(c *gin.Context) {
 }
 
 func PostSetup(c *gin.Context) {
-	// Check if setup is already completed
-	if constant.Setup {
+	setupMutex.Lock()
+	defer setupMutex.Unlock()
+
+	// Check if setup is already completed. The in-memory flag only reflects
+	// this node's boot-time state; multi-node deployments rely on the DB
+	// record so a slave that booted before the master finished setup cannot
+	// be used to replay unauthenticated option writes.
+	if constant.Setup || model.GetSetup() != nil {
+		constant.Setup = true
 		common.ApiErrorT(c, "The system is already initialized")
 		return
 	}

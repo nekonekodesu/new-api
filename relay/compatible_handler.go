@@ -16,7 +16,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/samber/lo"
 
@@ -74,10 +73,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	}
 	adaptor.Init(info)
 
-	passThroughGlobal := model_setting.GetGlobalSettings().PassThroughRequestEnabled
+	passThrough := info.ShouldPassThroughBody()
 	if info.RelayMode == relayconstant.RelayModeChatCompletions &&
-		!passThroughGlobal &&
-		!info.ChannelSetting.PassThroughBodyEnabled &&
+		!passThrough &&
 		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
 		applySystemPromptIfNeeded(c, info, request)
 		usage, newApiErr := textRequestViaResponses(c, info, adaptor, request)
@@ -98,7 +96,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	var requestBody io.Reader
 
-	if passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled {
+	if passThrough {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
@@ -113,15 +111,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		}
 		requestBody = common.NewReplayableBodyReader(storage)
 	} else {
+		applySystemPromptIfNeeded(c, info, request)
 		convertedRequest, err := adaptor.ConvertOpenAIRequest(c, info, request)
 		if err != nil {
 			return newConvertRequestFailedError(c, info, err)
 		}
 		relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
-
-		if req, ok := convertedRequest.(*dto.GeneralOpenAIRequest); ok {
-			applySystemPromptIfNeeded(c, info, req)
-		}
 
 		jsonData, err := common.Marshal(convertedRequest)
 		if err != nil {

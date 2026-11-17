@@ -33,6 +33,12 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	if info.RelayMode == relayconstant.RelayModeAlphaSearch {
 		return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, "/v1/alpha/search", info.ChannelType), nil
 	}
+	if info.GetFinalRequestRelayFormat() == types.RelayFormatClaude && info.RelayFormat != types.RelayFormatClaude {
+		return a.claudeAdaptor.GetRequestURL(info)
+	}
+	if info.RelayFormat == types.RelayFormatGemini && info.IsModelMapped && !info.ShouldPassThroughBody() {
+		return a.geminiAdaptor.GetRequestURL(info)
+	}
 	return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, info.RequestURLPath, info.ChannelType), nil
 }
 
@@ -40,8 +46,9 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	channel.SetupApiRequestHeader(info, c, req)
 	req.Set("Authorization", "Bearer "+info.ApiKey)
 
-	switch info.RelayFormat {
+	switch info.GetFinalRequestRelayFormat() {
 	case types.RelayFormatClaude:
+		claude.CommonClaudeHeadersOperation(c, req, info)
 		req.Set("x-api-key", info.ApiKey)
 		if req.Get("anthropic-version") == "" {
 			anthropicVersion := c.Request.Header.Get("anthropic-version")
@@ -60,10 +67,16 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
+	if info.TargetsClaudeModel() {
+		return a.claudeAdaptor.ConvertOpenAIRequest(c, info, request)
+	}
 	return request, nil
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+	if info.TargetsClaudeModel() {
+		return a.claudeAdaptor.ConvertOpenAIResponsesRequest(c, info, request)
+	}
 	return request, nil
 }
 
@@ -102,7 +115,7 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
-	switch info.RelayFormat {
+	switch info.GetFinalRequestRelayFormat() {
 	case types.RelayFormatClaude:
 		return a.claudeAdaptor.DoResponse(c, resp, info)
 	case types.RelayFormatGemini:

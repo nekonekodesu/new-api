@@ -1576,6 +1576,11 @@ type fetchModelsRequest struct {
 
 func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Channel, error) {
 	var channel *model.Channel
+	explicitKey := strings.TrimSpace(req.Key)
+	if explicitKey != "" {
+		explicitKey = strings.Split(explicitKey, "\n")[0]
+	}
+	usingSavedKey := false
 	if req.ChannelID > 0 {
 		savedChannel, err := model.GetChannelById(req.ChannelID, true)
 		if err != nil {
@@ -1585,14 +1590,16 @@ func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Chan
 			return nil, fmt.Errorf("channel %d is not an advanced custom channel", req.ChannelID)
 		}
 		channel = savedChannel
-	} else {
-		key := strings.TrimSpace(req.Key)
-		if key != "" {
-			key = strings.Split(key, "\n")[0]
+		if explicitKey != "" {
+			channel.Key = explicitKey
+			channel.ChannelInfo = model.ChannelInfo{}
+		} else {
+			usingSavedKey = true
 		}
+	} else {
 		channel = &model.Channel{
 			Type: req.Type,
-			Key:  key,
+			Key:  explicitKey,
 		}
 	}
 
@@ -1601,6 +1608,9 @@ func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Chan
 	}
 	if req.BaseURL != nil {
 		baseURL := strings.TrimSpace(*req.BaseURL)
+		if usingSavedKey && baseURL != "" && baseURL != strings.TrimSpace(channel.GetBaseURL()) {
+			return nil, fmt.Errorf("cannot override base_url without providing an explicit API key")
+		}
 		channel.BaseURL = &baseURL
 	}
 
@@ -1613,6 +1623,22 @@ func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Chan
 		var config dto.AdvancedCustomConfig
 		if err := common.UnmarshalJsonStr(rawConfig, &config); err != nil {
 			return nil, err
+		}
+		if usingSavedKey {
+			// A saved key may be sent only to destinations the admin already saved:
+			// edited routes must not introduce a new absolute upstream address.
+			savedAbsolute := map[string]bool{}
+			if settings.AdvancedCustom != nil {
+				for _, route := range settings.AdvancedCustom.Routes {
+					savedAbsolute[strings.TrimSpace(route.UpstreamPath)] = true
+				}
+			}
+			for _, route := range config.Routes {
+				upstreamPath := strings.TrimSpace(route.UpstreamPath)
+				if strings.Contains(upstreamPath, "://") && !savedAbsolute[upstreamPath] {
+					return nil, fmt.Errorf("cannot override advanced_custom without providing an explicit API key")
+				}
+			}
 		}
 		settings.AdvancedCustom = &config
 	} else if req.ChannelID <= 0 {
@@ -1631,8 +1657,12 @@ func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Chan
 		channel.HeaderOverride = &rawHeaderOverride
 	}
 	if req.Proxy != nil {
+		proxy := strings.TrimSpace(*req.Proxy)
 		channelSettings := channel.GetSetting()
-		channelSettings.Proxy = strings.TrimSpace(*req.Proxy)
+		if usingSavedKey && proxy != "" && proxy != strings.TrimSpace(channelSettings.Proxy) {
+			return nil, fmt.Errorf("cannot override proxy without providing an explicit API key")
+		}
+		channelSettings.Proxy = proxy
 		channel.SetSetting(channelSettings)
 	}
 

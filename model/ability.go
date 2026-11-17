@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -110,7 +111,14 @@ func GetChannel(
 	model string,
 	retry int,
 	filters []dto.ChannelFilter,
+	triedChannelIDs ...int,
 ) (*Channel, error) {
+	return getChannelFromDB(group, model, retry, filters, false, triedChannelIDs)
+}
+
+// enabledAbilitiesForRouting loads the enabled abilities that can serve the
+// model in the group and pass the filters, falling back to the routing name.
+func enabledAbilitiesForRouting(group string, model string, filters []dto.ChannelFilter) ([]Ability, error) {
 	var abilities []Ability
 	err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).Order("priority DESC, weight DESC").Find(&abilities).Error
 	if err != nil {
@@ -126,7 +134,49 @@ func GetChannel(
 		}
 		abilities = filterAbilitiesByConstraints(abilities, model, filters)
 	}
+	return abilities, nil
+}
+
+func getChannelFromDB(
+	group string,
+	model string,
+	retry int,
+	filters []dto.ChannelFilter,
+	ignoreCooldown bool,
+	triedChannelIDs []int,
+) (*Channel, error) {
+	abilities, err := enabledAbilitiesForRouting(group, model, filters)
+	if err != nil {
+		return nil, err
+	}
+	if ignoreCooldown {
+		abilities = slices.DeleteFunc(abilities, func(ability Ability) bool {
+			return slices.Contains(triedChannelIDs, ability.ChannelId)
+		})
+	}
+	if !ignoreCooldown && common.RetryCooldownEnabled {
+		abilities = lo.Filter(abilities, func(ability Ability, _ int) bool {
+			return !IsChannelModelCooling(ability.ChannelId, model)
+		})
+	}
 	if len(abilities) > 0 {
+		if mode := GetGroupSchedulingMode(group); mode != SchedulingModeStandard {
+			channelIds := make([]int, 0, len(abilities))
+			seenIds := make(map[int]struct{}, len(abilities))
+			for _, ab := range abilities {
+				if _, exists := seenIds[ab.ChannelId]; !exists {
+					seenIds[ab.ChannelId] = struct{}{}
+					channelIds = append(channelIds, ab.ChannelId)
+				}
+			}
+			var candidateChannels []*Channel
+			if err := DB.Where("id IN ?", channelIds).Find(&candidateChannels).Error; err == nil && len(candidateChannels) > 0 {
+				if selected := selectChannelByGroupSchedule(group, model, retry, candidateChannels, triedChannelIDs); selected != nil {
+					return selected, nil
+				}
+			}
+		}
+
 		priorities := make([]int64, 0)
 		seen := make(map[int64]bool)
 		for _, ability := range abilities {
@@ -147,6 +197,12 @@ func GetChannel(
 		abilities = lo.Filter(abilities, func(ability Ability, _ int) bool {
 			return ability.Priority == nil && targetPriority == 0 || ability.Priority != nil && *ability.Priority == targetPriority
 		})
+		// Prefer channels this request has not tried inside the target tier.
+		if untried := lo.Filter(abilities, func(ability Ability, _ int) bool {
+			return !slices.Contains(triedChannelIDs, ability.ChannelId)
+		}); len(untried) > 0 {
+			abilities = untried
+		}
 	}
 	channel := Channel{}
 	if len(abilities) > 0 {
@@ -160,7 +216,7 @@ func GetChannel(
 		for _, ability_ := range abilities {
 			weight -= int(ability_.Weight) + 10
 			//log.Printf("weight: %d, ability weight: %d", weight, *ability_.Weight)
-			if weight <= 0 {
+			if weight < 0 {
 				channel.Id = ability_.ChannelId
 				break
 			}

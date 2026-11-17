@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -153,6 +155,32 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	claudeRequest, ok := result.Value.(*dto.ClaudeRequest)
 	if !ok {
 		return nil, fmt.Errorf("expected Anthropic Messages request, got %T", result.Value)
+	}
+	if info != nil && info.ChannelSetting.SystemPrompt != "" {
+		if claudeRequest.System == nil {
+			claudeRequest.SetStringSystem(info.ChannelSetting.SystemPrompt)
+		} else if info.ChannelSetting.SystemPromptOverride {
+			if c != nil {
+				common.SetContextKey(c, constant.ContextKeySystemPromptOverride, true)
+			}
+			if claudeRequest.IsStringSystem() {
+				existing := strings.TrimSpace(claudeRequest.GetStringSystem())
+				if existing == "" {
+					claudeRequest.SetStringSystem(info.ChannelSetting.SystemPrompt)
+				} else {
+					claudeRequest.SetStringSystem(info.ChannelSetting.SystemPrompt + "\n" + existing)
+				}
+			} else {
+				systemContents := claudeRequest.ParseSystem()
+				newSystem := dto.ClaudeMediaMessage{Type: dto.ContentTypeText}
+				newSystem.SetText(info.ChannelSetting.SystemPrompt)
+				if len(systemContents) == 0 {
+					claudeRequest.System = []dto.ClaudeMediaMessage{newSystem}
+				} else {
+					claudeRequest.System = append([]dto.ClaudeMediaMessage{newSystem}, systemContents...)
+				}
+			}
+		}
 	}
 	return claudeRequest, nil
 }

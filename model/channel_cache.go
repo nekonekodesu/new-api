@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -109,6 +110,7 @@ func InitChannelCache() {
 	// invalidating the pricing cache, otherwise the reversed order deadlocks.
 	InvalidatePricingCache()
 	rebuildTaskAliasView()
+	RecalculateAllChannelModelCosts(false)
 	common.SysLog(common.LogText("channels synced from database"))
 }
 
@@ -120,15 +122,74 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
+// GetRandomSatisfiedChannel picks a channel for the group and model, skipping
+// channels that are cooling down for the model.
+// triedChannelIDs lists channels this request has already attempted. Group
+// scheduling modes rank the untried channels; standard routing keeps its
+// retry-by-priority tiers and prefers untried channels inside the tier.
 func GetRandomSatisfiedChannel(
 	group string,
 	model string,
 	retry int,
 	filters []dto.ChannelFilter,
+	triedChannelIDs ...int,
+) (*Channel, error) {
+	return getRandomSatisfiedChannel(group, model, retry, filters, false, triedChannelIDs)
+}
+
+// GetRandomSatisfiedChannelIgnoringCooldown is GetRandomSatisfiedChannel
+// without the cooldown filter, for the last routing pass when every candidate
+// is cooling down.
+func GetRandomSatisfiedChannelIgnoringCooldown(
+	group string,
+	model string,
+	retry int,
+	filters []dto.ChannelFilter,
+	triedChannelIDs ...int,
+) (*Channel, error) {
+	return getRandomSatisfiedChannel(group, model, retry, filters, true, triedChannelIDs)
+}
+
+// HasUntriedChannel reports whether the group still has a channel for the
+// model that passes the filters, is not cooling down, and is not in
+// triedChannelIDs.
+func HasUntriedChannel(group string, model string, filters []dto.ChannelFilter, triedChannelIDs []int) bool {
+	var ids []int
+	if common.MemoryCacheEnabled {
+		channelSyncLock.RLock()
+		ids, _ = filterCandidateIDs(group2model2channels[group][model], model, filters)
+		if len(ids) == 0 {
+			ids, _ = filterCandidateIDs(group2model2channels[group][ratio_setting.RoutingMatchModelName(model)], model, filters)
+		}
+		channelSyncLock.RUnlock()
+	} else {
+		abilities, err := enabledAbilitiesForRouting(group, model, filters)
+		if err != nil {
+			return false
+		}
+		for _, ability := range abilities {
+			ids = append(ids, ability.ChannelId)
+		}
+	}
+	for _, id := range withoutCoolingChannels(ids, model) {
+		if !slices.Contains(triedChannelIDs, id) {
+			return true
+		}
+	}
+	return false
+}
+
+func getRandomSatisfiedChannel(
+	group string,
+	model string,
+	retry int,
+	filters []dto.ChannelFilter,
+	ignoreCooldown bool,
+	triedChannelIDs []int,
 ) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, filters)
+		return getChannelFromDB(group, model, retry, filters, ignoreCooldown, triedChannelIDs)
 	}
 
 	channelSyncLock.RLock()
@@ -143,6 +204,14 @@ func GetRandomSatisfiedChannel(
 		channels, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], model, filters)
 	}
 
+	if !ignoreCooldown {
+		channels = withoutCoolingChannels(channels, model)
+	} else {
+		channels = slices.DeleteFunc(slices.Clone(channels), func(id int) bool {
+			return slices.Contains(triedChannelIDs, id)
+		})
+	}
+
 	if len(channels) == 0 {
 		return nil, nil
 	}
@@ -152,6 +221,20 @@ func GetRandomSatisfiedChannel(
 			return channel, nil
 		}
 		return nil, fmt.Errorf("database consistency error: channel #%d does not exist, please contact the administrator", channels[0])
+	}
+
+	if mode := GetGroupSchedulingMode(group); mode != SchedulingModeStandard {
+		candidates := make([]*Channel, 0, len(channels))
+		for _, channelId := range channels {
+			ch, ok := channelsIDM[channelId]
+			if !ok {
+				return nil, fmt.Errorf("database consistency error: channel #%d does not exist, please contact the administrator", channelId)
+			}
+			candidates = append(candidates, ch)
+		}
+		if selected := selectChannelByGroupSchedule(group, model, retry, candidates, triedChannelIDs); selected != nil {
+			return selected, nil
+		}
 	}
 
 	uniquePriorities := make(map[int]bool)
@@ -189,6 +272,23 @@ func GetRandomSatisfiedChannel(
 
 	if len(targetChannels) == 0 {
 		return nil, errors.New(fmt.Sprintf("no channel found, group: %s, model: %s, priority: %d", group, model, targetPriority))
+	}
+
+	// A retry inside the same priority tier should not pick a channel that has
+	// already failed for this request while an untried one remains.
+	if len(triedChannelIDs) > 0 {
+		untried := make([]*Channel, 0, len(targetChannels))
+		untriedWeight := 0
+		for _, channel := range targetChannels {
+			if !slices.Contains(triedChannelIDs, channel.Id) {
+				untried = append(untried, channel)
+				untriedWeight += channel.GetWeight()
+			}
+		}
+		if len(untried) > 0 {
+			targetChannels = untried
+			sumWeight = untriedWeight
+		}
 	}
 
 	// smoothing factor and adjustment

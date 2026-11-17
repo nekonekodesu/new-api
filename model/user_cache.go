@@ -22,6 +22,7 @@ type UserBase struct {
 	Role           int    `json:"role"`
 	Username       string `json:"username"`
 	Setting        string `json:"setting"`
+	CreatedAt      int64  `json:"created_at"`
 	AuthVersion    int64  `json:"-"`
 	CacheSchema    int    `json:"-"`
 	CacheExpiresAt int64  `json:"-"`

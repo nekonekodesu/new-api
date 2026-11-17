@@ -17,8 +17,10 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/tokenkit"
 
 	"github.com/bytedance/gopkg/util/gopool"
+	"github.com/tidwall/gjson"
 
 	"github.com/gin-gonic/gin"
 )
@@ -246,6 +248,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	dataChan := make(chan string, 10)
 	sr := newStreamResult(info.StreamStatus)
+	info.SetLiveCompletionTokens(0)
 
 	wg.Add(1)
 	gopool.Go(func() {
@@ -257,7 +260,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			stop()
 			wg.Done()
 		}()
+		var liveStreamText strings.Builder
+		var hasUpstreamCompletionUsage bool
 		for data := range dataChan {
+			ObserveLiveStreamData(info, data, &liveStreamText, &hasUpstreamCompletionUsage)
 			sr.reset()
 			func() {
 				writeMutex.Lock()
@@ -364,5 +370,147 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		logger.LogInfo(c, common.LogText("stream ended: %s", info.StreamStatus.Summary()))
 	} else {
 		logger.LogError(c, common.LogText("stream ended: %s, received=%d", info.StreamStatus.Summary(), info.ReceivedResponseCount))
+	}
+}
+
+const maxLiveStreamTextEstimateBytes = 256 << 10
+
+// ObserveLiveStreamData updates display-only live token counters on info so
+// in-progress streaming requests in the Usage Logs console reflect input/output
+// token progress and live TPS before settlement completes.
+func ObserveLiveStreamData(info *relaycommon.RelayInfo, data string, liveStreamText *strings.Builder, hasUpstreamCompletionUsage *bool) {
+	if info == nil || data == "" {
+		return
+	}
+
+	if promptTokens := extractLivePromptTokens(data); promptTokens > 0 {
+		info.SetLivePromptTokens(promptTokens)
+	}
+	if completionTokens := extractLiveCompletionTokens(data); completionTokens > 0 {
+		if hasUpstreamCompletionUsage != nil {
+			*hasUpstreamCompletionUsage = true
+		}
+		info.SetLiveCompletionTokens(completionTokens)
+		return
+	}
+
+	if liveStreamText == nil || liveStreamText.Len() >= maxLiveStreamTextEstimateBytes {
+		return
+	}
+
+	prevLen := liveStreamText.Len()
+	appendLiveStreamDeltaText(data, liveStreamText)
+	if liveStreamText.Len() == prevLen {
+		return
+	}
+	if hasUpstreamCompletionUsage != nil && *hasUpstreamCompletionUsage {
+		return
+	}
+
+	modelName := info.UpstreamModelName
+	if modelName == "" {
+		modelName = info.OriginModelName
+	}
+	info.SetLiveCompletionTokens(tokenkit.Estimate(modelName, liveStreamText.String()))
+}
+
+func extractLivePromptTokens(data string) int {
+	if v := gjson.Get(data, "usage.prompt_tokens").Int(); v > 0 {
+		return int(v)
+	}
+	if v := gjson.Get(data, "usage.input_tokens").Int(); v > 0 {
+		cacheCreate := gjson.Get(data, "usage.cache_creation_input_tokens").Int()
+		cacheRead := gjson.Get(data, "usage.cache_read_input_tokens").Int()
+		return int(v + cacheCreate + cacheRead)
+	}
+	if v := gjson.Get(data, "message.usage.input_tokens").Int(); v > 0 {
+		cacheCreate := gjson.Get(data, "message.usage.cache_creation_input_tokens").Int()
+		cacheRead := gjson.Get(data, "message.usage.cache_read_input_tokens").Int()
+		return int(v + cacheCreate + cacheRead)
+	}
+	if v := gjson.Get(data, "response.usage.input_tokens").Int(); v > 0 {
+		return int(v)
+	}
+	if v := gjson.Get(data, "usageMetadata.promptTokenCount").Int(); v > 0 {
+		return int(v)
+	}
+	return 0
+}
+
+func extractLiveCompletionTokens(data string) int {
+	if v := gjson.Get(data, "usage.completion_tokens").Int(); v > 0 {
+		return int(v)
+	}
+	if v := gjson.Get(data, "usage.output_tokens").Int(); v > 0 {
+		return int(v)
+	}
+	if v := gjson.Get(data, "message.usage.output_tokens").Int(); v > 0 {
+		return int(v)
+	}
+	if v := gjson.Get(data, "response.usage.output_tokens").Int(); v > 0 {
+		return int(v)
+	}
+	if v := gjson.Get(data, "usageMetadata.candidatesTokenCount").Int() + gjson.Get(data, "usageMetadata.thoughtsTokenCount").Int(); v > 0 {
+		return int(v)
+	}
+	return 0
+}
+
+func appendLiveStreamDeltaText(data string, builder *strings.Builder) {
+	if choices := gjson.Get(data, "choices"); choices.IsArray() {
+		for _, choice := range choices.Array() {
+			if s := choice.Get("delta.content").String(); s != "" {
+				builder.WriteString(s)
+			}
+			if s := choice.Get("delta.reasoning_content").String(); s != "" {
+				builder.WriteString(s)
+			}
+			if s := choice.Get("delta.reasoning").String(); s != "" {
+				builder.WriteString(s)
+			}
+			if s := choice.Get("text").String(); s != "" {
+				builder.WriteString(s)
+			}
+			if toolCalls := choice.Get("delta.tool_calls"); toolCalls.IsArray() {
+				for _, tc := range toolCalls.Array() {
+					if s := tc.Get("function.name").String(); s != "" {
+						builder.WriteString(s)
+					}
+					if s := tc.Get("function.arguments").String(); s != "" {
+						builder.WriteString(s)
+					}
+				}
+			}
+		}
+		return
+	}
+
+	if delta := gjson.Get(data, "delta"); delta.Exists() {
+		if delta.Type == gjson.String {
+			builder.WriteString(delta.String())
+			return
+		}
+		if s := delta.Get("text").String(); s != "" {
+			builder.WriteString(s)
+		}
+		if s := delta.Get("thinking").String(); s != "" {
+			builder.WriteString(s)
+		}
+		if s := delta.Get("partial_json").String(); s != "" {
+			builder.WriteString(s)
+		}
+		return
+	}
+
+	if candidates := gjson.Get(data, "candidates"); candidates.IsArray() {
+		for _, cand := range candidates.Array() {
+			if parts := cand.Get("content.parts"); parts.IsArray() {
+				for _, part := range parts.Array() {
+					if s := part.Get("text").String(); s != "" {
+						builder.WriteString(s)
+					}
+				}
+			}
+		}
 	}
 }

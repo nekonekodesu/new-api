@@ -315,3 +315,64 @@ func TestProtectedFetchRoundTripperReusesTransportPerProxy(t *testing.T) {
 	require.True(t, direct.ForceAttemptHTTP2)
 	require.False(t, direct.DisableKeepAlives)
 }
+
+func TestOutboundDNSResolverPriorityAndFallback(t *testing.T) {
+	system_setting.SetNetworkSetting("", "")
+	t.Cleanup(func() {
+		system_setting.SetNetworkSetting("", "")
+	})
+
+	require.NoError(t, system_setting.ValidateDNSServerOption(""))
+	require.NoError(t, system_setting.ValidateDNSServerOption("1.1.1.1"))
+	require.NoError(t, system_setting.ValidateDNSServerOption("8.8.8.8:5353"))
+	require.NoError(t, system_setting.ValidateDNSServerOption("[2606:4700:4700::1111]:53"))
+	require.Error(t, system_setting.ValidateDNSServerOption("not-an-ip"))
+	require.Error(t, system_setting.ValidateDNSServerOption("1.1.1.1:70000"))
+
+	system_setting.SetNetworkSetting("1.1.1.1", "8.8.8.8:5353")
+	require.Equal(t, []string{"1.1.1.1:53", "8.8.8.8:5353"}, system_setting.ConfiguredDNSServers())
+
+	// Deduplication when primary and fallback resolve to the same canonical endpoint
+	system_setting.SetNetworkSetting("1.1.1.1:53", "1.1.1.1")
+	require.Equal(t, []string{"1.1.1.1:53"}, system_setting.ConfiguredDNSServers())
+
+	// Custom resolver tries configured servers first, then falls back to systemResolver
+	var attemptedDNSServers []string
+	resolver := &outboundDNSResolver{
+		getServers: func() []string {
+			return []string{"192.0.2.1:53", "198.51.100.1:53"}
+		},
+		dnsDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			attemptedDNSServers = append(attemptedDNSServers, address)
+			return nil, errors.New("simulated custom DNS unreachable")
+		},
+		systemResolver: staticSSRFResolver{
+			"api.example.com": {{IP: net.ParseIP("93.184.216.34")}},
+		},
+	}
+
+	addrs, err := resolver.LookupIPAddr(context.Background(), "api.example.com")
+	require.NoError(t, err)
+	require.Len(t, addrs, 1)
+	require.Equal(t, "93.184.216.34", addrs[0].IP.String())
+	require.GreaterOrEqual(t, len(attemptedDNSServers), 2)
+	require.Equal(t, "192.0.2.1:53", attemptedDNSServers[0])
+	require.Contains(t, attemptedDNSServers, "198.51.100.1:53")
+
+	// Dialer resolves host via custom resolver before dialing IP
+	var dialedTarget string
+	dialFn := dialContextWithConfiguredDNS(
+		func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialedTarget = address
+			return testConn(t), nil
+		},
+		staticSSRFResolver{
+			"api.example.com": {{IP: net.ParseIP("93.184.216.34")}},
+		},
+	)
+	conn, err := dialFn(context.Background(), "tcp", "api.example.com:443")
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	_ = conn.Close()
+	require.Equal(t, "93.184.216.34:443", dialedTarget)
+}

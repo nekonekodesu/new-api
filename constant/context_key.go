@@ -52,6 +52,10 @@ const (
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"
 
+	// ContextKeyChannelCooldownBypassed marks that this request already used its
+	// one routing pass that ignores channel cooldown.
+	ContextKeyChannelCooldownBypassed ContextKey = "channel_cooldown_bypassed"
+
 	/* user related keys */
 	ContextKeyUserId      ContextKey = "id"
 	ContextKeyUserSetting ContextKey = "user_setting"

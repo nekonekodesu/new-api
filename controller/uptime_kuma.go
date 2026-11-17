@@ -2,13 +2,15 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/console_setting"
 
 	"github.com/gin-gonic/gin"
@@ -17,10 +19,10 @@ import (
 
 const (
 	requestTimeout   = 30 * time.Second
-	httpTimeout      = 10 * time.Second
 	uptimeKeySuffix  = "_24"
 	apiStatusPath    = "/api/status-page/"
 	apiHeartbeatPath = "/api/status-page/heartbeat/"
+	uptimeRespLimit  = 1 << 20 // 1 MiB, enough for any status page JSON
 )
 
 type Monitor struct {
@@ -51,7 +53,7 @@ func getAndDecode(ctx context.Context, client *http.Client, url string, dest any
 		return errors.New("non-200 status")
 	}
 
-	return json.NewDecoder(resp.Body).Decode(dest)
+	return common.DecodeJson(io.LimitReader(resp.Body, uptimeRespLimit), dest)
 }
 
 func fetchGroupData(ctx context.Context, client *http.Client, groupConfig map[string]any) UptimeGroupResult {
@@ -138,7 +140,7 @@ func GetUptimeKumaStatus(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), requestTimeout)
 	defer cancel()
 
-	client := &http.Client{Timeout: httpTimeout}
+	client := service.GetSSRFProtectedHTTPClient()
 	results := make([]UptimeGroupResult, len(groups))
 
 	g, gCtx := errgroup.WithContext(ctx)

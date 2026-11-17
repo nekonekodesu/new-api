@@ -26,8 +26,24 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var MidjourneyImageContentTypes = map[string]string{
+	"image/bmp":  "image/bmp",
+	"image/gif":  "image/gif",
+	"image/png":  "image/png",
+	"image/webp": "image/webp",
+	"image/jpg":  "image/jpeg",
+	"image/jpeg": "image/jpeg",
+}
+
 func RelayMidjourneyImage(c *gin.Context) {
 	taskId := c.Param("id")
+	if !service.VerifyMidjourneyImageAccess(c.Query(service.MidjourneyImageAccessQueryParameter), taskId) {
+		c.Writer.Header().Set("X-Content-Type-Options", "nosniff")
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "image_access_denied",
+		})
+		return
+	}
 	midjourneyTask := model.GetByOnlyMJId(taskId)
 	if midjourneyTask == nil {
 		c.JSON(400, gin.H{
@@ -76,18 +92,22 @@ func RelayMidjourneyImage(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		responseBody, _ := io.ReadAll(resp.Body)
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		c.JSON(resp.StatusCode, gin.H{
 			"error": string(responseBody),
 		})
 		return
 	}
-	// 从Content-Type头获取MIME类型
-	contentType := resp.Header.Get("Content-Type")
+	// 从Content-Type头获取MIME类型，未列入白名单一律按 image/jpeg 发送并
+	// 关闭 sniffing，防止上游（含被入侵的 MJ 代理）借响应执行脚本。
+	rawContentType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
+	contentType := MidjourneyImageContentTypes[strings.ToLower(strings.TrimSpace(rawContentType))]
 	if contentType == "" {
 		// 如果无法确定内容类型，则默认为jpeg
 		contentType = "image/jpeg"
 	}
+	c.Writer.Header().Set("X-Content-Type-Options", "nosniff")
+	c.Writer.Header().Set("Cache-Control", "private, no-store")
 	// 设置响应的内容类型
 	c.Writer.Header().Set("Content-Type", contentType)
 	// 将图片流式传输到响应体
@@ -151,9 +171,12 @@ func coverMidjourneyTaskDto(c *gin.Context, originTask *model.Midjourney) (midjo
 	midjourneyTask.FinishTime = originTask.FinishTime
 	midjourneyTask.ImageUrl = ""
 	if originTask.ImageUrl != "" && setting.MjForwardUrlEnabled {
-		midjourneyTask.ImageUrl = system_setting.ServerAddress + "/mj/image/" + originTask.MjId
+		proxied := system_setting.ServerAddress + "/mj/image/" + originTask.MjId
 		if originTask.Status != "SUCCESS" {
-			midjourneyTask.ImageUrl += "?rand=" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			proxied += "?rand=" + strconv.FormatInt(time.Now().UnixNano(), 10)
+		}
+		if bound, bindErr := service.BindMidjourneyImageAccess(proxied, originTask.MjId); bindErr == nil {
+			midjourneyTask.ImageUrl = bound
 		}
 	} else {
 		midjourneyTask.ImageUrl = originTask.ImageUrl

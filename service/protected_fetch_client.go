@@ -65,14 +65,14 @@ func newProtectedFetchHTTPClientWithDialer(resolver ssrfResolver, dialContext fu
 
 func newProtectedFetchHTTPClientWithProxy(resolver ssrfResolver, dialContext func(ctx context.Context, network, address string) (net.Conn, error), getProtection func() (*common.SSRFProtection, bool, error), proxy func(*http.Request) (*url.URL, error)) *http.Client {
 	if resolver == nil {
-		resolver = net.DefaultResolver
+		resolver = defaultOutboundDNSResolver
 	}
 	if dialContext == nil {
 		netDialer := &net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}
-		dialContext = netDialer.DialContext
+		dialContext = dialContextWithConfiguredDNS(netDialer.DialContext, resolver)
 	}
 	if getProtection == nil {
 		getProtection = currentFetchProtection

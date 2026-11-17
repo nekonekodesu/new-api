@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 
 	"github.com/QuantumNous/new-api/model"
@@ -299,6 +300,43 @@ func FetchUpstreamRatios(c *gin.Context) {
 
 			isOpenRouter := chItem.Endpoint == "openrouter"
 
+			uniqueName := chItem.Name
+			if chItem.ID != 0 {
+				uniqueName = fmt.Sprintf("%s(%d)", chItem.Name, chItem.ID)
+			}
+
+			var openRouterKey string
+			if isOpenRouter && chItem.ID != 0 {
+				dbCh, err := model.GetChannelById(chItem.ID, true)
+				if err != nil {
+					ch <- upstreamResult{Name: uniqueName, Err: "failed to get channel key: " + err.Error()}
+					return
+				}
+				savedBaseURL := strings.TrimRight(strings.TrimSpace(dbCh.GetBaseURL()), "/")
+				if savedBaseURL == "" {
+					savedBaseURL = strings.TrimRight(strings.TrimSpace(constant.GetChannelBaseURL(dbCh.Type)), "/")
+				}
+				callerBaseURL := strings.TrimRight(strings.TrimSpace(chItem.BaseURL), "/")
+				if callerBaseURL != "" && callerBaseURL != savedBaseURL {
+					ch <- upstreamResult{Name: uniqueName, Err: "cannot override channel base_url when using stored channel key"}
+					return
+				}
+				chItem.BaseURL = savedBaseURL
+				key, _, apiErr := dbCh.GetNextEnabledKey()
+				if apiErr != nil {
+					ch <- upstreamResult{Name: uniqueName, Err: "failed to get enabled channel key: " + apiErr.Error()}
+					return
+				}
+				if strings.TrimSpace(key) == "" {
+					ch <- upstreamResult{Name: uniqueName, Err: "no API key configured for this channel"}
+					return
+				}
+				openRouterKey = strings.TrimSpace(key)
+			} else if isOpenRouter {
+				ch <- upstreamResult{Name: uniqueName, Err: "OpenRouter requires a valid channel with API key"}
+				return
+			}
+
 			endpoint := chItem.Endpoint
 			var fullURL string
 			if isOpenRouter {
@@ -315,11 +353,6 @@ func FetchUpstreamRatios(c *gin.Context) {
 			}
 			isModelsDev := isModelsDevAPIEndpoint(fullURL)
 
-			uniqueName := chItem.Name
-			if chItem.ID != 0 {
-				uniqueName = fmt.Sprintf("%s(%d)", chItem.Name, chItem.ID)
-			}
-
 			ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(req.Timeout)*time.Second)
 			defer cancel()
 
@@ -331,25 +364,8 @@ func FetchUpstreamRatios(c *gin.Context) {
 			}
 
 			// OpenRouter requires Bearer token auth
-			if isOpenRouter && chItem.ID != 0 {
-				dbCh, err := model.GetChannelById(chItem.ID, true)
-				if err != nil {
-					ch <- upstreamResult{Name: uniqueName, Err: "failed to get channel key: " + err.Error()}
-					return
-				}
-				key, _, apiErr := dbCh.GetNextEnabledKey()
-				if apiErr != nil {
-					ch <- upstreamResult{Name: uniqueName, Err: "failed to get enabled channel key: " + apiErr.Error()}
-					return
-				}
-				if strings.TrimSpace(key) == "" {
-					ch <- upstreamResult{Name: uniqueName, Err: "no API key configured for this channel"}
-					return
-				}
-				httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(key))
-			} else if isOpenRouter {
-				ch <- upstreamResult{Name: uniqueName, Err: "OpenRouter requires a valid channel with API key"}
-				return
+			if openRouterKey != "" {
+				httpReq.Header.Set("Authorization", "Bearer "+openRouterKey)
 			}
 
 			// 简单重试：最多 3 次，指数退避

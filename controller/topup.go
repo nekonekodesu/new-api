@@ -264,6 +264,18 @@ func paymentError(c *gin.Context, err error) {
 	c.JSON(http.StatusOK, body)
 }
 
+const webhookLogBodyLimitBytes = 1024
+
+// webhookLogBody bounds unauthenticated callback bodies before they reach the
+// server log, so oversized malicious payloads cannot grow the log while the
+// signature has not been verified yet.
+func webhookLogBody(payload []byte) string {
+	if len(payload) > webhookLogBodyLimitBytes {
+		return string(payload[:webhookLogBodyLimitBytes]) + "...(truncated)"
+	}
+	return string(payload)
+}
+
 func rejectInvalidCreditedQuota(c *gin.Context, userId int, quota decimal.Decimal) bool {
 	creditedQuota, err := validateCreditedQuota(quota)
 	if err == nil {

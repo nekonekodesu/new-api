@@ -81,6 +81,20 @@ func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
 }
 
+func (p *RetryParam) CanAttempt() bool {
+	return p.GetRetry() <= common.RetryTimes || common.GetContextKeyBool(p.Ctx, constant.ContextKeyChannelCooldownBypassed)
+}
+
+func (p *RetryParam) RemainingRetries() int {
+	remaining := common.RetryTimes - p.GetRetry()
+	if common.GetContextKeyBool(p.Ctx, constant.ContextKeyChannelCooldownBypassed) {
+		return max(1, remaining)
+	}
+	return remaining
+}
+
+var ErrChannelsCoolingDown = errors.New("every channel is cooling down")
+
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
 // 尝试获取一个满足要求的随机渠道。
 //

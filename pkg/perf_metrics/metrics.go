@@ -57,6 +57,33 @@ func RecordRelayResult(ctx context.Context, info *relaycommon.RelayInfo, apiErr 
 	if generationMs <= 0 {
 		generationMs = latencyMs
 	}
+	if info.HasChannelMeta() {
+		// Channel telemetry measures only the final attempt, so a channel
+		// reached through a retry is not charged for the time earlier
+		// channels spent failing.
+		attemptStart := info.StartTime
+		if info.AttemptStartTime.After(attemptStart) {
+			attemptStart = info.AttemptStartTime
+		}
+		channelHasTtft := hasTtft && info.FirstResponseTime.After(attemptStart)
+		channelTtftMs := int64(0)
+		channelGenerationMs := now.Sub(attemptStart).Milliseconds()
+		if channelHasTtft {
+			channelTtftMs = info.FirstResponseTime.Sub(attemptStart).Milliseconds()
+			if ms := now.Sub(info.FirstResponseTime).Milliseconds(); ms > 0 {
+				channelGenerationMs = ms
+			}
+		}
+		model.RecordChannelModelTelemetry(
+			info.ChannelId,
+			info.OriginModelName,
+			outcome == OutcomeSuccess,
+			channelTtftMs,
+			channelHasTtft,
+			info.PerformanceOutputTokens,
+			channelGenerationMs,
+		)
+	}
 	Record(Sample{
 		Model:        info.OriginModelName,
 		Group:        info.UsingGroup,

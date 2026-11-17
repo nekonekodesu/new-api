@@ -46,7 +46,7 @@ func GetSubscription(c *gin.Context) {
 	// - CNY: 先转 USD 再乘汇率
 	// - TOKENS: 直接使用 tokens 数量
 	switch operation_setting.GetQuotaDisplayType() {
-	case operation_setting.QuotaDisplayTypeCNY:
+	case operation_setting.QuotaDisplayTypeCNY, operation_setting.QuotaDisplayTypeNTD:
 		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
 	case operation_setting.QuotaDisplayTypeTokens:
 		// amount 保持 tokens 数值
@@ -92,7 +92,7 @@ func GetUsage(c *gin.Context) {
 	}
 	amount := float64(quota)
 	switch operation_setting.GetQuotaDisplayType() {
-	case operation_setting.QuotaDisplayTypeCNY:
+	case operation_setting.QuotaDisplayTypeCNY, operation_setting.QuotaDisplayTypeNTD:
 		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
 	case operation_setting.QuotaDisplayTypeTokens:
 		// tokens 保持原值

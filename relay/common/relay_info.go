@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -79,17 +80,23 @@ type ChannelMeta struct {
 type TokenCountMeta struct {
 	//promptTokens int
 	estimatePromptTokens int
+	livePromptTokens     atomic.Int64
+	liveCompletionTokens atomic.Int64
 }
 
 type RelayInfo struct {
-	TokenId           int
-	TokenKey          string
-	TokenGroup        string
-	UserId            int
-	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
-	UserGroup         string // 用户所在分组
-	TokenUnlimited    bool
-	StartTime         time.Time
+	TokenId        int
+	TokenKey       string
+	TokenGroup     string
+	UserId         int
+	UsingGroup     string // 使用的分组，当auto跨分组重试时，会变动
+	UserGroup      string // 用户所在分组
+	TokenUnlimited bool
+	StartTime      time.Time
+	// AttemptStartTime is when the current channel attempt began. It differs
+	// from StartTime after a retry, so per-channel latency excludes the time
+	// spent on channels that already failed.
+	AttemptStartTime  time.Time
 	FirstResponseTime time.Time
 	isFirstResponse   bool
 	//SendLastReasoningResponse bool
@@ -360,7 +367,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 		delete(info.ResponsesUsageInfo.BuiltInTools, info.requestInferredToolKey)
 	}
 	info.requestInferredToolKey = ""
-	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || channelMeta.ChannelSetting.PassThroughBodyEnabled {
+	if info.ShouldPassThroughBody() {
 		info.ReasoningEffort = ""
 		info.ReasoningConversion = nil
 	} else {
@@ -852,6 +859,9 @@ func (info *RelayInfo) SetEstimatePromptTokens(promptTokens int) {
 		return
 	}
 	info.estimatePromptTokens = promptTokens
+	if promptTokens > 0 {
+		info.livePromptTokens.Store(int64(promptTokens))
+	}
 }
 
 func (info *RelayInfo) GetEstimatePromptTokens() int {
@@ -859,6 +869,37 @@ func (info *RelayInfo) GetEstimatePromptTokens() int {
 		return 0
 	}
 	return info.estimatePromptTokens
+}
+
+func (info *RelayInfo) SetLivePromptTokens(tokens int) {
+	if info == nil || tokens < 0 {
+		return
+	}
+	info.livePromptTokens.Store(int64(tokens))
+}
+
+func (info *RelayInfo) GetLivePromptTokens() int {
+	if info == nil {
+		return 0
+	}
+	if v := int(info.livePromptTokens.Load()); v > 0 {
+		return v
+	}
+	return info.estimatePromptTokens
+}
+
+func (info *RelayInfo) SetLiveCompletionTokens(tokens int) {
+	if info == nil || tokens < 0 {
+		return
+	}
+	info.liveCompletionTokens.Store(int64(tokens))
+}
+
+func (info *RelayInfo) GetLiveCompletionTokens() int {
+	if info == nil {
+		return 0
+	}
+	return int(info.liveCompletionTokens.Load())
 }
 
 // ---------------------------------------------------------------------------
