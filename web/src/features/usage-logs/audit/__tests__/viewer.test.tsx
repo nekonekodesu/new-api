@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -396,7 +397,7 @@ it.each([
 
 beforeEach(() => {
   vi.stubGlobal('localStorage', {
-    getItem: () => null,
+    getItem: () => '0',
     setItem: () => undefined,
     removeItem: () => undefined,
   })
@@ -404,6 +405,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   useAuthStore.getState().auth.reset()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -524,6 +526,36 @@ it('opens on the current token when asked and resets back to it', async () => {
     'Current token'
   )
   expect(reset).toBeDisabled()
+})
+
+it('shows the shared auto-refresh control and refreshes audit records on schedule', async () => {
+  vi.stubGlobal('localStorage', {
+    getItem: () => '0.1',
+    setItem: () => undefined,
+    removeItem: () => undefined,
+  })
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  const get = vi.spyOn(api, 'get').mockResolvedValue({
+    data: { success: true, data: { items: [], total: 0 } },
+  })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  render(
+    <QueryClientProvider client={client}>
+      <AuditLogs />
+    </QueryClientProvider>
+  )
+
+  const refreshControl = screen.getByRole('button', { name: 'Auto Refresh' })
+  expect(refreshControl).toHaveTextContent('0.1s')
+  await waitFor(() => expect(get).toHaveBeenCalledTimes(1))
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(100)
+  })
+
+  await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
 })
 
 it('a failed history query exposes retry and no empty history claim', async () => {

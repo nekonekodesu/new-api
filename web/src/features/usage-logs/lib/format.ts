@@ -170,6 +170,22 @@ export function parseLogOther(other: string): LogOtherData | null {
   }
 }
 
+/**
+ * Output tokens per second for a log row. In-progress streams report the live
+ * average from the gateway, and show 0 until the first output tokens arrive.
+ */
+export function getLogTokensPerSecond(
+  log: Pick<UsageLog, 'use_time' | 'completion_tokens' | 'is_stream'>,
+  other: LogOtherData | null
+): number | null {
+  if (isPositiveFiniteNumber(other?.live_tps)) return other.live_tps
+  if (log.use_time > 0 && log.completion_tokens > 0) {
+    return log.completion_tokens / log.use_time
+  }
+  if (other?.in_progress && log.is_stream) return 0
+  return null
+}
+
 export function getReasoningEffortVariant(
   effort: string | undefined
 ): StatusBadgeProps['variant'] {
@@ -337,8 +353,7 @@ export function hasAnyCacheTokens(
     (other.image_cache_tokens || 0) > 0 ||
     (other.cache_creation_tokens || 0) > 0 ||
     (other.cache_creation_tokens_5m || 0) > 0 ||
-    (other.cache_creation_tokens_1h || 0) > 0 ||
-    (other.cache_creation_tokens_12h || 0) > 0
+    (other.cache_creation_tokens_1h || 0) > 0
   )
 }
 

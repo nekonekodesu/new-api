@@ -21,6 +21,10 @@ import type { ChannelAffinitySettings } from '../general/channel-affinity/types'
 export type RetrySettings = {
   RetryTimes: number
   AutomaticRetryStatusCodes: string
+  RetryCooldownEnabled: boolean
+  RetryCooldownWindowSeconds: number
+  RetryCooldownFailureThreshold: number
+  RetryCooldownSeconds: number
 }
 export type HealthSettings = {
   ChannelDisableThreshold: string
@@ -36,14 +40,24 @@ export type HealthSettings = {
     | 'auto_ban_only'
     | 'passive_recovery'
 }
+export type FilteringSettings = {
+  CheckSensitiveEnabled: boolean
+  CheckSensitiveOnPromptEnabled: boolean
+  SensitiveWords: string
+}
 export type RequestPolicySettings = RetrySettings &
   HealthSettings &
+  FilteringSettings &
   Pick<ChannelAffinitySettings, keyof ChannelAffinitySettings>
 
 export const defaultRequestPolicySettings: RequestPolicySettings = {
   RetryTimes: 0,
   AutomaticRetryStatusCodes:
     '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
+  RetryCooldownEnabled: false,
+  RetryCooldownWindowSeconds: 10,
+  RetryCooldownFailureThreshold: 3,
+  RetryCooldownSeconds: 30,
   ChannelDisableThreshold: '',
   AutomaticDisableChannelEnabled: false,
   AutomaticEnableChannelEnabled: false,
@@ -60,4 +74,7 @@ export const defaultRequestPolicySettings: RequestPolicySettings = {
   'channel_affinity_setting.max_entries': 100000,
   'channel_affinity_setting.default_ttl_seconds': 3600,
   'channel_affinity_setting.rules': '[]',
+  CheckSensitiveEnabled: false,
+  CheckSensitiveOnPromptEnabled: false,
+  SensitiveWords: '',
 }

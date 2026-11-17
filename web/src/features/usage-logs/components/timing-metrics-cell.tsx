@@ -174,7 +174,13 @@ export function StreamTpsCell(props: StreamTpsCellProps) {
     props.isStream && props.streamStatus && props.streamStatus.status !== 'ok'
   const tpsLabel =
     props.tokensPerSecond != null
-      ? `${Math.round(props.tokensPerSecond)} t/s`
+      ? `${
+          props.tokensPerSecond > 0 &&
+          props.tokensPerSecond < 10 &&
+          !Number.isInteger(props.tokensPerSecond)
+            ? props.tokensPerSecond.toFixed(1)
+            : Math.round(props.tokensPerSecond)
+        } t/s`
       : '—'
   let streamLabel = props.isStream ? t('Stream') : t('Non-stream')
   if (props.isTask) {

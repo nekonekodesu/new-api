@@ -52,10 +52,15 @@ export function CommonLogsStats() {
   const { t } = useTranslation()
   const { isAdminView: isAdmin } = useLogsViewScope()
   const searchParams = route.useSearch()
-  const { sensitiveVisible } = useUsageLogsContext()
+  const { sensitiveVisible, autoRefreshSeconds } = useUsageLogsContext()
+
+  const statsRefetchMs =
+    autoRefreshSeconds > 0 ? Math.max(autoRefreshSeconds * 1000, 2000) : false
 
   const { data: stats, isLoading } = useQuery({
     queryKey: ['usage-logs-stats', isAdmin, searchParams],
+    refetchInterval: statsRefetchMs,
+    refetchIntervalInBackground: false,
     queryFn: async () => {
       const params = buildApiParams({
         page: 1,

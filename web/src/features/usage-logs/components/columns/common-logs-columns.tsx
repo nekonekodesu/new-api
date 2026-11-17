@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
-import { GitBranch, Sparkles, KeyRound } from 'lucide-react'
+import { GitBranch, Sparkles, KeyRound, Loader2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -59,6 +59,7 @@ import {
   formatModelName,
   decodeBillingExprB64,
   getTieredBillingSummary,
+  getLogTokensPerSecond,
   hasAnyCacheTokens,
   parseLogOther,
   isViolationFeeLog,
@@ -76,7 +77,6 @@ import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
 import { ModelBadge } from '../model-badge'
-import { RequestPluginLogMarker } from '../request-plugin-record'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
 
@@ -229,12 +229,9 @@ function buildTypeDetailSegments(
 
       const cacheEntries = tieredSummary.priceEntries
         .filter((entry) =>
-          [
-            'cacheReadPrice',
-            'cacheCreatePrice',
-            'cacheCreate1hPrice',
-            'cacheCreate12hPrice',
-          ].includes(entry.field)
+          ['cacheReadPrice', 'cacheCreatePrice', 'cacheCreate1hPrice'].includes(
+            entry.field
+          )
         )
         .map((entry) => {
           return formatPriceCompact(entry.price)
@@ -255,7 +252,6 @@ function buildTypeDetailSegments(
               'cacheReadPrice',
               'cacheCreatePrice',
               'cacheCreate1hPrice',
-              'cacheCreate12hPrice',
             ].includes(entry.field)
         )
         .map((entry) =>
@@ -305,10 +301,6 @@ function buildTypeDetailSegments(
           other.cache_creation_ratio_1h != null &&
           other.cache_creation_ratio_1h !== 0
             ? formatPriceCompact(inputPriceUSD * other.cache_creation_ratio_1h)
-            : null,
-          other.cache_creation_ratio_12h != null &&
-          other.cache_creation_ratio_12h !== 0
-            ? formatPriceCompact(inputPriceUSD * other.cache_creation_ratio_12h)
             : null,
         ].filter(Boolean) as string[]
 
@@ -365,12 +357,23 @@ export function useCommonLogsColumns(
           const log = row.original
           const timestamp = row.getValue('created_at') as number
           const config = getLogTypeConfig(log.type)
+          const other = parseLogOther(log.other)
 
           return (
             <div className='flex min-w-0 flex-col gap-0.5'>
-              <span className='truncate font-mono text-xs tabular-nums'>
-                {formatTimestampToDate(timestamp)}
-              </span>
+              {other?.in_progress ? (
+                <span className='text-primary inline-flex items-center gap-1.5 truncate text-xs font-medium'>
+                  <Loader2
+                    className='size-3.5 shrink-0 animate-spin'
+                    aria-hidden='true'
+                  />
+                  <span>{t('In Progress')}</span>
+                </span>
+              ) : (
+                <span className='truncate font-mono text-xs tabular-nums'>
+                  {formatTimestampToDate(timestamp)}
+                </span>
+              )}
               <StatusBadge
                 label={t(config.label)}
                 variant={config.color as StatusBadgeProps['variant']}
@@ -686,7 +689,6 @@ export function useCommonLogsColumns(
           if (!isDisplayableLogType(log.type)) return null
 
           const modelInfo = formatModelName(log)
-          const requestPlugins = parseLogOther(log.other)?.request_plugins
 
           return (
             <div className='flex w-fit flex-col gap-0.5'>
@@ -695,9 +697,6 @@ export function useCommonLogsColumns(
                 actualModel={modelInfo.actualModel}
                 responseModel={modelInfo.responseModel}
               />
-              {requestPlugins?.length ? (
-                <RequestPluginLogMarker items={requestPlugins} />
-              ) : null}
             </div>
           )
         },
@@ -712,10 +711,10 @@ export function useCommonLogsColumns(
 
           const useTime = row.getValue('use_time') as number
           const other = parseLogOther(log.other)
-          const tokensPerSecond =
-            useTime > 0 && log.completion_tokens > 0
-              ? log.completion_tokens / useTime
-              : null
+          const tokensPerSecond = getLogTokensPerSecond(
+            { ...log, use_time: useTime },
+            other
+          )
 
           return (
             <StreamTpsCell
@@ -740,7 +739,11 @@ export function useCommonLogsColumns(
 
           const promptTokens = log.prompt_tokens || 0
           const completionTokens = log.completion_tokens || 0
-          if (promptTokens === 0 && completionTokens === 0) {
+          if (
+            !other?.in_progress &&
+            promptTokens === 0 &&
+            completionTokens === 0
+          ) {
             return <span className='text-muted-foreground text-xs'>-</span>
           }
 

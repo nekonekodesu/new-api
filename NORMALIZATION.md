@@ -38,6 +38,12 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+### Usage logs and request policy surfaces
+
+Migrated the usage-log table, audit viewer, error-response display, timing fields, filters, mobile log cards, and request-policy routing/health UI. The current rc.51 table markup remains authoritative; one source routing regression test expected a different cell split and was intentionally not carried over.
+
+Validation: frontend `bun run typecheck`, usage-log error/audit tests (47 passed), targeted Oxlint for changed usage-log and request-policy production files, and `bun run build` passed.
+
 ### ECPay gateway preparation
 
 Added provider configuration fields and a pure ECPay `CheckMacValue` SHA-256 helper. The helper sorts fields, excludes an existing signature, URL-escapes values, and keeps secrets out of logs. No ECPay payment route or callback is enabled yet; order persistence, amount snapshots, callback authentication, and idempotency are required before activation.

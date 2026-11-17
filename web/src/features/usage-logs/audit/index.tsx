@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next'
 import { SectionPageLayout } from '@/components/layout'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getUserProfile } from '@/features/profile/api'
+import { UsageLogsProvider } from '@/features/usage-logs/components/usage-logs-provider'
 import {
   ADMIN_PERMISSION_RESOURCES,
   ADMIN_PERMISSION_ACTIONS,
@@ -88,39 +89,44 @@ export function AuditLogs() {
     }
   }, [queryClient, userId])
   return (
-    <SectionPageLayout fixedContent>
-      <SectionPageLayout.Title>{t('Audit Logs')}</SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
-        {canReadAll && !accessRevoked && (
-          <Tabs
-            value={scope}
-            onValueChange={(value) =>
-              setScope(value === 'all' ? 'all' : 'self')
-            }
-          >
-            <TabsList aria-label={t('View scope')}>
-              <TabsTrigger value='all'>{t('All')}</TabsTrigger>
-              <TabsTrigger value='self'>{t('Only Mine')}</TabsTrigger>
-            </TabsList>
-          </Tabs>
-        )}
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
-        <div className='flex h-full min-h-0 flex-col gap-3'>
-          {accessRevoked && (
-            <p role='status' className='text-muted-foreground shrink-0 text-xs'>
-              {t('Audit access changed. Showing only your records.')}
-            </p>
+    <UsageLogsProvider>
+      <SectionPageLayout fixedContent>
+        <SectionPageLayout.Title>{t('Audit Logs')}</SectionPageLayout.Title>
+        <SectionPageLayout.Actions>
+          {canReadAll && !accessRevoked && (
+            <Tabs
+              value={scope}
+              onValueChange={(value) =>
+                setScope(value === 'all' ? 'all' : 'self')
+              }
+            >
+              <TabsList aria-label={t('View scope')}>
+                <TabsTrigger value='all'>{t('All')}</TabsTrigger>
+                <TabsTrigger value='self'>{t('Only Mine')}</TabsTrigger>
+              </TabsList>
+            </Tabs>
           )}
-          <div className='min-h-0 flex-1'>
-            <AuditLogViewer
-              key={`${userId}:${effectiveScope}`}
-              scope={effectiveScope}
-              onAccessDenied={handleAccessDenied}
-            />
+        </SectionPageLayout.Actions>
+        <SectionPageLayout.Content>
+          <div className='flex h-full min-h-0 flex-col gap-3'>
+            {accessRevoked && (
+              <p
+                role='status'
+                className='text-muted-foreground shrink-0 text-xs'
+              >
+                {t('Audit access changed. Showing only your records.')}
+              </p>
+            )}
+            <div className='min-h-0 flex-1'>
+              <AuditLogViewer
+                key={`${userId}:${effectiveScope}`}
+                scope={effectiveScope}
+                onAccessDenied={handleAccessDenied}
+              />
+            </div>
           </div>
-        </div>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+        </SectionPageLayout.Content>
+      </SectionPageLayout>
+    </UsageLogsProvider>
   )
 }

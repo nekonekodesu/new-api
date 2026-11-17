@@ -27,6 +27,7 @@ import { Button } from '@/components/ui/button'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { useOptionalUsageLogsContext } from '../../components/usage-logs-provider'
 import { getAuditLogs, type AuditFilters, type AuditLog } from '../api'
 import { useAuditLogColumns } from './audit-log-columns'
 import { AuditLogFilterBar } from './audit-log-filter-bar'
@@ -43,6 +44,8 @@ export function AuditLogViewer(props: {
 }) {
   const { t } = useTranslation()
   const userId = useAuthStore((state) => state.auth.user?.id)
+  const autoRefreshSeconds =
+    useOptionalUsageLogsContext()?.autoRefreshSeconds ?? 0
   const [filters, setFilters] = useState<AuditFilters>({ p: 1, page_size: 20 })
   const defaultTokenScope = props.defaultTokenScope ?? 'all'
   const [tokenScope, setTokenScope] = useState<string>(defaultTokenScope)
@@ -66,6 +69,8 @@ export function AuditLogViewer(props: {
       requireServerSuccess(await getAuditLogs(props.scope, params)),
     enabled: canQuery && !invalidRange,
     retry: false,
+    refetchInterval: autoRefreshSeconds > 0 ? autoRefreshSeconds * 1000 : false,
+    refetchIntervalInBackground: false,
   })
   const accessDenied =
     props.scope === 'all' &&
@@ -114,7 +119,7 @@ export function AuditLogViewer(props: {
         table={table}
         columns={columns}
         isLoading={query.isPending && canQuery && !invalidRange}
-        isFetching={query.isFetching}
+        isFetching={query.isFetching && autoRefreshSeconds === 0}
         emptyTitle={
           query.isError ? t('Failed to load audit records') : t('No records')
         }
@@ -139,7 +144,7 @@ export function AuditLogViewer(props: {
                 setTokenScope(value)
                 update({})
               }}
-              isFetching={query.isFetching}
+              isFetching={query.isFetching && autoRefreshSeconds === 0}
               onSearch={() => {
                 if (!invalidRange && canQuery) void query.refetch()
               }}

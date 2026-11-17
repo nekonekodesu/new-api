@@ -13,6 +13,7 @@ export type PolicyEvent = {
   status?: number
   error_code?: string
   error_source?: string
+  upstream_error?: string
   elapsed_ms: number
   decision: PolicyDecision
   health?: string

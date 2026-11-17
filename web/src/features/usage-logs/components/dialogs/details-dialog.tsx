@@ -49,7 +49,6 @@ import {
   UserCog,
   Info,
   LogIn,
-  Workflow,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -63,13 +62,23 @@ import { BILLING_PRICING_VARS } from '@/features/pricing/lib/billing-expr'
 import { pluginUsageSchema } from '@/features/pricing/lib/plugin-pricing'
 import { PolicyDecisionRecord } from '@/features/system-settings/request-policies/decision-record'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
+import { toIntlLocale } from '@/i18n/languages'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
-import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
+import {
+  formatLogQuota,
+  formatNumber,
+  formatTokens,
+  formatUseTime,
+} from '@/lib/format'
 import { translateServerText } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
 import { AuditDetailFields } from '../../audit/components/audit-detail-fields'
 import type { UsageLog } from '../../data/schema'
+import {
+  resolveAdminUpstreamErrors,
+  resolveUserFinalError,
+} from '../../lib/error-response'
 import {
   parseLogOther,
   getParamOverrideActionLabel,
@@ -95,9 +104,9 @@ import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
 import { ResponseModelDetails } from '../model-badge'
 import { PluginAuthorLink } from '../plugin-author-link'
 import {
-  RequestPluginAdminSteps,
-  RequestPluginRecord,
-} from '../request-plugin-record'
+  AdminUpstreamErrorSection,
+  UserFinalErrorSection,
+} from './error-response-section'
 import { DetailRow, DetailSection } from './log-detail-layout'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
@@ -179,8 +188,6 @@ function BillingBreakdown(props: {
   const { log, other, isAdmin } = props
   const isPerCall = isPerCallBilling(other.model_price)
   const isClaude = other.claude === true
-  // OpenAI 12-hour cache writes have their own price, listed like Claude's.
-  const hasCacheWrite12h = (other.cache_creation_tokens_12h || 0) > 0
   const isTieredExpr = other.billing_mode === 'tiered_expr'
   const tieredSummary = getTieredBillingSummary(other)
 
@@ -247,11 +254,7 @@ function BillingBreakdown(props: {
     })
   }
 
-  if (
-    !isTieredExpr &&
-    (isClaude || hasCacheWrite12h) &&
-    hasAnyCacheTokens(other)
-  ) {
+  if (!isTieredExpr && isClaude && hasAnyCacheTokens(other)) {
     if (other.cache_ratio != null && other.cache_ratio !== 1) {
       rows.push({
         label: t('Cache Read'),
@@ -263,9 +266,7 @@ function BillingBreakdown(props: {
       other.cache_creation_ratio !== 1
     ) {
       rows.push({
-        label: hasCacheWrite12h
-          ? t('Cache Creation (30m)')
-          : t('Cache Creation'),
+        label: t('Cache Creation'),
         value: `${fmtPrice(baseInputUSD * other.cache_creation_ratio)}/M`,
       })
     }
@@ -285,15 +286,6 @@ function BillingBreakdown(props: {
       rows.push({
         label: t('Cache Creation (1h)'),
         value: `${fmtPrice(baseInputUSD * other.cache_creation_ratio_1h)}/M`,
-      })
-    }
-    if (
-      other.cache_creation_ratio_12h != null &&
-      other.cache_creation_ratio_12h !== 0
-    ) {
-      rows.push({
-        label: t('Cache Creation (12h)'),
-        value: `${fmtPrice(baseInputUSD * other.cache_creation_ratio_12h)}/M`,
       })
     }
   }
@@ -405,10 +397,6 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const cacheWrite = other.cache_creation_tokens || 0
   const cacheWrite5m = other.cache_creation_tokens_5m || 0
   const cacheWrite1h = other.cache_creation_tokens_1h || 0
-  const cacheWrite12h = other.cache_creation_tokens_12h || 0
-  // cache_creation_tokens counts OpenAI 30-minute and 12-hour writes together.
-  const cacheWrite30m =
-    cacheWrite12h > 0 ? Math.max(cacheWrite - cacheWrite12h, 0) : 0
   const hasTokens = promptTokens > 0 || completionTokens > 0
 
   if (!hasTokens) return null
@@ -435,12 +423,7 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
     })
   }
 
-  if (
-    cacheWrite > 0 &&
-    cacheWrite5m === 0 &&
-    cacheWrite1h === 0 &&
-    cacheWrite12h === 0
-  ) {
+  if (cacheWrite > 0 && cacheWrite5m === 0 && cacheWrite1h === 0) {
     rows.push({
       label: t('Cache Write'),
       value: cacheWrite.toLocaleString(),
@@ -458,20 +441,6 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
     rows.push({
       label: t('Cache Write (1h)'),
       value: cacheWrite1h.toLocaleString(),
-    })
-  }
-
-  if (cacheWrite30m > 0) {
-    rows.push({
-      label: t('Cache Write (30m)'),
-      value: cacheWrite30m.toLocaleString(),
-    })
-  }
-
-  if (cacheWrite12h > 0) {
-    rows.push({
-      label: t('Cache Write (12h)'),
-      value: cacheWrite12h.toLocaleString(),
     })
   }
 
@@ -523,7 +492,8 @@ interface DetailsDialogProps {
 }
 
 export function DetailsDialog(props: DetailsDialogProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const other = parseLogOther(props.log.other)
   const typeConfig = getLogTypeConfig(props.log.type)
@@ -671,6 +641,12 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const reasoningEffortVariant = getReasoningEffortVariant(
     other?.reasoning_effort
   )
+  const adminUpstreamErrors = props.isAdmin
+    ? resolveAdminUpstreamErrors(props.log, other, details)
+    : []
+  const userFinalError = !props.isAdmin
+    ? resolveUserFinalError(props.log, other, details)
+    : null
 
   return (
     <Dialog
@@ -768,6 +744,19 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
+          {showTiming &&
+            typeof other?.request_body_size === 'number' &&
+            Number.isFinite(other.request_body_size) &&
+            other.request_body_size >= 0 && (
+              <DetailRow
+                label={t('Request Body Size')}
+                value={t('{{bytes}} bytes', {
+                  bytes: formatNumber(other.request_body_size, locale),
+                })}
+                mono
+              />
+            )}
+
           {showTiming && props.log.use_time > 0 && (
             <DetailRow
               label={t('Response Time')}
@@ -853,6 +842,16 @@ export function DetailsDialog(props: DetailsDialogProps) {
           >
             <PolicyDecisionRecord events={adminInfo.request_policy} />
           </DetailSection>
+        ) : null}
+        {props.isAdmin && adminUpstreamErrors.length > 0 ? (
+          <AdminUpstreamErrorSection
+            entries={adminUpstreamErrors}
+            logChannel={props.log.channel}
+            logChannelName={props.log.channel_name}
+          />
+        ) : null}
+        {!props.isAdmin && userFinalError ? (
+          <UserFinalErrorSection entry={userFinalError} />
         ) : null}
         {props.isAdmin && other?.admin_info?.quota_saturation && (
           <DetailSection
@@ -968,12 +967,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
                 }
               />
             ) : null}
-          </DetailSection>
-        ) : null}
-
-        {props.isAdmin && adminInfo?.request_plugins?.length ? (
-          <DetailSection label={t('Request processing steps')}>
-            <RequestPluginAdminSteps steps={adminInfo.request_plugins} />
           </DetailSection>
         ) : null}
 
@@ -1363,19 +1356,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
             )}
           </DetailSection>
         )}
-
-        {other?.request_plugins?.length ? (
-          <DetailSection
-            icon={<Workflow className='size-3.5' aria-hidden='true' />}
-            iconTone='chart-3'
-            label={t('Request processing')}
-          >
-            <RequestPluginRecord
-              items={other.request_plugins}
-              loadIcons={props.isRoot}
-            />
-          </DetailSection>
-        ) : null}
 
         {/* Param override */}
         {other?.po && Array.isArray(other.po) && other.po.length > 0 && (

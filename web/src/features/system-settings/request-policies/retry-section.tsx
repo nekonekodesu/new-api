@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useFormContext } from 'react-hook-form'
+import { useFormContext, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -30,12 +30,20 @@ import {
 import { Input } from '@/components/ui/input'
 
 import { SettingsCard } from '../components/settings-card'
+import {
+  SettingsControlChildren,
+  SettingsSwitchField,
+} from '../components/settings-form-layout'
 import { safeNumberFieldProps } from '../utils/numeric-field'
 import type { RoutingPolicyFormValues } from './routing-form'
 
 export function RetrySection() {
   const { t } = useTranslation()
   const form = useFormContext<RoutingPolicyFormValues>()
+  const cooldownEnabled = useWatch({
+    control: form.control,
+    name: 'RetryCooldownEnabled',
+  })
   return (
     <SettingsCard title={t('Retry budget')} className='shadow-none'>
       <div className='space-y-4'>
@@ -80,6 +88,65 @@ export function RetrySection() {
             </FormItem>
           )}
         />
+        <FormField
+          control={form.control}
+          name='RetryCooldownEnabled'
+          render={({ field }) => (
+            <SettingsSwitchField
+              controlId='RetryCooldownEnabled'
+              checked={field.value}
+              onCheckedChange={field.onChange}
+              label={t('Channel failure cooldown')}
+              description={t(
+                'Skips a channel and model after repeated failures in the window. If all are cooling down, one more round ignores the cooldown.'
+              )}
+            />
+          )}
+        />
+        <SettingsControlChildren
+          role='group'
+          aria-label={t('Channel failure cooldown options')}
+        >
+          <div className='grid gap-4 sm:grid-cols-3'>
+            {(
+              [
+                {
+                  name: 'RetryCooldownWindowSeconds',
+                  label: t('Failure window (seconds)'),
+                },
+                {
+                  name: 'RetryCooldownFailureThreshold',
+                  label: t('Failures before cooldown'),
+                },
+                {
+                  name: 'RetryCooldownSeconds',
+                  label: t('Cooldown duration (seconds)'),
+                },
+              ] as const
+            ).map((item) => (
+              <FormField
+                key={item.name}
+                control={form.control}
+                name={item.name}
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{item.label}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={1}
+                        step={1}
+                        disabled={!cooldownEnabled}
+                        {...safeNumberFieldProps(field)}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            ))}
+          </div>
+        </SettingsControlChildren>
       </div>
     </SettingsCard>
   )

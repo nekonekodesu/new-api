@@ -3,40 +3,63 @@ import { z } from 'zod'
 
 import { parseHttpStatusCodeRules } from '@/lib/http-status-code-rules'
 
+const cooldownNumberFields = [
+  'RetryCooldownWindowSeconds',
+  'RetryCooldownFailureThreshold',
+  'RetryCooldownSeconds',
+] as const
+
 export function createRoutingPolicySchema(t: TFunction) {
-  return z.object({
-    RetryTimes: z.number().int().min(0).max(99),
-    AutomaticRetryStatusCodes: z
-      .string()
-      .refine(
-        (value) => parseHttpStatusCodeRules(value).ok,
-        t('Invalid status code rules')
-      ),
-    channel_affinity_setting: z.object({
-      enabled: z.boolean(),
-      session_mode: z.enum(['', 'off', 'prefer', 'strict']),
-      switch_on_success: z.boolean(),
-      keep_on_channel_disabled: z.boolean(),
-      max_entries: z.number().int().min(0),
-      default_ttl_seconds: z.number().int().min(0),
-      rules: z.string().superRefine((value, context) => {
-        try {
-          const rules: unknown = JSON.parse(value)
-          if (!Array.isArray(rules)) {
+  return z
+    .object({
+      RetryTimes: z.number().int().min(0).max(99),
+      AutomaticRetryStatusCodes: z
+        .string()
+        .refine(
+          (value) => parseHttpStatusCodeRules(value).ok,
+          t('Invalid status code rules')
+        ),
+      RetryCooldownEnabled: z.boolean(),
+      RetryCooldownWindowSeconds: z.number().int().min(0),
+      RetryCooldownFailureThreshold: z.number().int().min(0),
+      RetryCooldownSeconds: z.number().int().min(0),
+      channel_affinity_setting: z.object({
+        enabled: z.boolean(),
+        session_mode: z.enum(['', 'off', 'prefer', 'strict']),
+        switch_on_success: z.boolean(),
+        keep_on_channel_disabled: z.boolean(),
+        max_entries: z.number().int().min(0),
+        default_ttl_seconds: z.number().int().min(0),
+        rules: z.string().superRefine((value, context) => {
+          try {
+            const rules: unknown = JSON.parse(value)
+            if (!Array.isArray(rules)) {
+              context.addIssue({
+                code: 'custom',
+                message: t('Rules JSON must be an array'),
+              })
+            }
+          } catch {
             context.addIssue({
               code: 'custom',
-              message: t('Rules JSON must be an array'),
+              message: t('Invalid rules JSON format'),
             })
           }
-        } catch {
+        }),
+      }),
+    })
+    .superRefine((values, context) => {
+      if (!values.RetryCooldownEnabled) return
+      for (const name of cooldownNumberFields) {
+        if (values[name] < 1) {
           context.addIssue({
             code: 'custom',
-            message: t('Invalid rules JSON format'),
+            path: [name],
+            message: t('Must be at least 1 when channel cooldown is enabled'),
           })
         }
-      }),
-    }),
-  })
+      }
+    })
 }
 
 export type RoutingPolicyFormValues = z.infer<
@@ -49,6 +72,12 @@ export function routingPolicyFormValues(
   return {
     RetryTimes: Number(options.RetryTimes),
     AutomaticRetryStatusCodes: options.AutomaticRetryStatusCodes,
+    RetryCooldownEnabled: options.RetryCooldownEnabled === 'true',
+    RetryCooldownWindowSeconds: Number(options.RetryCooldownWindowSeconds),
+    RetryCooldownFailureThreshold: Number(
+      options.RetryCooldownFailureThreshold
+    ),
+    RetryCooldownSeconds: Number(options.RetryCooldownSeconds),
     channel_affinity_setting: {
       enabled: options['channel_affinity_setting.enabled'] === 'true',
       session_mode: (options['channel_affinity_setting.session_mode'] ||
@@ -72,6 +101,10 @@ export function routingPolicyOptions(
   return {
     RetryTimes: String(values.RetryTimes),
     AutomaticRetryStatusCodes: values.AutomaticRetryStatusCodes,
+    RetryCooldownEnabled: String(values.RetryCooldownEnabled),
+    RetryCooldownWindowSeconds: String(values.RetryCooldownWindowSeconds),
+    RetryCooldownFailureThreshold: String(values.RetryCooldownFailureThreshold),
+    RetryCooldownSeconds: String(values.RetryCooldownSeconds),
     ...Object.fromEntries(
       Object.entries(values.channel_affinity_setting).map(([key, value]) => [
         `channel_affinity_setting.${key}`,

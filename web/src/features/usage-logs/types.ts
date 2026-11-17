@@ -200,6 +200,9 @@ export type RequestPluginAdminStep = {
 }
 
 export interface LogOtherData {
+  in_progress?: boolean
+  live_tps?: number
+  elapsed_ms?: number
   admin_info?: {
     request_policy?: PolicyEvent[]
     request_plugins?: RequestPluginAdminStep[]
@@ -232,6 +235,7 @@ export interface LogOtherData {
     }
     // Reject / intercept reason (admin only)
     reject_reason?: string
+    upstream_error_response?: string
     task_plugin?: TaskPluginInfo
   }
   root_info?: {
@@ -264,7 +268,12 @@ export interface LogOtherData {
   login_method?: string
   user_agent?: string
   request_path?: string
+  request_body_size?: number
   request_conversion?: string[]
+  error_type?: string
+  error_code?: string
+  status_code?: number
+  last_error_response?: string
   ws?: boolean
   audio?: boolean
   audio_input?: number

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { flexRender, type Cell } from '@tanstack/react-table'
-import { ChevronRight, KeyRound } from 'lucide-react'
+import { ChevronRight, KeyRound, Loader2 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -32,7 +32,12 @@ import dayjs from '@/lib/dayjs'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 
 import type { UsageLog } from '../data/schema'
-import { formatModelName, logTokenName, parseLogOther } from '../lib/format'
+import {
+  formatModelName,
+  getLogTokensPerSecond,
+  logTokenName,
+  parseLogOther,
+} from '../lib/format'
 import {
   getLogTypeConfig,
   isDisplayableLogType,
@@ -136,7 +141,8 @@ export function CommonLogMobileCard<TData>(props: {
   const showTokens =
     displayable &&
     props.cells.has('prompt_tokens') &&
-    (log.prompt_tokens > 0 ||
+    (Boolean(other?.in_progress) ||
+      log.prompt_tokens > 0 ||
       log.completion_tokens > 0 ||
       cacheRead > 0 ||
       cacheWrite > 0)
@@ -174,15 +180,25 @@ export function CommonLogMobileCard<TData>(props: {
               showDot
               className='h-5 px-0 text-xs'
             />
-            <Button
-              variant='ghost'
-              aria-label={`${t('Time')}: ${fields.time.value}`}
-              aria-haspopup='dialog'
-              onClick={() => setSelectedField('time')}
-              className='text-muted-foreground h-auto min-h-6 px-0 py-0 text-xs font-normal whitespace-normal tabular-nums'
-            >
-              {dayjs.unix(log.created_at).format('MM-DD HH:mm:ss')}
-            </Button>
+            {other?.in_progress ? (
+              <span className='text-primary inline-flex min-h-6 items-center gap-1.5 text-xs font-medium'>
+                <Loader2
+                  className='size-3.5 shrink-0 animate-spin'
+                  aria-hidden='true'
+                />
+                <span>{t('In Progress')}</span>
+              </span>
+            ) : (
+              <Button
+                variant='ghost'
+                aria-label={`${t('Time')}: ${fields.time.value}`}
+                aria-haspopup='dialog'
+                onClick={() => setSelectedField('time')}
+                className='text-muted-foreground h-auto min-h-6 px-0 py-0 text-xs font-normal whitespace-normal tabular-nums'
+              >
+                {dayjs.unix(log.created_at).format('MM-DD HH:mm:ss')}
+              </Button>
+            )}
           </div>
         )}
         {timing &&
@@ -195,11 +211,7 @@ export function CommonLogMobileCard<TData>(props: {
                   isStream={log.is_stream}
                   isTask={other?.is_task === true}
                   isSyncTask={other?.task_sync === true}
-                  tokensPerSecond={
-                    log.use_time > 0 && log.completion_tokens > 0
-                      ? log.completion_tokens / log.use_time
-                      : null
-                  }
+                  tokensPerSecond={getLogTokensPerSecond(log, other)}
                   streamStatus={other?.stream_status}
                 />
               )}

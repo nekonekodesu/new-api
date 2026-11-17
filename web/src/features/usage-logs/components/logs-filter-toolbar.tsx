@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { Table } from '@tanstack/react-table'
-import { ChevronDown, Loader2 } from 'lucide-react'
+import { ChevronDown, Loader2, RefreshCw } from 'lucide-react'
 import { useState, type ComponentProps, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -37,8 +37,130 @@ import {
   DrawerTrigger,
 } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import { useMediaQuery } from '@/hooks'
 import { cn } from '@/lib/utils'
+
+import { useOptionalUsageLogsContext } from './usage-logs-provider'
+
+const AUTO_REFRESH_PRESETS = [0, 0.1, 0.5, 1, 5, 15] as const
+
+function AutoRefreshControl() {
+  const { t } = useTranslation()
+  const context = useOptionalUsageLogsContext()
+  const [open, setOpen] = useState(false)
+  const autoRefreshSeconds = context?.autoRefreshSeconds ?? 0
+  const [customValue, setCustomValue] = useState(() =>
+    autoRefreshSeconds > 0 ? String(autoRefreshSeconds) : '0.1'
+  )
+
+  if (!context) {
+    return null
+  }
+  const { setAutoRefreshSeconds } = context
+
+  const handleApplyCustom = () => {
+    const parsed = Number(customValue)
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      setAutoRefreshSeconds(parsed)
+      setOpen(false)
+    }
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (nextOpen && autoRefreshSeconds > 0) {
+          setCustomValue(String(autoRefreshSeconds))
+        }
+        setOpen(nextOpen)
+      }}
+    >
+      <PopoverTrigger
+        render={
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            aria-label={t('Auto Refresh')}
+            className={cn(
+              'h-8 gap-1.5 px-2.5 text-xs tabular-nums',
+              autoRefreshSeconds > 0 && 'border-primary/40 text-primary'
+            )}
+          />
+        }
+      >
+        <RefreshCw
+          className={cn(
+            'size-3.5 shrink-0',
+            autoRefreshSeconds > 0 && 'text-primary'
+          )}
+          aria-hidden='true'
+        />
+        <span>
+          {autoRefreshSeconds > 0 ? `${autoRefreshSeconds}s` : t('Off')}
+        </span>
+      </PopoverTrigger>
+      <PopoverContent align='end' className='w-56 p-3'>
+        <div className='space-y-2.5'>
+          <div className='text-xs font-medium'>{t('Auto Refresh')}</div>
+          <div className='grid grid-cols-3 gap-1.5'>
+            {AUTO_REFRESH_PRESETS.map((sec) => {
+              const active = autoRefreshSeconds === sec
+              return (
+                <Button
+                  key={sec}
+                  type='button'
+                  size='sm'
+                  variant={active ? 'default' : 'outline'}
+                  className='h-7 text-xs tabular-nums'
+                  onClick={() => {
+                    setAutoRefreshSeconds(sec)
+                    if (sec > 0) setCustomValue(String(sec))
+                    setOpen(false)
+                  }}
+                >
+                  {sec === 0 ? t('Off') : `${sec}s`}
+                </Button>
+              )
+            })}
+          </div>
+          <div className='border-border/60 flex items-center gap-1.5 border-t pt-2'>
+            <Input
+              type='number'
+              step='0.1'
+              min={0}
+              max={3600}
+              value={customValue}
+              onChange={(e) => setCustomValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleApplyCustom()
+              }}
+              aria-label={t('Custom seconds')}
+              placeholder='0.1'
+              className='h-7 text-xs tabular-nums'
+            />
+            <span className='text-muted-foreground text-xs'>s</span>
+            <Button
+              type='button'
+              size='sm'
+              variant='secondary'
+              className='h-7 shrink-0 px-2.5 text-xs'
+              onClick={handleApplyCustom}
+            >
+              {t('Apply')}
+            </Button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
 
 interface LogsFilterToolbarProps<TData> {
   table: Table<TData>
@@ -182,6 +304,7 @@ export function LogsFilterToolbar<TData>(props: LogsFilterToolbarProps<TData>) {
                 {props.searchLoading && <Loader2 className='animate-spin' />}
                 {t('Search')}
               </Button>
+              <AutoRefreshControl />
               {props.actionEnd}
               <DataTableViewOptions table={props.table} />
             </>
@@ -286,6 +409,7 @@ export function LogsFilterToolbar<TData>(props: LogsFilterToolbarProps<TData>) {
             {props.searchLoading && <Loader2 className='animate-spin' />}
             {t('Search')}
           </Button>
+          <AutoRefreshControl />
           {props.actionEnd}
           <DataTableViewOptions table={props.table} />
         </div>

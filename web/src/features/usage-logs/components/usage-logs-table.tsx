@@ -50,7 +50,11 @@ import type { LogCategory } from '../types'
 import { CommonLogsFilterBar } from './common-logs-filter-bar'
 import { TaskLogsFilterBar } from './task-logs-filter-bar'
 import { UsageLogsMobileList } from './usage-logs-mobile-card'
-import { useLogsViewScope, type LogsViewAccess } from './usage-logs-provider'
+import {
+  useLogsViewScope,
+  useUsageLogsContext,
+  type LogsViewAccess,
+} from './usage-logs-provider'
 
 const route = getRouteApi('/_authenticated/usage-logs/$section')
 
@@ -95,6 +99,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     isRootView: isRoot,
     viewAccess,
   } = useLogsViewScope()
+  const { autoRefreshSeconds } = useUsageLogsContext()
   const isMobile = useMediaQuery('(max-width: 640px)')
   const searchParams = route.useSearch()
   const userId = useAuthStore((state) => state.auth.user?.id)
@@ -171,6 +176,9 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       searchParams,
       t,
     ],
+    refetchInterval:
+      autoRefreshSeconds > 0 ? autoRefreshSeconds * 1000 : false,
+    refetchIntervalInBackground: false,
     queryFn: async () => {
       const result = await fetchLogsByCategory({
         logCategory,
@@ -210,6 +218,10 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
   const { table } = useDataTable({
     data: logs as Record<string, unknown>[],
     columns: columns as ColumnDef<Record<string, unknown>>[],
+    getRowId: (row) => {
+      const r = row as Record<string, unknown>
+      return String(r.request_id || r.task_id || r.mj_id || r.id || '')
+    },
     columnFilters,
     columnVisibilityStorageKey: getColumnVisibilityStorageKey(
       logCategory,
@@ -233,7 +245,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       compactPagination={isMobile && isCommon}
       columns={columns as ColumnDef<Record<string, unknown>>[]}
       isLoading={isLoadingData}
-      isFetching={isFetching}
+      isFetching={isFetching && autoRefreshSeconds === 0}
       emptyTitle={t('No Logs Found')}
       emptyDescription={t(
         'No usage logs available. Logs will appear here once API calls are made.'
@@ -263,11 +275,13 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
           | undefined
         let tintClass =
           isCommon && logType != null ? (logTypeRowTint[logType] ?? '') : ''
-        if (isCommon && isAdmin) {
+        if (isCommon) {
           const other = parseLogOther(
             ((row.original as Record<string, unknown>).other as string) ?? ''
           )
-          if (other?.admin_info?.quota_saturation) {
+          if (other?.in_progress) {
+            tintClass = 'bg-primary/[0.04] hover:bg-primary/[0.08]'
+          } else if (isAdmin && other?.admin_info?.quota_saturation) {
             tintClass = quotaSaturationRowTint
           }
         }
