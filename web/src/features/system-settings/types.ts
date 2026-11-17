@@ -385,7 +385,7 @@ export type OperationsSettings = {
   LogConsumeEnabled: boolean
   'log_setting.user_export_enabled': boolean
   'log_setting.max_range_days': number
-  'system_task_setting.retention_days': number
+  'system_task_setting.retention_days'?: number
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number
@@ -398,6 +398,15 @@ export type OperationsSettings = {
   'perf_metrics_setting.flush_interval': number
   'perf_metrics_setting.bucket_time': 'hour' | 'minute' | '5min'
   'perf_metrics_setting.retention_days': number
+  'network_setting.primary_dns'?: string
+  'network_setting.fallback_dns'?: string
+  'path_scan_setting.path_scan_enabled'?: boolean
+  'path_scan_setting.path_scan_window_seconds'?: number
+  'path_scan_setting.path_scan_max_requests'?: number
+  'path_scan_setting.path_scan_ban_duration'?: number
+  'path_scan_setting.path_scan_ban_duration_unit'?: 'day' | 'hour' | 'minute' | 'second' | 'year'
+  'path_scan_setting.path_scan_direct_paths'?: string
+  'path_scan_setting.path_scan_counted_paths'?: string
 }
 
 export type SecuritySettings = {

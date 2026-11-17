@@ -16,13 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type {
-  RequestPluginConfigSchema,
-  RequestPluginSample,
-} from '@/features/task-plugins/types'
 import { getGroups as getUserGroups } from '@/features/users/api'
 import { api, type ApiRequestConfig } from '@/lib/api'
-import type { LocalizedTextValue } from '@/lib/localized-text'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type { PriorityMove, PriorityOrder } from './lib/channel-priority-order'
@@ -96,8 +91,6 @@ export type TaskPluginOption = {
   website?: string
   key: string
   name: string
-  /** The name in other languages; `name` is the fallback. */
-  name_i18n?: LocalizedTextValue | null
   description?: Record<string, string> | null
   icon?: string
   hasIcon?: boolean
@@ -105,45 +98,81 @@ export type TaskPluginOption = {
   models: string[]
   channelTypes?: number[] | null
   upstreams?: string[] | null
-  /** The plugin can submit tasks. */
   task?: boolean
-  /** The plugin serves relay routes. */
   provider?: boolean
-  /** The plugin logs in to get its credentials; task-only plugins can too. */
   login?: boolean
   refresh?: boolean
-  /** The plugin processes requests; a plugin with only this part has no channel. */
   transform?: boolean
-  /** A failure of the plugin is skipped instead of refusing the request. */
-  optional?: boolean
-  /** The request processing stages the plugin runs at. */
   transform_hooks?: string[] | null
-  configSchema?: RequestPluginConfigSchema
-  /** Requests the plugin offers for trying it out. */
-  samples?: RequestPluginSample[] | null
-  /** The settings a channel of the plugin takes, kept in its settings. */
-  channelConfig?: RequestPluginConfigSchema | null
-  /** The format of a channel key line, shown on the key field. */
-  keyHint?: LocalizedTextValue | null
-  /** The plugin checks typed-in keys when the channel is saved. */
-  checkKey?: boolean
-  /** The plugin can query the channel balance. */
+  optional?: boolean
   balance?: boolean
-  /** The client paths of the plugin's relay routes. */
-  relayPaths?: string[] | null
-  /** A channel of the plugin can serve the Responses WebSocket. */
   responsesWebsocket?: boolean
+  channelConfig?: {
+    type?: string
+    properties?: Record<string, unknown>
+    [key: string]: unknown
+  } | null
+  configSchema?: import('@/features/task-plugins/types').RequestPluginConfigSchema | null
+  keyHint?: string | Record<string, string>
+  name_i18n?: Record<string, string>
+  relayPaths?: string[]
+  samples?: import('@/features/task-plugins/types').RequestPluginSample[]
 }
 
-/** The plugins a channel can be bound to: request processing alone is not one. */
 export async function getTaskPluginOptions(): Promise<TaskPluginOption[]> {
   const response = await api.get<{
     success: boolean
     data: TaskPluginOption[]
   }>('/api/task_plugin_options')
-  return (requireServerSuccess(response.data).data ?? []).filter(
-    (option) => option.task !== false || option.provider === true
+  return requireServerSuccess(response.data).data
+}
+
+export async function startPluginLogin(
+  channelId: number,
+  keyIndex: number | null,
+  add = false
+): Promise<{ flow: string; step: PluginLoginStep }> {
+  const response = await api.post<{ success: boolean; data: { flow: string; step: PluginLoginStep } }>(
+    `/api/channel/${channelId}/plugin_login`,
+    add ? { add: true } : { key_index: keyIndex },
+    channelActionConfig()
   )
+  return requireServerSuccess(response.data).data
+}
+
+export async function continuePluginLogin(
+  channelId: number,
+  flow: string,
+  input: PluginLoginInput
+): Promise<PluginLoginStep> {
+  const response = await api.post<{ success: boolean; data: { step: PluginLoginStep } }>(
+    `/api/channel/${channelId}/plugin_login/continue`,
+    { flow, input },
+    channelActionConfig()
+  )
+  return requireServerSuccess(response.data).data.step
+}
+
+export async function submitPluginLoginCallback(
+  plugin: string,
+  params: Record<string, string>
+): Promise<{ channel_id: number; step: PluginLoginStep }> {
+  const response = await api.post<{ success: boolean; data: { channel_id: number; step: PluginLoginStep } }>(
+    '/api/channel/plugin_login/callback',
+    { plugin, params },
+    channelActionConfig()
+  )
+  return requireServerSuccess(response.data).data
+}
+
+export async function getPluginCredentials(
+  channelId: number
+): Promise<PluginCredentialSummary[]> {
+  const response = await api.get<{ success: boolean; data: { items: PluginCredentialSummary[] | null } }>(
+    `/api/channel/${channelId}/plugin_credentials`,
+    channelActionConfig()
+  )
+  return requireServerSuccess(response.data).data.items ?? []
 }
 
 export type CodexUsageResponse = {
@@ -209,12 +238,10 @@ export async function getChannel(id: number): Promise<GetChannelResponse> {
 export async function getChannelOps(
   autoBan?: boolean
 ): Promise<ChannelOpsResponse> {
-  const res = await api.get(
-    '/api/channel/ops',
-    channelActionConfig({
-      params: autoBan === undefined ? undefined : { auto_ban: autoBan },
-    })
-  )
+  const res = await api.get<ChannelOpsResponse>('/api/channel/ops', {
+    ...channelActionConfig(),
+    params: autoBan === undefined ? undefined : { auto_ban: autoBan },
+  })
   return res.data
 }
 
@@ -234,7 +261,11 @@ export async function getChannelDefaultBaseURLs(): Promise<
  */
 export async function createChannel(
   data: AddChannelRequest
-): Promise<{ success: boolean; message?: string; data?: { ids?: number[] } }> {
+): Promise<{
+  success: boolean
+  message?: string
+  data?: { ids?: number[] }
+}> {
   const res = await api.post('/api/channel', data, channelActionConfig())
   return res.data
 }
@@ -471,72 +502,6 @@ export async function resetCodexUsage(
 }
 
 // ============================================================================
-// Plugin Login
-// ============================================================================
-
-/**
- * keyIndex null adds a credential; an index logs in again on that line. `add`
- * keeps the account of a single-key channel and adds the new one next to it.
- */
-export async function startPluginLogin(
-  channelId: number,
-  keyIndex: number | null,
-  add = false
-): Promise<{ flow: string; step: PluginLoginStep }> {
-  const res = await api.post<{
-    success: boolean
-    data: { flow: string; step: PluginLoginStep }
-  }>(
-    `/api/channel/${channelId}/plugin_login`,
-    add ? { add: true } : { key_index: keyIndex },
-    channelActionConfig()
-  )
-  return requireServerSuccess(res.data).data
-}
-
-export async function continuePluginLogin(
-  channelId: number,
-  flow: string,
-  input: PluginLoginInput
-): Promise<PluginLoginStep> {
-  const res = await api.post<{
-    success: boolean
-    data: { step: PluginLoginStep }
-  }>(
-    `/api/channel/${channelId}/plugin_login/continue`,
-    { flow, input },
-    channelActionConfig()
-  )
-  return requireServerSuccess(res.data).data.step
-}
-
-/** params holds every query parameter the vendor redirected back with. */
-export async function submitPluginLoginCallback(
-  plugin: string,
-  params: Record<string, string>
-): Promise<{ channel_id: number; step: PluginLoginStep }> {
-  const res = await api.post<{
-    success: boolean
-    data: { channel_id: number; step: PluginLoginStep }
-  }>(
-    '/api/channel/plugin_login/callback',
-    { plugin, params },
-    channelActionConfig()
-  )
-  return requireServerSuccess(res.data).data
-}
-
-export async function getPluginCredentials(
-  channelId: number
-): Promise<PluginCredentialSummary[]> {
-  const res = await api.get<{
-    success: boolean
-    data: { items: PluginCredentialSummary[] | null }
-  }>(`/api/channel/${channelId}/plugin_credentials`, channelActionConfig())
-  return requireServerSuccess(res.data).data.items ?? []
-}
-
-// ============================================================================
 // Multi-Key Management
 // ============================================================================
 
@@ -714,7 +679,6 @@ export async function fetchModels(data: {
   type: number
   key?: string
   channel_id?: number
-  task_plugin_key?: string
   advanced_custom?: string
   header_override?: string
   proxy?: string
@@ -753,14 +717,12 @@ export async function testAllChannels(): Promise<{
 }
 
 /**
- * Update balance for all enabled channels. The server queues the update as a
- * system task and answers with its id.
+ * Update balance for all enabled channels
  */
 export async function updateAllChannelsBalance(): Promise<{
   success: boolean
   message?: string
-  /** `started` is false when a run was already queued or running; `task_id` is that run. */
-  data?: { started?: boolean; task_id?: string; status?: string } | null
+  data?: { started?: boolean; task_id?: string }
 }> {
   const res = await api.get(
     '/api/channel/update_balance',
@@ -769,7 +731,6 @@ export async function updateAllChannelsBalance(): Promise<{
   return res.data
 }
 
-/** Progress of an update of all balances. */
 export type ChannelBalanceTask = {
   task_id: string
   status: 'pending' | 'running' | 'succeeded' | 'failed'
@@ -777,20 +738,16 @@ export type ChannelBalanceTask = {
   error?: string
 }
 
-/**
- * Get the progress of an update of all balances, which any server node can
- * answer.
- */
 export async function getChannelBalanceTask(taskId: string): Promise<{
   success: boolean
   message?: string
   data?: ChannelBalanceTask | null
 }> {
-  const res = await api.get(
+  const response = await api.get(
     `/api/channel/update_balance/task/${encodeURIComponent(taskId)}`,
     channelActionConfig()
   )
-  return res.data
+  return response.data
 }
 
 /**
@@ -855,5 +812,901 @@ export async function getPrefillGroups(
   data?: Array<{ id: number; name: string; items: string | string[] }>
 }> {
   const res = await api.get('/api/prefill_group', { params: { type } })
+  return res.data
+}
+
+// ============================================================================
+// Group Channel Management, Smart Scheduling, Price Table & CRON Sync
+// ============================================================================
+
+export type SchedulingMode =
+  | 'standard'
+  | 'bbr'
+  | 'lowercost'
+  | 'speed'
+  | 'availability'
+  | 'costcontrol'
+
+export type CostControlWindow = 'today' | '24h' | '7d' | '30d'
+
+export interface CostControlUpstreamAlloc {
+  enabled: boolean
+  weight: number
+}
+
+export interface CostControlChannelRule {
+  upstream_id?: string
+  priority?: number
+  weight?: number
+}
+
+export interface GroupCostControlPolicy {
+  window: CostControlWindow
+  max_cost_ratio_pct: number
+  min_net_profit_usd: number
+  overflow_sensitivity: number
+  upstream_allocations: Record<string, CostControlUpstreamAlloc>
+  channel_rules: Record<string, CostControlChannelRule>
+}
+
+export interface RealtimeProfitCounter {
+  calls: number
+  revenue_usd: number
+  cost_usd: number
+  net_profit_usd: number
+}
+
+export interface GroupRealtimeProfitSnapshot {
+  group: string
+  window: CostControlWindow
+  window_start: number
+  updated_at: number
+  total_calls: number
+  revenue_usd: number
+  cost_usd: number
+  net_profit_usd: number
+  net_margin_pct: number
+  cost_ratio_pct: number
+  max_cost_ratio_pct: number
+  min_net_profit_usd: number
+  allowed_cost_usd: number
+  profit_cushion_usd: number
+  is_over_cost: boolean
+  divert_prob_pct: number
+  by_upstream: Record<string, RealtimeProfitCounter>
+  by_channel: Record<string, RealtimeProfitCounter>
+}
+
+export interface UpstreamSourceBrief {
+  id: string
+  name: string
+  base_url?: string
+  sync_mode?: string
+  enabled: boolean
+  is_direct: boolean
+  currency: string
+  exchange_rate: number
+  balance_usd: number
+  used_quota_usd: number
+  channel_count: number
+}
+
+export interface GroupSchedulingSummary {
+  group: string
+  description: string
+  ratio: number
+  mode: SchedulingMode
+  enabled_channel_ids: number[]
+  cost_control?: GroupCostControlPolicy
+  realtime_profit?: GroupRealtimeProfitSnapshot
+}
+
+export interface ChannelBrief {
+  id: number
+  name: string
+  type: number
+  status: number
+  group: string
+  models: string
+  priority: number
+  weight: number
+  tag: string
+  base_url: string
+  balance?: number
+  balance_updated_time?: number
+  upstream_source_id?: string
+  upstream_source_name?: string
+  upstream_group?: string
+  base_multiplier?: number
+  currency?: string
+  from_upstream?: boolean
+}
+
+export interface GroupSchedulingResponseData {
+  groups: GroupSchedulingSummary[]
+  channels: ChannelBrief[]
+  upstream_sources?: UpstreamSourceBrief[]
+}
+
+export async function getGroupScheduling(): Promise<{
+  success: boolean
+  message?: string
+  data?: GroupSchedulingResponseData
+}> {
+  const res = await api.get(
+    '/api/channel/group_scheduling',
+    channelActionConfig({ disableDuplicate: true })
+  )
+  return res.data
+}
+
+export async function updateGroupScheduling(payload: {
+  group?: string
+  mode?: SchedulingMode
+  enabled_channel_ids?: number[]
+  modes?: Record<string, SchedulingMode>
+  cost_control?: GroupCostControlPolicy
+  cost_controls?: Record<string, GroupCostControlPolicy>
+}): Promise<{
+  success: boolean
+  message?: string
+  data?: GroupSchedulingResponseData
+}> {
+  const res = await api.put(
+    '/api/channel/group_scheduling',
+    payload,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export interface ModelPriceTableRow {
+  channel_id: number
+  channel_name: string
+  channel_type: number
+  channel_status: number
+  model: string
+  input_cost: number
+  output_cost: number
+  raw_input_cost?: number
+  raw_output_cost?: number
+  model_ratio: number
+  completion_ratio: number
+  cache_ratio: number
+  create_cache_ratio: number
+  model_price: number
+  raw_model_price?: number
+  quota_type: number
+  base_multiplier: number
+  currency: string
+  exchange_rate: number
+  from_upstream: boolean
+  availability: number
+  tps_min: number
+  tps_avg: number
+  tps_max: number
+  avg_ttft: number
+  is_selected_price: boolean
+}
+
+export interface ModelPriceSyncConfig {
+  highest_price_priority: boolean
+  preferred_channels: Record<string, number>
+  default_currency: string
+  custom_exchange_rate: number
+  usd_exchange_rate?: number
+  cny_exchange_rate?: number
+  twd_exchange_rate?: number
+  channel_currencies: Record<number, string>
+  channel_exchange_rates: Record<number, number>
+  channel_upstream_groups: Record<number, string>
+  cron_enabled: boolean
+  cron_interval_minutes: number
+  auto_sync_models: boolean
+  auto_sync_prices: boolean
+  replace_models?: boolean
+  classifier_enabled?: boolean
+  classifier_rules?: ChannelClassifierRule[]
+  last_sync_time: number
+}
+
+export interface ChannelClassifierRule {
+  id: string
+  name: string
+  target_group: string
+  description?: string
+  group_ratio: number
+  keywords: string[]
+  include_native_api: boolean
+  enabled: boolean
+}
+
+export interface ChannelClassificationItemResult {
+  channel_id: number
+  channel_name: string
+  channel_type: number
+  upstream_group?: string
+  is_native_api: boolean
+  matched_groups: string[]
+  final_groups: string
+  changed: boolean
+}
+
+export interface ChannelClassificationSummary {
+  total_channels: number
+  updated_channels: number
+  synced_groups: string[]
+  items: ChannelClassificationItemResult[]
+}
+
+export async function getModelPriceTable(modelKeyword?: string): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    rows: ModelPriceTableRow[]
+    config: ModelPriceSyncConfig
+  }
+}> {
+  const res = await api.get('/api/channel/model_price_table', {
+    params: modelKeyword ? { model: modelKeyword } : undefined,
+    ...channelActionConfig({ disableDuplicate: true }),
+  })
+  return res.data
+}
+
+export async function applyModelPriceTable(payload: {
+  highest_price_priority?: boolean
+  preferred_channels?: Record<string, number>
+  model?: string
+  channel_id?: number
+}): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    updated_models: number
+    config: ModelPriceSyncConfig
+    rows: ModelPriceTableRow[]
+  }
+}> {
+  const res = await api.post(
+    '/api/channel/model_price_table/apply',
+    payload,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export interface ChannelUpstreamSyncItemResult {
+  channel_id: number
+  channel_name: string
+  channel_type: number
+  success: boolean
+  error?: string
+  synced_model_count: number
+  added_models: string[]
+  removed_models?: string[]
+  synced_price_count: number
+  detected_currency: string
+  exchange_rate: number
+  base_multiplier: number
+  upstream_group?: string
+  available_groups?: Record<string, number>
+  balance?: number
+  balance_updated_time?: number
+}
+
+export async function getCronSyncConfig(): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    config: ModelPriceSyncConfig
+    channels: ChannelBrief[]
+  }
+}> {
+  const res = await api.get(
+    '/api/channel/cron_sync_config',
+    channelActionConfig({ disableDuplicate: true })
+  )
+  return res.data
+}
+
+export async function updateCronSyncConfig(
+  payload: ModelPriceSyncConfig
+): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    config: ModelPriceSyncConfig
+  }
+}> {
+  const res = await api.put(
+    '/api/channel/cron_sync_config',
+    payload,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function runCronSyncNow(payload?: {
+  channel_ids?: number[]
+  sync_models?: boolean
+  sync_prices?: boolean
+  replace_models?: boolean
+  currency?: string
+  exchange_rate?: number
+  highest_price_priority?: boolean
+}): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    results: ChannelUpstreamSyncItemResult[]
+    config: ModelPriceSyncConfig
+  }
+}> {
+  const res = await api.post(
+    '/api/channel/cron_sync_run',
+    payload ?? {},
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export type CronJobType =
+  | 'upstream_group_sync'
+  | 'upstream_sync'
+  | 'channel_test'
+  | 'channel_balance'
+  | 'shell_script'
+  | 'http_request'
+
+export interface CronJob {
+  id: string
+  name: string
+  description?: string
+  enabled: boolean
+  cron_expr: string
+  job_type: CronJobType
+  script?: string
+  http_method?: string
+  http_headers?: string
+  http_body?: string
+  working_dir?: string
+  timeout_sec: number
+  built_in?: boolean
+  last_run_at: number
+  next_run_at: number
+  last_status: 'idle' | 'running' | 'success' | 'failed' | string
+  last_duration_ms: number
+  last_output?: string
+  run_count: number
+}
+
+export async function getCronJobs(): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    jobs: CronJob[]
+  }
+}> {
+  const res = await api.get(
+    '/api/channel/cron_jobs',
+    channelActionConfig({ disableDuplicate: true })
+  )
+  return res.data
+}
+
+export async function saveCronJob(payload: Partial<CronJob>): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    jobs: CronJob[]
+  }
+}> {
+  const res = await api.post(
+    '/api/channel/cron_jobs',
+    payload,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function deleteCronJob(id: string): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    jobs: CronJob[]
+  }
+}> {
+  const res = await api.delete(
+    `/api/channel/cron_jobs/${encodeURIComponent(id)}`,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function runCronJobNow(id: string): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    job: CronJob
+    jobs: CronJob[]
+  }
+}> {
+  const res = await api.post(
+    `/api/channel/cron_jobs/${encodeURIComponent(id)}/run`,
+    {},
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export interface UpstreamAccountSource {
+  id: string
+  name: string
+  base_url: string
+  sync_mode?: 'standard' | 'lumiya'
+  user_id: string
+  access_token?: string
+  has_access_token?: boolean
+  token_name_rule: string
+  channel_name_rule: string
+  channel_tag: string
+  local_group: string
+  currency: string
+  exchange_rate: number
+  clean_removed_groups: boolean
+  adopt_existing_channel: boolean
+  enabled: boolean
+  balance_usd?: number
+  used_quota_usd?: number
+  last_sync_at: number
+  last_status: string
+  last_message?: string
+  active_groups?: string[]
+  created_channels?: string[]
+  updated_channels?: string[]
+  removed_channels?: string[]
+}
+
+export interface AutoProvisionedChannelMeta {
+  channel_id: number
+  channel_name?: string
+  source_id: string
+  source_name: string
+  upstream_group: string
+  auto_created: boolean
+  balance?: number
+  balance_updated_time?: number
+  created_at: number
+  updated_at: number
+}
+
+export async function getUpstreamAccounts(): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    accounts: UpstreamAccountSource[]
+    auto_provisioned_channels: Record<string, AutoProvisionedChannelMeta>
+  }
+}> {
+  const res = await api.get(
+    '/api/channel/upstream_accounts',
+    channelActionConfig({ disableDuplicate: true })
+  )
+  return res.data
+}
+
+export async function saveUpstreamAccount(
+  payload: Partial<UpstreamAccountSource>
+): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    accounts: UpstreamAccountSource[]
+    auto_provisioned_channels: Record<string, AutoProvisionedChannelMeta>
+  }
+}> {
+  const res = await api.post(
+    '/api/channel/upstream_accounts',
+    payload,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function deleteUpstreamAccount(id: string): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    accounts: UpstreamAccountSource[]
+    auto_provisioned_channels: Record<string, AutoProvisionedChannelMeta>
+  }
+}> {
+  const res = await api.delete(
+    `/api/channel/upstream_accounts/${encodeURIComponent(id)}`,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function syncUpstreamAccountsNow(accountIds?: string[]): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    summary: string
+    error?: string
+    accounts: UpstreamAccountSource[]
+    auto_provisioned_channels: Record<string, AutoProvisionedChannelMeta>
+  }
+}> {
+  const res = await api.post(
+    '/api/channel/upstream_accounts/sync',
+    { account_ids: accountIds ?? [] },
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function getChannelClassifier(): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    enabled: boolean
+    rules: ChannelClassifierRule[]
+    preview: ChannelClassificationItemResult[]
+  }
+}> {
+  const res = await api.get(
+    '/api/channel/classifier',
+    channelActionConfig({ disableDuplicate: true })
+  )
+  return res.data
+}
+
+export async function saveChannelClassifier(payload: {
+  enabled?: boolean
+  rules?: ChannelClassifierRule[]
+  rule?: Partial<ChannelClassifierRule>
+  apply_now?: boolean
+}): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    enabled: boolean
+    rules: ChannelClassifierRule[]
+    summary?: ChannelClassificationSummary
+    preview: ChannelClassificationItemResult[]
+  }
+}> {
+  const res = await api.post(
+    '/api/channel/classifier',
+    payload,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function deleteChannelClassifierRule(id: string): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    enabled: boolean
+    rules: ChannelClassifierRule[]
+    summary?: ChannelClassificationSummary
+    preview: ChannelClassificationItemResult[]
+  }
+}> {
+  const res = await api.delete(
+    `/api/channel/classifier/${encodeURIComponent(id)}`,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function applyChannelClassifierNow(
+  channelIds?: number[]
+): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    enabled: boolean
+    rules: ChannelClassifierRule[]
+    summary: ChannelClassificationSummary
+    preview: ChannelClassificationItemResult[]
+  }
+}> {
+  const res = await api.post(
+    '/api/channel/classifier/apply',
+    { channel_ids: channelIds ?? [] },
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export interface ModelGroupPriceDetail {
+  group: string
+  description: string
+  group_ratio: number
+  quota_type: number
+  input_price: number
+  output_price: number
+  call_count: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  revenue_usd: number
+  cost_usd: number
+  profit_usd: number
+  margin_pct: number
+}
+
+export interface ModelChannelUsageDetail {
+  channel_id: number
+  channel_name: string
+  channel_type: number
+  upstream_group?: string
+  base_multiplier: number
+  currency: string
+  exchange_rate: number
+  from_upstream?: boolean
+  quota_type: number
+  input_cost: number
+  output_cost: number
+  raw_input_cost?: number
+  raw_output_cost?: number
+  call_count: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  revenue_usd: number
+  cost_usd: number
+  profit_usd: number
+  margin_pct: number
+}
+
+export interface ModelCostAnalysisRow {
+  model: string
+  quota_type: number
+  billing_mode: string
+  base_input_price: number
+  base_output_price: number
+  model_ratio: number
+  completion_ratio: number
+  min_input_cost: number
+  max_input_cost: number
+  min_output_cost: number
+  max_output_cost: number
+  call_count: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  revenue_usd: number
+  cost_usd: number
+  profit_usd: number
+  margin_pct: number
+  group_prices: ModelGroupPriceDetail[]
+  channel_usages: ModelChannelUsageDetail[]
+}
+
+export interface UserModelChannelCostDetail {
+  model: string
+  channel_id: number
+  channel_name: string
+  call_count: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  revenue_usd: number
+  cost_usd: number
+  profit_usd: number
+  margin_pct: number
+}
+
+export interface UserCostAnalysisRow {
+  user_id: number
+  username: string
+  display_name: string
+  group: string
+  status: number
+  remain_quota_usd: number
+  lifetime_used_usd: number
+  topup_total_usd: number
+  online_topup_usd: number
+  online_paid_money: number
+  system_topup_usd: number
+  consumed_usd: number
+  call_count: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  revenue_usd: number
+  cost_usd: number
+  gross_profit_usd: number
+  gross_margin_pct: number
+  model_breakdowns: UserModelChannelCostDetail[]
+}
+
+export async function getModelCostAnalysis(params?: {
+  start_timestamp?: number
+  end_timestamp?: number
+  keyword?: string
+}): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    models: ModelCostAnalysisRow[]
+    summary: {
+      model_count: number
+      total_calls: number
+      total_tokens: number
+      total_revenue: number
+      total_cost: number
+      total_profit: number
+      margin_pct: number
+    }
+  }
+}> {
+  const res = await api.get('/api/channel/cost_management/models', {
+    params,
+    ...channelActionConfig({ disableDuplicate: true }),
+  })
+  return res.data
+}
+
+export async function getUserCostAnalysis(params?: {
+  start_timestamp?: number
+  end_timestamp?: number
+  keyword?: string
+}): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    users: UserCostAnalysisRow[]
+    summary: {
+      user_count: number
+      total_topup_usd: number
+      total_consumed_usd: number
+      total_revenue_usd: number
+      total_cost_usd: number
+      total_profit_usd: number
+      overall_margin_pct: number
+      total_calls: number
+      total_tokens: number
+    }
+  }
+}> {
+  const res = await api.get('/api/channel/cost_management/users', {
+    params,
+    ...channelActionConfig({ disableDuplicate: true }),
+  })
+  return res.data
+}
+
+export interface ModelChannelHealthDetail {
+  channel_id: number
+  channel_name: string
+  channel_type: number
+  channel_status: number
+  model: string
+  request_count: number
+  success_count: number
+  error_count: number
+  availability: number
+  avg_prompt_tokens: number
+  avg_output_tokens: number
+  avg_ttft_sec: number
+  median_ttft_sec: number
+  p95_ttft_sec: number
+  prefill_tps_avg: number
+  prefill_tps_median: number
+  decode_tps_p5_low: number
+  decode_tps_median: number
+  decode_tps_trimmed_90: number
+  decode_tps_p95_high: number
+  decode_tps_avg: number
+  total_tps_p5_low: number
+  total_tps_median: number
+  total_tps_trimmed_90: number
+  total_tps_p95_high: number
+  total_tps_avg: number
+}
+
+export interface ModelHealthAnalysisRow {
+  model: string
+  channel_count: number
+  request_count: number
+  success_count: number
+  error_count: number
+  availability: number
+  avg_prompt_tokens: number
+  avg_output_tokens: number
+  avg_ttft_sec: number
+  median_ttft_sec: number
+  p95_ttft_sec: number
+  prefill_tps_avg: number
+  prefill_tps_median: number
+  decode_tps_p5_low: number
+  decode_tps_median: number
+  decode_tps_trimmed_90: number
+  decode_tps_p95_high: number
+  decode_tps_avg: number
+  total_tps_p5_low: number
+  total_tps_median: number
+  total_tps_trimmed_90: number
+  total_tps_p95_high: number
+  total_tps_avg: number
+  channels: ModelChannelHealthDetail[]
+}
+
+export interface ChannelHealthSummaryRow {
+  channel_id: number
+  channel_name: string
+  channel_type: number
+  channel_status: number
+  model_count: number
+  request_count: number
+  success_count: number
+  error_count: number
+  availability: number
+  avg_prompt_tokens: number
+  avg_output_tokens: number
+  avg_ttft_sec: number
+  median_ttft_sec: number
+  p95_ttft_sec: number
+  prefill_tps_avg: number
+  prefill_tps_median: number
+  decode_tps_p5_low: number
+  decode_tps_median: number
+  decode_tps_trimmed_90: number
+  decode_tps_p95_high: number
+  decode_tps_avg: number
+  total_tps_p5_low: number
+  total_tps_median: number
+  total_tps_trimmed_90: number
+  total_tps_p95_high: number
+  total_tps_avg: number
+  models: ModelChannelHealthDetail[]
+}
+
+export interface ModelHealthSummary {
+  model_count: number
+  channel_count: number
+  request_count: number
+  success_count: number
+  error_count: number
+  availability: number
+  avg_ttft_sec: number
+  median_ttft_sec: number
+  prefill_tps_avg: number
+  prefill_tps_median: number
+  decode_tps_p5_low: number
+  decode_tps_median: number
+  decode_tps_trimmed_90: number
+  decode_tps_p95_high: number
+  decode_tps_avg: number
+  total_tps_p5_low: number
+  total_tps_median: number
+  total_tps_trimmed_90: number
+  total_tps_p95_high: number
+  total_tps_avg: number
+}
+
+export async function getModelHealthAnalysis(params?: {
+  start_timestamp?: number
+  end_timestamp?: number
+  keyword?: string
+}): Promise<{
+  success: boolean
+  message?: string
+  data?: {
+    models: ModelHealthAnalysisRow[]
+    channels: ChannelHealthSummaryRow[]
+    summary: ModelHealthSummary
+  }
+}> {
+  const res = await api.get('/api/channel/model_health', {
+    params,
+    ...channelActionConfig({ disableDuplicate: true }),
+  })
   return res.data
 }

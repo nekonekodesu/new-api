@@ -109,6 +109,7 @@ import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 import { PluginIcon } from '@/features/task-plugins/components/plugin-icon'
 import type { PluginIconInput } from '@/features/task-plugins/lib/plugin-icon'
 import { fromRequestPluginConfigDraft } from '@/features/task-plugins/lib/request-plugins'
+import type { RequestPluginConfigSchema } from '@/features/task-plugins/types'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { useHiddenClickUnlock } from '@/hooks/use-hidden-click-unlock'
 import {
@@ -862,10 +863,10 @@ export function ChannelMutateDrawer({
     !form.formState.dirtyFields.task_plugin_key
       ? channelId
       : null
-  const pluginConfigSchema =
+  const pluginConfigSchema: RequestPluginConfigSchema | undefined =
     boundTaskPlugin?.channelConfig &&
     Object.keys(boundTaskPlugin.channelConfig.properties ?? {}).length > 0
-      ? boundTaskPlugin.channelConfig
+      ? (boundTaskPlugin.channelConfig as RequestPluginConfigSchema)
       : undefined
   const pluginKeyHint = resolveLocalizedText(
     boundTaskPlugin?.keyHint,

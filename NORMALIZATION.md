@@ -38,6 +38,12 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+### Frontend management surfaces
+
+Migrated the channel management API extensions and management surfaces for cost control, model price tables, upstream synchronization, scheduled tasks, channel classification, model health, network behavior, and configurable NTD display support. Existing plugin login and balance-task API contracts were restored when the feature batch initially replaced them.
+
+Validation: `bun run typecheck` passed, `bun run build` passed, and targeted Oxlint over the changed `web/src` files passed. The repository-wide lint command still reports pre-existing errors in unrelated baseline files; those are kept separate from this increment. Locale JSON files and home-page branding changes were not included in this increment.
+
 ## Verified increments
 
 ### Channel balance response bounds

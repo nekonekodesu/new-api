@@ -65,7 +65,7 @@ const createPricingSchema = (t: (key: string) => string) =>
       DisplayInCurrencyEnabled: z.boolean(),
       DisplayTokenStatEnabled: z.boolean(),
       general_setting: z.object({
-        quota_display_type: z.enum(['USD', 'CNY', 'TOKENS', 'CUSTOM']),
+        quota_display_type: z.enum(['USD', 'CNY', 'NTD', 'TOKENS', 'CUSTOM']),
         custom_currency_symbol: z.string().max(8).optional(),
         custom_currency_exchange_rate: z.coerce
           .number()

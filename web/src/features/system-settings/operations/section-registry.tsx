@@ -25,6 +25,7 @@ import { PerformanceSection } from '../maintenance/performance-section'
 import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import { NetworkBehaviorSection } from './network-behavior-section'
 
 const OPERATIONS_SECTIONS = [
   {
@@ -36,6 +37,34 @@ const OPERATIONS_SECTIONS = [
           DefaultCollapseSidebar: settings.DefaultCollapseSidebar,
           DemoSiteEnabled: settings.DemoSiteEnabled,
           SelfUseModeEnabled: settings.SelfUseModeEnabled,
+        }}
+      />
+    ),
+  },
+  {
+    id: 'network-behavior',
+    titleKey: 'Network Behavior',
+    build: (settings: OperationsSettings) => (
+      <NetworkBehaviorSection
+        defaultValues={{
+          'network_setting.primary_dns':
+            settings['network_setting.primary_dns'] ?? '',
+          'network_setting.fallback_dns':
+            settings['network_setting.fallback_dns'] ?? '',
+          'path_scan_setting.path_scan_enabled':
+            settings['path_scan_setting.path_scan_enabled'] ?? false,
+          'path_scan_setting.path_scan_window_seconds':
+            settings['path_scan_setting.path_scan_window_seconds'] ?? 10,
+          'path_scan_setting.path_scan_max_requests':
+            settings['path_scan_setting.path_scan_max_requests'] ?? 20,
+          'path_scan_setting.path_scan_ban_duration':
+            settings['path_scan_setting.path_scan_ban_duration'] ?? 1,
+          'path_scan_setting.path_scan_ban_duration_unit':
+            settings['path_scan_setting.path_scan_ban_duration_unit'] ?? 'hour',
+          'path_scan_setting.path_scan_direct_paths':
+            settings['path_scan_setting.path_scan_direct_paths'] ?? '',
+          'path_scan_setting.path_scan_counted_paths':
+            settings['path_scan_setting.path_scan_counted_paths'] ?? '',
         }}
       />
     ),
@@ -109,7 +138,7 @@ const OPERATIONS_SECTIONS = [
           'log_setting.max_range_days':
             settings['log_setting.max_range_days'] ?? 365,
           'system_task_setting.retention_days':
-            settings['system_task_setting.retention_days'] ?? 30,
+            settings['system_task_setting.retention_days'] ?? 0,
         }}
       />
     ),

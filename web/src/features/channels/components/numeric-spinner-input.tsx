@@ -32,29 +32,24 @@ interface NumericSpinnerInputProps {
   disabled?: boolean
   className?: string
   label?: string
+  ariaLabel?: string
 }
 
-export function NumericSpinnerInput({
-  value,
-  onChange,
-  onCommit,
-  min = 0,
-  max,
-  step = 1,
-  disabled = false,
-  className,
-  label,
-}: NumericSpinnerInputProps) {
-  const [localValue, setLocalValue] = useState(String(value ?? 0))
+export function NumericSpinnerInput(props: NumericSpinnerInputProps) {
+  const min = props.min ?? 0
+  const max = props.max
+  const step = props.step ?? 1
+  const disabled = props.disabled ?? false
+  const [localValue, setLocalValue] = useState(String(props.value ?? 0))
   const [editing, setEditing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!editing) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setLocalValue(String(value ?? 0))
+      setLocalValue(String(props.value ?? 0))
     }
-  }, [value, editing])
+  }, [props.value, editing])
 
   const clamp = (v: number) => {
     let result = v
@@ -68,7 +63,7 @@ export function NumericSpinnerInput({
     if (disabled) return
     const next = clamp((Number(localValue) || 0) + step)
     setLocalValue(String(next))
-    onChange(next)
+    props.onChange(next)
   }
 
   const handleDecrement = (e: React.MouseEvent) => {
@@ -76,7 +71,7 @@ export function NumericSpinnerInput({
     if (disabled) return
     const next = clamp((Number(localValue) || 0) - step)
     setLocalValue(String(next))
-    onChange(next)
+    props.onChange(next)
   }
 
   const handleStartEdit = () => {
@@ -99,13 +94,13 @@ export function NumericSpinnerInput({
     setEditing(false)
     const num = Number(localValue)
     if (Number.isNaN(num) || localValue === '' || localValue === '-') {
-      setLocalValue(String(value ?? 0))
+      setLocalValue(String(props.value ?? 0))
       return
     }
     const clamped = clamp(num)
     setLocalValue(String(clamped))
-    if (clamped !== (value ?? 0)) {
-      onChange(clamped)
+    if (clamped !== (props.value ?? 0)) {
+      props.onChange(clamped)
     }
   }
 
@@ -116,7 +111,7 @@ export function NumericSpinnerInput({
     ) {
       return
     }
-    onCommit?.()
+    props.onCommit?.()
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -128,17 +123,25 @@ export function NumericSpinnerInput({
       inputRef.current?.blur()
     } else if (e.key === 'Escape') {
       setEditing(false)
-      setLocalValue(String(value ?? 0))
+      setLocalValue(String(props.value ?? 0))
     }
   }
 
   const atMin = min !== undefined && Number(localValue) <= min
   const atMax = max !== undefined && Number(localValue) >= max
+  const decrementAriaLabel = props.ariaLabel
+    ? `Decrement ${props.ariaLabel}`
+    : 'Decrement'
+  const incrementAriaLabel = props.ariaLabel
+    ? `Increment ${props.ariaLabel}`
+    : 'Increment'
 
   return (
-    <div className={cn('inline-flex items-center', className)}>
-      {label && (
-        <Label className='text-muted-foreground mr-1.5 text-xs'>{label}</Label>
+    <div className={cn('inline-flex items-center', props.className)}>
+      {props.label && (
+        <Label className='text-muted-foreground mr-1.5 text-xs'>
+          {props.label}
+        </Label>
       )}
       <div
         onBlur={handleControlBlur}
@@ -151,7 +154,7 @@ export function NumericSpinnerInput({
         <button
           type='button'
           tabIndex={-1}
-          aria-label='Decrement'
+          aria-label={decrementAriaLabel}
           onClick={handleDecrement}
           disabled={disabled || atMin}
           className={cn(
@@ -170,6 +173,7 @@ export function NumericSpinnerInput({
             data-slot='numeric-spinner-value'
             ref={inputRef}
             type='text'
+            aria-label={props.ariaLabel}
             value={localValue}
             onChange={handleInputChange}
             onBlur={commitValue}
@@ -181,6 +185,7 @@ export function NumericSpinnerInput({
           <button
             data-slot='numeric-spinner-value'
             type='button'
+            aria-label={props.ariaLabel}
             onClick={handleStartEdit}
             disabled={disabled}
             title={localValue}
@@ -196,7 +201,7 @@ export function NumericSpinnerInput({
         <button
           type='button'
           tabIndex={-1}
-          aria-label='Increment'
+          aria-label={incrementAriaLabel}
           onClick={handleIncrement}
           disabled={disabled || atMax}
           className={cn(

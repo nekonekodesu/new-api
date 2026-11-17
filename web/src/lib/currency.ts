@@ -140,7 +140,7 @@ const DEFAULT_FORMAT_OPTIONS: ResolvedCurrencyFormatOptions = {
   locale: undefined,
 }
 
-const DISPLAY_TYPE_VALUES = ['USD', 'CNY', 'TOKENS', 'CUSTOM'] as const
+const DISPLAY_TYPE_VALUES = ['USD', 'CNY', 'NTD', 'TOKENS', 'CUSTOM'] as const
 type DisplayTypeLiteral = (typeof DISPLAY_TYPE_VALUES)[number]
 
 export function isCurrencyDisplayType(
@@ -191,6 +191,13 @@ function getDisplayMeta(config: CurrencyConfig): DisplayMeta {
         kind: 'currency',
         symbol: '¥',
         currencyCode: 'CNY',
+        exchangeRate: config.usdExchangeRate,
+      }
+    case 'NTD':
+      return {
+        kind: 'currency',
+        symbol: 'NT$',
+        currencyCode: 'TWD',
         exchangeRate: config.usdExchangeRate,
       }
     case 'CUSTOM':
@@ -336,7 +343,7 @@ function formatCurrencyValue(
     const formatted = new Intl.NumberFormat(options.locale, {
       style: 'currency',
       currency: meta.currencyCode,
-      currencyDisplay: 'narrowSymbol',
+      currencyDisplay: meta.currencyCode === 'TWD' ? 'symbol' : 'narrowSymbol',
       notation: options.compact ? 'compact' : 'standard',
       minimumFractionDigits: 0,
       maximumFractionDigits: options.compact ? 1 : digits,
@@ -553,6 +560,8 @@ export function getCurrencyLabel(): string {
   switch (config.quotaDisplayType) {
     case 'CNY':
       return 'CNY'
+    case 'NTD':
+      return 'NTD'
     case 'CUSTOM':
       return meta.kind === 'custom' ? meta.symbol : 'Custom'
     case 'USD':

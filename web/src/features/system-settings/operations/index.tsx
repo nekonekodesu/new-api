@@ -51,7 +51,6 @@ const defaultOperationsSettings: OperationsSettings = {
   LogConsumeEnabled: false,
   'log_setting.user_export_enabled': true,
   'log_setting.max_range_days': 365,
-  'system_task_setting.retention_days': 30,
   'performance_setting.disk_cache_enabled': false,
   'performance_setting.disk_cache_threshold_mb': 10,
   'performance_setting.disk_cache_max_size_mb': 1024,
@@ -64,6 +63,15 @@ const defaultOperationsSettings: OperationsSettings = {
   'perf_metrics_setting.flush_interval': 5,
   'perf_metrics_setting.bucket_time': 'hour',
   'perf_metrics_setting.retention_days': 0,
+  'network_setting.primary_dns': '',
+  'network_setting.fallback_dns': '',
+  'path_scan_setting.path_scan_enabled': false,
+  'path_scan_setting.path_scan_window_seconds': 10,
+  'path_scan_setting.path_scan_max_requests': 20,
+  'path_scan_setting.path_scan_ban_duration': 1,
+  'path_scan_setting.path_scan_ban_duration_unit': 'hour',
+  'path_scan_setting.path_scan_direct_paths': '',
+  'path_scan_setting.path_scan_counted_paths': '',
 }
 
 export function OperationsSettings() {

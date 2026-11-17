@@ -37,6 +37,9 @@ export function getSitePricingCurrency(
   if (config.quotaDisplayType === 'CNY') {
     return { label: 'CNY', symbol: '¥', exchangeRate: config.usdExchangeRate }
   }
+  if (config.quotaDisplayType === 'NTD') {
+    return { label: 'NTD', symbol: 'NT$', exchangeRate: config.usdExchangeRate }
+  }
   if (config.quotaDisplayType === 'CUSTOM') {
     const symbol = config.customCurrencySymbol?.trim() || '¤'
     return {

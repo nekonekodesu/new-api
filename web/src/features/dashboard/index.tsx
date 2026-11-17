@@ -37,6 +37,7 @@ import { useAuthStore } from '@/stores/auth-store'
 
 import { ModelsChartPreferences } from './components/models/models-chart-preferences'
 import { ModelsFilter } from './components/models/models-filter-dialog'
+import { NetworkSecurityPanel } from './components/network-security-panel'
 import { OverviewDashboard } from './components/overview/overview-dashboard'
 import { DEFAULT_TIME_GRANULARITY } from './constants'
 import {
@@ -115,6 +116,12 @@ const LazyFlowCharts = lazy(() =>
   }))
 )
 
+const LazyModelHealthPanel = lazy(() =>
+  import('./components/models/model-health-panel').then((m) => ({
+    default: m.ModelHealthPanel,
+  }))
+)
+
 function LogStatCardsFallback() {
   return (
     <div className='overflow-hidden rounded-lg border'>
@@ -188,11 +195,17 @@ const SECTION_META: Record<DashboardSectionId, { titleKey: string }> = {
   models: {
     titleKey: 'Model Call Analytics',
   },
+  health: {
+    titleKey: 'Model Health',
+  },
   flow: {
     titleKey: 'Flow',
   },
   users: {
     titleKey: 'User Analytics',
+  },
+  'network-security': {
+    titleKey: 'Network Security',
   },
 }
 
@@ -250,12 +263,18 @@ export function Dashboard() {
 
   const meta = SECTION_META[activeSection] ?? SECTION_META.overview
   const isAdmin = Boolean(userRole && userRole >= ROLE.ADMIN)
+  const isRoot = Boolean(userRole && userRole >= ROLE.SUPER_ADMIN)
   const visibleSections = useMemo(
     () =>
       DASHBOARD_SECTION_IDS.filter(
-        (section) => section !== 'overview' && (section !== 'users' || isAdmin)
+        (section) =>
+          section !== 'overview' &&
+          ((section !== 'users' &&
+            section !== 'health' &&
+            section !== 'network-security') ||
+            (section === 'network-security' ? isRoot : isAdmin))
       ),
-    [isAdmin]
+    [isAdmin, isRoot]
   )
   const handleSectionChange = useCallback(
     (section: string) => {
@@ -414,6 +433,18 @@ export function Dashboard() {
                   sensitiveVisible={flowSensitiveVisible}
                 />
               </Suspense>
+            </FadeIn>
+          )}
+          {activeSection === 'health' && isAdmin && (
+            <FadeIn>
+              <Suspense fallback={<ModelChartsFallback />}>
+                <LazyModelHealthPanel />
+              </Suspense>
+            </FadeIn>
+          )}
+          {activeSection === 'network-security' && isRoot && (
+            <FadeIn>
+              <NetworkSecurityPanel />
             </FadeIn>
           )}
         </div>
