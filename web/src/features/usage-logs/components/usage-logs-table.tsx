@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
-import { useCallback, useMemo, useRef } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -32,11 +32,11 @@ import {
   getSelfSubscriptionFull,
 } from '@/features/subscriptions/api'
 import { useMediaQuery } from '@/hooks'
+import { usePageVisibilityRefetch } from '@/hooks/use-page-visibility-refetch'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import { createServerError } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
-import { usePageVisibilityRefetch } from '@/hooks/use-page-visibility-refetch'
 
 import {
   DEFAULT_LOGS_DATA,
@@ -46,6 +46,7 @@ import {
 import { shouldShowBillingSource } from '../lib/billing-source'
 import { useColumnsByCategory } from '../lib/columns'
 import { parseLogOther } from '../lib/format'
+import { reconcileUsageLogSnapshot } from '../lib/log-snapshot'
 import { fetchLogsByCategory } from '../lib/utils'
 import type { LogCategory } from '../types'
 import { CommonLogsFilterBar } from './common-logs-filter-bar'
@@ -166,22 +167,31 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     ],
   })
 
-  const queryKey = useMemo(() => [
-    'logs', logCategory, viewAccess, pagination.pageIndex + 1,
-    pagination.pageSize, columnFilters, searchParams, t,
-  ], [logCategory, viewAccess, pagination.pageIndex, pagination.pageSize, columnFilters, searchParams, t])
+  const queryKey = useMemo(
+    () => [
+      'logs',
+      logCategory,
+      viewAccess,
+      pagination.pageIndex + 1,
+      pagination.pageSize,
+      columnFilters,
+      searchParams,
+      userId,
+    ],
+    [
+      logCategory,
+      viewAccess,
+      pagination.pageIndex,
+      pagination.pageSize,
+      columnFilters,
+      searchParams,
+      userId,
+    ]
+  )
   const queryClient = useQueryClient()
-  const incrementalCursor = useRef<{ createdAt: number; id: number } | null>(null)
-  const filterSignature = JSON.stringify([logCategory, viewAccess, pagination.pageIndex, pagination.pageSize, columnFilters, searchParams])
-  const previousFilterSignature = useRef(filterSignature)
-  if (previousFilterSignature.current !== filterSignature) {
-    previousFilterSignature.current = filterSignature
-    incrementalCursor.current = null
-  }
   const { data, isLoading, isFetching } = useQuery({
     queryKey,
-    refetchInterval:
-      autoRefreshSeconds > 0 ? autoRefreshSeconds * 1000 : false,
+    refetchInterval: autoRefreshSeconds > 0 ? autoRefreshSeconds * 1000 : false,
     refetchIntervalInBackground: false,
     queryFn: async () => {
       const result = await fetchLogsByCategory({
@@ -191,42 +201,21 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         pageSize: pagination.pageSize,
         searchParams,
         columnFilters,
-        after:
-          autoRefreshSeconds > 0 && pagination.pageIndex === 0
-            ? incrementalCursor.current ?? undefined
-            : undefined,
       })
 
       if (!result?.success) {
         throw createServerError(result, t('Failed to load logs'))
       }
 
-      const next = result.data || DEFAULT_LOGS_DATA
-      const previous = queryClient.getQueryData<typeof next>(queryKey)
-      const cursorItem = (previous ? next.items.at(-1) : next.items.at(0)) as { created_at?: number; id?: number } | undefined
-      if (cursorItem?.created_at && cursorItem.id) {
-        incrementalCursor.current = { createdAt: cursorItem.created_at, id: cursorItem.id }
-      }
-      if (!previous || !incrementalCursor.current || next.items.length === 0) {
-        return previous && next.items.length === 0 ? previous : next
-      }
-      const previousById = new Map(previous.items.map((item) => [item.id, item]))
-      const mergedItems = [...next.items, ...previous.items].map((item) => ({
-        ...previousById.get(item.id),
-        ...item,
-      })).filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index)
-      mergedItems.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0) || (b.id ?? 0) - (a.id ?? 0))
-      const addedCount = next.items.filter((item) => !previousById.has(item.id)).length
-      return {
-        ...next,
-        total: previous.total + addedCount,
-        items: mergedItems.slice(0, pagination.pageSize),
-      }
+      return result.data
+        ? reconcileUsageLogSnapshot(result.data)
+        : DEFAULT_LOGS_DATA
     },
     placeholderData: (previousData, previousQuery) => {
       if (
         previousQuery?.queryKey[1] === logCategory &&
-        previousQuery.queryKey[2] === viewAccess
+        previousQuery.queryKey[2] === viewAccess &&
+        previousQuery.queryKey[7] === userId
       ) {
         return previousData
       }
@@ -252,7 +241,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     columns: columns as ColumnDef<Record<string, unknown>>[],
     getRowId: (row) => {
       const r = row as Record<string, unknown>
-      return String(r.request_id || r.task_id || r.mj_id || r.id || '')
+      return JSON.stringify([logCategory, r.user_id, r.id, r.task_id, r.mj_id])
     },
     columnFilters,
     columnVisibilityStorageKey: getColumnVisibilityStorageKey(

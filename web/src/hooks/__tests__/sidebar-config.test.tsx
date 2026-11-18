@@ -142,6 +142,28 @@ describe('security sidebar visibility', () => {
 })
 
 describe('audit log sidebar entry', () => {
+  it('keeps the dashboard destination and shows cost links only for administrators', () => {
+    const { result, rerender } = renderHook(() => useSidebarData())
+    const dashboard = () =>
+      result.current.navGroups
+        .flatMap((group) => group.items)
+        .find((item) => item.title === 'Dashboard')
+    expect(dashboard()?.items?.map((item) => item.url)).toEqual([
+      '/dashboard/models',
+    ])
+    act(() =>
+      useAuthStore
+        .getState()
+        .auth.setUser({ id: 1, username: 'admin', role: ROLE.ADMIN })
+    )
+    rerender()
+    expect(dashboard()?.items?.map((item) => item.url)).toEqual([
+      '/dashboard/models',
+      '/channels?tab=cost-models',
+      '/channels?tab=cost-users',
+    ])
+  })
+
   it('admin settings default Audit Logs to visible and preserve its independent toggle when saved', () => {
     const config = parseSidebarModulesAdmin(
       '{"console":{"enabled":true,"log":true}}'

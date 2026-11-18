@@ -22,7 +22,6 @@ import {
   ClipboardList,
   Clock,
   CreditCard,
-  DollarSign,
   FileText,
   FlaskConical,
   Key,
@@ -43,6 +42,7 @@ import { useTranslation } from 'react-i18next'
 
 import type { SidebarBadges, SidebarData } from '@/components/layout/types'
 import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 /**
  * Root navigation groups for the application sidebar.
@@ -52,6 +52,9 @@ import { ROLE } from '@/lib/roles'
  */
 export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
   const { t } = useTranslation()
+  const isAdmin = useAuthStore(
+    (state) => (state.auth.user?.role ?? ROLE.GUEST) >= ROLE.ADMIN
+  )
 
   return {
     navGroups: [
@@ -82,8 +85,24 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
           },
           {
             title: t('Dashboard'),
-            url: '/dashboard/models',
             icon: LayoutDashboard,
+            items: [
+              { title: t('Dashboard'), url: '/dashboard/models' },
+              ...(isAdmin
+                ? [
+                    {
+                      title: t('Model Cost & Selling Price'),
+                      url: '/channels?tab=cost-models',
+                      configUrls: ['/channels'],
+                    },
+                    {
+                      title: t('User Top-up & Gross Margin'),
+                      url: '/channels?tab=cost-users',
+                      configUrls: ['/channels'],
+                    },
+                  ]
+                : []),
+            ],
           },
           {
             title: t('API Keys'),
@@ -155,7 +174,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             icon: Ticket,
           },
           {
-            title: t('CRON'),
+            title: t('CRON Scheduled Tasks'),
             icon: Clock,
             items: [
               {
@@ -171,22 +190,6 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               {
                 title: t('Channel Upstream Model Sync'),
                 url: '/channels?tab=upstream-sync',
-                configUrls: ['/channels'],
-              },
-            ],
-          },
-          {
-            title: t('Cost Management'),
-            icon: DollarSign,
-            items: [
-              {
-                title: t('Model Cost & Selling Price'),
-                url: '/channels?tab=cost-models',
-                configUrls: ['/channels'],
-              },
-              {
-                title: t('User Top-up & Gross Margin'),
-                url: '/channels?tab=cost-users',
                 configUrls: ['/channels'],
               },
             ],
