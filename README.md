@@ -1,5 +1,7 @@
 <div align="center">
-
+為遵守new-api授權方式所fork並深度修改的new-api版本
+與線上主線差異最多不超兩個版本號
+  
 ![new-api](/web/public/logo.png)
 
 # New API
