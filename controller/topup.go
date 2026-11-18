@@ -172,6 +172,10 @@ func providerTopUpAmount(c *gin.Context, amount int64, provider string) (float64
 }
 
 func RequestECPayAmount(c *gin.Context) {
+	if !operation_setting.IsECPayEnabled() {
+		paymentError(c, common.NewMessage("Payment information has not been configured by administrator"))
+		return
+	}
 	var req AmountRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.Amount < getMinTopup() {
 		paymentError(c, common.NewMessage("Invalid parameters"))
@@ -189,6 +193,10 @@ func RequestECPayAmount(c *gin.Context) {
 }
 
 func RequestNewebPayAmount(c *gin.Context) {
+	if !operation_setting.IsNewebPayEnabled() {
+		paymentError(c, common.NewMessage("Payment information has not been configured by administrator"))
+		return
+	}
 	var req AmountRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.Amount < getMinTopup() {
 		paymentError(c, common.NewMessage("Invalid parameters"))

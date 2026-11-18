@@ -46,6 +46,8 @@ The usage-log refresh path now supports a server-side `after_created_at` / `afte
 
 NewebPay order creation and callback settlement are now wired through the existing top-up row-lock/idempotency path. Provider settings remain environment/admin configured; no credentials are stored in source.
 
+ECPay and NewebPay amount previews now use the same provider currency/fee quote path as order creation, and disabled providers reject direct amount requests. Wallet payment routing tests cover both provider-specific calculators.
+
 ## Current Release
 
 - Version: `Ver 1.2.3R1`
