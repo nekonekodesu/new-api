@@ -38,6 +38,14 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+### Usage-log refresh and classifier tab optimization
+
+Usage-log refresh now remains limited to the usage-log surfaces, pauses while the page is hidden through the existing React Query background behavior, and invalidates the relevant table, statistics, and audit queries when the page becomes visible again. Poll results merge rows by log id so unchanged rows keep their existing object references and avoid unnecessary table updates.
+
+The channel classifier was moved out of the bottom of Group Channel Management and is now a sibling tab beside Model Price Table. The tab is URL-addressable through `tab=classifier`.
+
+Validation: frontend `bun run typecheck`, targeted Oxlint for changed files, `bun run test -- src/features/channels/components/__tests__/table-refresh.test.tsx`, and `bun run build` passed.
+
 ### NewebPay gateway preparation
 
 Added configurable NewebPay MerchantID, HashKey, HashIV, and endpoint fields plus AES-CBC TradeInfo encryption/decryption and SHA-256 CheckValue helpers. The helpers validate key/IV lengths, PKCS-style padding, and signatures. No NewebPay route is enabled yet; order and callback idempotency will be added as a separate increment.

@@ -23,6 +23,7 @@ import {
   Cpu,
   DollarSign,
   Layers,
+  ListFilter,
   Radio,
   RefreshCw,
   Server,
@@ -50,6 +51,7 @@ import { ChannelsPrimaryButtons } from './components/channels-primary-buttons'
 import { ChannelsProvider } from './components/channels-provider'
 import { ChannelsTable } from './components/channels-table'
 import { CostManagementPanel } from './components/cost-management-panel'
+import { ChannelClassifierPanel } from './components/channel-classifier-panel'
 import { CronJobsPanel } from './components/cron-jobs-panel'
 import { CronUpstreamSyncPanel } from './components/cron-upstream-sync-panel'
 import { GroupChannelManagement } from './components/group-channel-management'
@@ -60,6 +62,7 @@ type ChannelSubTab =
   | 'all'
   | 'groups'
   | 'price-table'
+  | 'classifier'
   | 'cron'
   | 'upstream-accounts'
   | 'upstream-sync'
@@ -73,6 +76,7 @@ function normalizeChannelSubTab(raw: string | undefined): ChannelSubTab {
   if (
     raw === 'groups' ||
     raw === 'price-table' ||
+    raw === 'classifier' ||
     raw === 'cron' ||
     raw === 'upstream-accounts' ||
     raw === 'cost-models' ||
@@ -254,8 +258,8 @@ export function Channels() {
                     <Layers aria-hidden='true' className='size-3.5 shrink-0' />
                     <span>{t('Group Channel Management')}</span>
                   </TabsTrigger>
-                  <TabsTrigger
-                    value='price-table'
+                   <TabsTrigger
+                     value='price-table'
                     className='shrink-0 gap-1.5 text-xs'
                   >
                     <DollarSign
@@ -263,7 +267,14 @@ export function Channels() {
                       className='size-3.5 shrink-0'
                     />
                     <span>{t('Model Price Table')}</span>
-                  </TabsTrigger>
+                   </TabsTrigger>
+                   <TabsTrigger
+                     value='classifier'
+                     className='shrink-0 gap-1.5 text-xs'
+                   >
+                     <ListFilter aria-hidden='true' className='size-3.5 shrink-0' />
+                     <span>{t('Channel Classifier')}</span>
+                   </TabsTrigger>
                 </TabsList>
               </div>
             ) : null}
@@ -273,6 +284,7 @@ export function Channels() {
             {activeTab === 'all' && <ChannelsTable />}
             {activeTab === 'groups' && <GroupChannelManagement />}
             {activeTab === 'price-table' && <ModelPriceTablePanel />}
+            {activeTab === 'classifier' && <ChannelClassifierPanel />}
             {activeTab === 'cron' && <CronJobsPanel />}
             {activeTab === 'upstream-accounts' && <UpstreamAccountSyncPanel />}
             {activeTab === 'upstream-sync' && <CronUpstreamSyncPanel />}

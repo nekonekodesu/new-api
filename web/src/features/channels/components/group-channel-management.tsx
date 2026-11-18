@@ -73,7 +73,6 @@ import {
   resolveUpstreamAlloc,
 } from '../lib/cost-control'
 import { ChannelTypeLogo } from './channel-type-badge'
-import { ChannelClassifierPanel } from './channel-classifier-panel'
 import {
   CostControlProfitPolicyCard,
   CostControlUpstreamAllocationCard,
@@ -1206,7 +1205,6 @@ export function GroupChannelManagement(props: {
         )}
       </div>
 
-      <ChannelClassifierPanel />
     </div>
   )
 }

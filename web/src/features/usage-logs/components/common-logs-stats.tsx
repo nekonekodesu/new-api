@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
@@ -24,6 +24,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { formatLogQuota } from '@/lib/format'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
+import { usePageVisibilityRefetch } from '@/hooks/use-page-visibility-refetch'
 
 import { getLogStats, getUserLogStats } from '../api'
 import { DEFAULT_LOG_STATS } from '../constants'
@@ -56,9 +57,15 @@ export function CommonLogsStats() {
 
   const statsRefetchMs =
     autoRefreshSeconds > 0 ? Math.max(autoRefreshSeconds * 1000, 2000) : false
+  const queryClient = useQueryClient()
+  const queryKey = ['usage-logs-stats', isAdmin, searchParams]
+  const refetchOnVisible = () => {
+    void queryClient.invalidateQueries({ queryKey })
+  }
+  usePageVisibilityRefetch(refetchOnVisible)
 
   const { data: stats, isLoading } = useQuery({
-    queryKey: ['usage-logs-stats', isAdmin, searchParams],
+    queryKey,
     refetchInterval: statsRefetchMs,
     refetchIntervalInBackground: false,
     queryFn: async () => {

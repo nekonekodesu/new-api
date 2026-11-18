@@ -16,10 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -36,6 +36,7 @@ import { useTableUrlState } from '@/hooks/use-table-url-state'
 import { createServerError } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
+import { usePageVisibilityRefetch } from '@/hooks/use-page-visibility-refetch'
 
 import {
   DEFAULT_LOGS_DATA,
@@ -165,17 +166,13 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     ],
   })
 
+  const queryKey = useMemo(() => [
+    'logs', logCategory, viewAccess, pagination.pageIndex + 1,
+    pagination.pageSize, columnFilters, searchParams, t,
+  ], [logCategory, viewAccess, pagination.pageIndex, pagination.pageSize, columnFilters, searchParams, t])
+  const queryClient = useQueryClient()
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: [
-      'logs',
-      logCategory,
-      viewAccess,
-      pagination.pageIndex + 1,
-      pagination.pageSize,
-      columnFilters,
-      searchParams,
-      t,
-    ],
+    queryKey,
     refetchInterval:
       autoRefreshSeconds > 0 ? autoRefreshSeconds * 1000 : false,
     refetchIntervalInBackground: false,
@@ -193,7 +190,15 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         throw createServerError(result, t('Failed to load logs'))
       }
 
-      return result.data || DEFAULT_LOGS_DATA
+      const next = result.data || DEFAULT_LOGS_DATA
+      const previous = queryClient.getQueryData<typeof next>(queryKey)
+      if (!previous || next.items.length === 0) return next
+      const previousById = new Map(previous.items.map((item) => [item.id, item]))
+      const mergedItems = next.items.map((item) => ({
+        ...previousById.get(item.id),
+        ...item,
+      }))
+      return { ...next, items: mergedItems }
     },
     placeholderData: (previousData, previousQuery) => {
       if (
@@ -205,6 +210,10 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       return undefined
     },
   })
+  const refetchOnVisible = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey })
+  }, [queryClient, queryKey])
+  usePageVisibilityRefetch(refetchOnVisible)
 
   const logs = data?.items || []
   const columns = useColumnsByCategory(
