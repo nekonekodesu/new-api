@@ -318,7 +318,7 @@ export function UpstreamAccountSyncPanel() {
                                 className='text-[10px]'
                               >
                                 {resolveAccountSyncMode(acc) === 'lumiya'
-                                  ? t('傻逼lumiya')
+                                  ? t('Lumiya mode')
                                   : t('Standard Mode')}
                               </Badge>
                               <Badge variant='outline' className='text-[10px]'>
@@ -581,7 +581,7 @@ export function UpstreamAccountSyncPanel() {
                                   className='text-[10px]'
                                 >
                                   {resolveAccountSyncMode(acc) === 'lumiya'
-                                    ? t('傻逼lumiya')
+                                    ? t('Lumiya mode')
                                     : t('Standard Mode')}
                                 </Badge>
                                 <Badge
@@ -953,7 +953,7 @@ export function UpstreamAccountSyncPanel() {
                       <SelectItem value='standard'>
                         {t('Standard Mode')}
                       </SelectItem>
-                      <SelectItem value='lumiya'>{t('傻逼lumiya')}</SelectItem>
+                      <SelectItem value='lumiya'>{t('Lumiya mode')}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

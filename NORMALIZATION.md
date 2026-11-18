@@ -38,6 +38,10 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+### Frontend i18n completion
+
+Synchronized the new management, classifier, cost, scheduling, network, usage-log, payment, and request-policy UI keys across all seven frontend locales using the project i18n workflow. The sync report has zero missing and zero extra keys in every locale. A private-looking classifier label was normalized to the generic `Lumiya mode` label.
+
 ## Release 1.2.3R1
 
 Version source is the root `VERSION` file: `Ver 1.2.3R1`. `common.Version` is a generic fallback and startup reads `VERSION` when no release environment or linker version is supplied. Release note: 基於 newapi v1.0.0-rc.51 深度訂製而來。
