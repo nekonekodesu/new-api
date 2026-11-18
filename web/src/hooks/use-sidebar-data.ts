@@ -87,17 +87,22 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             title: t('Dashboard'),
             icon: LayoutDashboard,
             items: [
-              { title: t('Dashboard'), url: '/dashboard/models' },
+              {
+                title: t('Basic Data'),
+                url: '/dashboard/models',
+                activeUrls: [
+                  '/dashboard/health',
+                  '/dashboard/flow',
+                  '/dashboard/users',
+                  '/dashboard/network-security',
+                ],
+              },
               ...(isAdmin
                 ? [
                     {
-                      title: t('Model Cost & Selling Price'),
+                      title: t('Cost Management'),
                       url: '/channels?tab=cost-models',
-                      configUrls: ['/channels'],
-                    },
-                    {
-                      title: t('User Top-up & Gross Margin'),
-                      url: '/channels?tab=cost-users',
+                      activeUrls: ['/channels?tab=cost-users'],
                       configUrls: ['/channels'],
                     },
                   ]

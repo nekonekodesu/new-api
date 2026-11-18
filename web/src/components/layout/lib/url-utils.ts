@@ -61,7 +61,12 @@ export function checkIsActive(
 ): boolean {
   const hrefWithoutQuery = href.split('?')[0]
 
-  if (item.activeUrls?.some((url) => urlToString(url) === hrefWithoutQuery)) {
+  if (
+    item.activeUrls?.some((url) => {
+      const target = urlToString(url)
+      return target === (target?.includes('?') ? href : hrefWithoutQuery)
+    })
+  ) {
     return true
   }
 
@@ -73,6 +78,7 @@ export function checkIsActive(
     // Check if any sub-item matches
     if (
       items.some((i) => {
+        if (checkIsActive(href, i)) return true
         if (!i?.url) {
           return false
         }

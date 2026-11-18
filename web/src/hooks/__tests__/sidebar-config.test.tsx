@@ -148,8 +148,8 @@ describe('audit log sidebar entry', () => {
       result.current.navGroups
         .flatMap((group) => group.items)
         .find((item) => item.title === 'Dashboard')
-    expect(dashboard()?.items?.map((item) => item.url)).toEqual([
-      '/dashboard/models',
+    expect(dashboard()?.items?.map((item) => item.title)).toEqual([
+      'Basic Data',
     ])
     act(() =>
       useAuthStore
@@ -160,8 +160,16 @@ describe('audit log sidebar entry', () => {
     expect(dashboard()?.items?.map((item) => item.url)).toEqual([
       '/dashboard/models',
       '/channels?tab=cost-models',
-      '/channels?tab=cost-users',
     ])
+    expect(dashboard()?.items?.map((item) => item.title)).toEqual([
+      'Basic Data',
+      'Cost Management',
+    ])
+    const item = dashboard()
+    expect(item).toBeDefined()
+    if (!item) throw new Error('Dashboard navigation is missing')
+    expect(checkIsActive('/channels?tab=cost-users', item)).toBe(true)
+    expect(checkIsActive('/dashboard/network-security', item)).toBe(true)
   })
 
   it('admin settings default Audit Logs to visible and preserve its independent toggle when saved', () => {

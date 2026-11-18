@@ -136,6 +136,7 @@ function TpsDistributionBar(props: {
   p95High: number
   maxScale: number
 }) {
+  const { t } = useTranslation()
   const { p5Low, trimmed90, p95High, maxScale } = props
   if (trimmed90 <= 0 && p95High <= 0) {
     return <span className='text-muted-foreground font-mono text-xs'>-</span>
@@ -150,19 +151,19 @@ function TpsDistributionBar(props: {
       <div className='flex items-center justify-between gap-2 font-mono text-[11px]'>
         <span
           className='text-amber-600 dark:text-amber-400'
-          title='5% Low (P5)'
+          title={t('5% Low (P5)')}
         >
           {formatTpsValue(p5Low)}
         </span>
         <span
           className='text-foreground font-bold'
-          title='90% Trimmed Mean / Median'
+          title={t('90% Trimmed Mean / Median')}
         >
           {formatTpsValue(trimmed90)} t/s
         </span>
         <span
           className='text-emerald-600 dark:text-emerald-400'
-          title='5% High (P95)'
+          title={t('5% High (P95)')}
         >
           {formatTpsValue(p95High)}
         </span>
@@ -737,9 +738,7 @@ function ModelsHealthTable(props: {
             <TableHead className='text-right'>
               {t('Post-TTFT Decode Avg')}
             </TableHead>
-            <TableHead className='text-right'>
-              {t('Total TPS Avg')}
-            </TableHead>
+            <TableHead className='text-right'>{t('Total TPS Avg')}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -1021,9 +1020,7 @@ function ChannelsHealthTable(props: {
             <TableHead className='text-right'>
               {t('Post-TTFT Decode Avg')}
             </TableHead>
-            <TableHead className='text-right'>
-              {t('Total TPS Avg')}
-            </TableHead>
+            <TableHead className='text-right'>{t('Total TPS Avg')}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
