@@ -106,6 +106,24 @@ export async function calculateWaffoAmount(
   return res.data
 }
 
+export async function calculateECPayAmount(
+  request: AmountRequest
+): Promise<AmountResponse> {
+  const res = await api.post('/api/user/ecpay/amount', request, {
+    skipBusinessError: true,
+  } as Record<string, unknown>)
+  return res.data
+}
+
+export async function calculateNewebPayAmount(
+  request: AmountRequest
+): Promise<AmountResponse> {
+  const res = await api.post('/api/user/newebpay/amount', request, {
+    skipBusinessError: true,
+  } as Record<string, unknown>)
+  return res.data
+}
+
 /**
  * Request regular payment
  */
@@ -119,6 +137,24 @@ export async function requestPayment(
     ...res.data,
     url: res.data.url || (res as unknown as { url?: string }).url,
   }
+}
+
+export async function requestECPayPayment(
+  request: Omit<PaymentRequest, 'payment_method'>
+): Promise<PaymentResponse> {
+  const res = await api.post('/api/user/ecpay/pay', request, {
+    skipBusinessError: true,
+  } as Record<string, unknown>)
+  return res.data
+}
+
+export async function requestNewebPayPayment(
+  request: Omit<PaymentRequest, 'payment_method'>
+): Promise<PaymentResponse> {
+  const res = await api.post('/api/user/newebpay/pay', request, {
+    skipBusinessError: true,
+  } as Record<string, unknown>)
+  return res.data
 }
 
 /**

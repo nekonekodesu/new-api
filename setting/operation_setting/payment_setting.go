@@ -135,6 +135,11 @@ func ECPayCheckMacValue(fields map[string]string, hashKey, hashIV string) string
 	payload = strings.ToLower(payload)
 	payload = strings.ReplaceAll(payload, "%2d", "-")
 	payload = strings.ReplaceAll(payload, "%5f", "_")
+	payload = strings.ReplaceAll(payload, "%2e", ".")
+	payload = strings.ReplaceAll(payload, "%21", "!")
+	payload = strings.ReplaceAll(payload, "%2a", "*")
+	payload = strings.ReplaceAll(payload, "%28", "(")
+	payload = strings.ReplaceAll(payload, "%29", ")")
 	hash := sha256.Sum256([]byte(payload))
 	return strings.ToUpper(hex.EncodeToString(hash[:]))
 }
@@ -182,6 +187,11 @@ func QuotePaymentAmount(amountUSD float64, method PaymentMethodSetting) (float64
 	amount := amountUSD * method.ExchangeRate
 	amount += amount*method.FeeRate + method.FixedFee
 	return amount, nil
+}
+
+func GetPaymentMethodSetting(provider string) (PaymentMethodSetting, bool) {
+	method, ok := paymentSetting.PaymentMethods[strings.ToLower(strings.TrimSpace(provider))]
+	return method, ok
 }
 
 func init() {

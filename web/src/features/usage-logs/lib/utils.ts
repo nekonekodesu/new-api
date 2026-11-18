@@ -160,8 +160,9 @@ export function buildApiParams(config: {
   searchParams: Record<string, unknown>
   columnFilters?: Array<{ id: string; value: unknown }>
   isAdmin: boolean
+  after?: { createdAt: number; id: number }
 }): GetLogsParams {
-  const { page, pageSize, searchParams, columnFilters = [], isAdmin } = config
+  const { page, pageSize, searchParams, columnFilters = [], isAdmin, after } = config
 
   // Helper to process type parameter (single value from array)
   const processType = (value: unknown): number | undefined => {
@@ -200,6 +201,9 @@ export function buildApiParams(config: {
       ? { upstream_request_id: String(searchParams.upstreamRequestId) }
       : {}),
     ...buildTimeRangeParams(searchParams, false),
+    ...(after
+      ? { after_created_at: after.createdAt, after_id: after.id }
+      : {}),
   }
 
   // Override with column filters if present
@@ -243,7 +247,7 @@ export function buildApiParams(config: {
 export async function fetchLogsByCategory(
   config: FetchLogsConfig
 ): Promise<GetLogsResponse> {
-  const { logCategory, isAdmin, page, pageSize, searchParams, columnFilters } =
+  const { logCategory, isAdmin, page, pageSize, searchParams, columnFilters, after } =
     config
 
   if (logCategory === 'common') {
@@ -253,6 +257,7 @@ export async function fetchLogsByCategory(
       searchParams,
       columnFilters,
       isAdmin,
+      after,
     })
     return isAdmin ? await getAllLogs(params) : await getUserLogs(params)
   }

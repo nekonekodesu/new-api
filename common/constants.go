@@ -11,7 +11,7 @@ import (
 )
 
 var StartTime = time.Now().Unix() // unit: second
-var Version = "Ver1.2.0R"         // this hard coding will be replaced automatically when building, no need to manually change
+var Version = "v0.0.0"            // overridden by VERSION, env, or release linker flags
 var SystemName = "New API"
 var Footer = ""
 var Logo = ""

@@ -535,6 +535,8 @@ export interface GetLogsParams {
   group?: string
   request_id?: string
   upstream_request_id?: string
+  after_created_at?: number
+  after_id?: number
 }
 
 export interface GetLogsResponse {
@@ -607,6 +609,7 @@ export interface FetchLogsConfig {
   pageSize: number
   searchParams: Record<string, unknown>
   columnFilters: Array<{ id: string; value: unknown }>
+  after?: { createdAt: number; id: number }
 }
 
 // ============================================================================

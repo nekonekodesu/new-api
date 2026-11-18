@@ -523,6 +523,8 @@ type LogFilter struct {
 	Type              int
 	StartTimestamp    int64
 	EndTimestamp      int64
+	AfterCreatedAt    int64
+	AfterId           int
 	ModelName         string
 	Username          string
 	TokenName         string
@@ -592,6 +594,9 @@ func (f LogFilter) apply(tx *gorm.DB) (*gorm.DB, error) {
 	if f.EndTimestamp != 0 {
 		tx = tx.Where("logs.created_at <= ?", f.EndTimestamp)
 	}
+	if f.AfterCreatedAt > 0 {
+		tx = tx.Where("(logs.created_at > ? OR (logs.created_at = ? AND logs.id > ?))", f.AfterCreatedAt, f.AfterCreatedAt, f.AfterId)
+	}
 	if f.Channel != 0 {
 		tx = tx.Where("logs.channel_id = ?", f.Channel)
 	}
@@ -611,6 +616,9 @@ func GetAllLogs(filter LogFilter, startIdx int, num int) (logs []*Log, total int
 		return nil, 0, err
 	}
 	order := "logs.created_at desc, logs.id desc"
+	if filter.AfterCreatedAt > 0 {
+		order = "logs.created_at asc, logs.id asc"
+	}
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("logs.")
 	}
@@ -678,6 +686,9 @@ func GetUserLogs(userId int, filter LogFilter, startIdx int, num int) (logs []*L
 		return nil, 0, common.NewMessage("Failed to query logs")
 	}
 	order := "logs.id desc"
+	if filter.AfterCreatedAt > 0 {
+		order = "logs.created_at asc, logs.id asc"
+	}
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("logs.")
 	}

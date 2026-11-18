@@ -40,6 +40,7 @@ const (
 	PaymentProviderWaffo        = "waffo"
 	PaymentProviderWaffoPancake = "waffo_pancake"
 	PaymentProviderECPay        = "ecpay"
+	PaymentProviderNewebPay     = "newebpay"
 	PaymentProviderBalance      = "balance"
 )
 
@@ -100,6 +101,48 @@ func RechargeECPay(tradeNo, callerIP string) (alreadyDone bool, err error) {
 	}
 	syncCreditUserQuotaCache(topUp.UserId, quota, common.LogText("ecpay topup"))
 	RecordTopupLog(topUp.UserId, common.NewMessage("Online top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{"quota": logger.FormatQuota(quota), "amount": fmt.Sprintf("%f", topUp.Money)}), callerIP, topUp.PaymentMethod, PaymentProviderECPay)
+	return false, nil
+}
+
+func RechargeNewebPay(tradeNo, callerIP string) (alreadyDone bool, err error) {
+	if tradeNo == "" {
+		return false, errors.New("payment order number not provided")
+	}
+	var quota int
+	topUp := &TopUp{}
+	refCol := "`trade_no`"
+	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
+		refCol = `"trade_no"`
+	}
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(topUp).Error; err != nil {
+			return ErrTopUpNotFound
+		}
+		if topUp.PaymentProvider != PaymentProviderNewebPay {
+			return ErrPaymentMethodMismatch
+		}
+		if topUp.Status == common.TopUpStatusSuccess {
+			alreadyDone = true
+			return nil
+		}
+		if topUp.Status != common.TopUpStatusPending {
+			return ErrTopUpStatusInvalid
+		}
+		quota, err = common.WalletQuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
+		if err != nil || quota <= 0 {
+			return ErrInvalidTopUpQuota
+		}
+		topUp.Status, topUp.CompleteTime = common.TopUpStatusSuccess, common.GetTimestamp()
+		if err := tx.Save(topUp).Error; err != nil {
+			return err
+		}
+		return creditTopUpQuota(tx, topUp.UserId, quota, nil)
+	})
+	if err != nil || alreadyDone {
+		return alreadyDone, err
+	}
+	syncCreditUserQuotaCache(topUp.UserId, quota, common.LogText("newebpay topup"))
+	RecordTopupLog(topUp.UserId, common.NewMessage("Online top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{"quota": logger.FormatQuota(quota), "amount": fmt.Sprintf("%f", topUp.Money)}), callerIP, topUp.PaymentMethod, PaymentProviderNewebPay)
 	return false, nil
 }
 

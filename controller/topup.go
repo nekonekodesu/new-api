@@ -31,6 +31,12 @@ func GetTopUpInfo(c *gin.Context) {
 	if !complianceConfirmed {
 		payMethods = []map[string]string{}
 	}
+	if complianceConfirmed && operation_setting.IsECPayEnabled() {
+		payMethods = append(payMethods, map[string]string{"name": "ECPay", "type": "ecpay", "color": "#087f5b"})
+	}
+	if complianceConfirmed && operation_setting.IsNewebPayEnabled() {
+		payMethods = append(payMethods, map[string]string{"name": "NewebPay", "type": "newebpay", "color": "#1d4ed8"})
+	}
 
 	// 如果启用了 Stripe 支付，添加到支付方法列表
 	if isStripeTopUpEnabled() {
@@ -99,6 +105,8 @@ func GetTopUpInfo(c *gin.Context) {
 
 	data := gin.H{
 		"enable_online_topup":              isEpayTopUpEnabled(),
+		"enable_ecpay_topup":               operation_setting.IsECPayEnabled(),
+		"enable_newebpay_topup":            operation_setting.IsNewebPayEnabled(),
 		"enable_stripe_topup":              isStripeTopUpEnabled(),
 		"enable_creem_topup":               isCreemTopUpEnabled(),
 		"enable_waffo_topup":               enableWaffo,
@@ -138,12 +146,145 @@ type ECPayRequest struct {
 	Amount int64 `json:"amount"`
 }
 
+type NewebPayRequest struct {
+	Amount int64 `json:"amount"`
+}
+
+func providerTopUpAmount(c *gin.Context, amount int64, provider string) (float64, error) {
+	group, err := model.GetUserGroup(c.GetInt("id"), true)
+	if err != nil {
+		return 0, common.NewMessage("Failed to get the user group")
+	}
+	baseAmount := getPayMoney(amount, group)
+	method, configured := operation_setting.GetPaymentMethodSetting(provider)
+	if !configured {
+		return baseAmount, nil
+	}
+	siteRate := operation_setting.GetUsdToCurrencyRate(operation_setting.USDExchangeRate)
+	if siteRate <= 0 {
+		return 0, common.NewMessage("Invalid site currency exchange rate")
+	}
+	providerAmount, err := operation_setting.QuotePaymentAmount(baseAmount/siteRate, method)
+	if err != nil {
+		return 0, err
+	}
+	return decimal.NewFromFloat(providerAmount).Round(0).InexactFloat64(), nil
+}
+
+func RequestECPayAmount(c *gin.Context) {
+	var req AmountRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Amount < getMinTopup() {
+		paymentError(c, common.NewMessage("Invalid parameters"))
+		return
+	}
+	if rejectInvalidTopUpQuota(c, c.GetInt("id"), req.Amount) {
+		return
+	}
+	amount, err := providerTopUpAmount(c, req.Amount, model.PaymentProviderECPay)
+	if err != nil {
+		paymentError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "success", "data": strconv.FormatFloat(amount, 'f', 0, 64)})
+}
+
+func RequestNewebPayAmount(c *gin.Context) {
+	var req AmountRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Amount < getMinTopup() {
+		paymentError(c, common.NewMessage("Invalid parameters"))
+		return
+	}
+	if rejectInvalidTopUpQuota(c, c.GetInt("id"), req.Amount) {
+		return
+	}
+	amount, err := providerTopUpAmount(c, req.Amount, model.PaymentProviderNewebPay)
+	if err != nil {
+		paymentError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "success", "data": strconv.FormatFloat(amount, 'f', 0, 64)})
+}
+
+func RequestNewebPay(c *gin.Context) {
+	var req NewebPayRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		paymentError(c, common.NewMessage("Invalid parameters"))
+		return
+	}
+	if req.Amount < getMinTopup() {
+		paymentError(c, common.NewMessage("Top-up amount cannot be less than {{min}}", map[string]any{"min": getMinTopup()}))
+		return
+	}
+	if rejectInvalidTopUpQuota(c, c.GetInt("id"), req.Amount) || !operation_setting.IsNewebPayEnabled() {
+		return
+	}
+	tradeNo := fmt.Sprintf("NEWEB%d%s", c.GetInt("id"), common.GetRandomString(20))
+	payAmount, err := providerTopUpAmount(c, req.Amount, model.PaymentProviderNewebPay)
+	if err != nil {
+		paymentError(c, err)
+		return
+	}
+	callback := service.GetCallbackAddress() + "/api/user/newebpay/notify"
+	tradeInfo, checkValue, err := operation_setting.NewebPayEncodeTradeInfo(map[string]string{
+		"MerchantID":  operation_setting.GetPaymentSetting().NewebPayMerchantID,
+		"RespondType": "JSON", "TimeStamp": strconv.FormatInt(time.Now().Unix(), 10),
+		"Version": "2.0", "MerchantOrderNo": tradeNo, "Amt": strconv.FormatFloat(payAmount, 'f', 0, 64),
+		"ItemDesc": fmt.Sprintf("Quota %d", req.Amount), "ReturnURL": paymentReturnPath("/usage-logs"), "NotifyURL": callback,
+	})
+	if err != nil {
+		paymentError(c, common.NewMessage("Failed to create payment request"))
+		return
+	}
+	if err := (&model.TopUp{UserId: c.GetInt("id"), Amount: req.Amount, Money: payAmount, TradeNo: tradeNo, PaymentProvider: model.PaymentProviderNewebPay, PaymentMethod: "newebpay", CreateTime: common.GetTimestamp(), Status: common.TopUpStatusPending}).Insert(); err != nil {
+		paymentError(c, common.NewMessage("Failed to create order"))
+		return
+	}
+	endpoint := operation_setting.GetPaymentSetting().NewebPayEndpoint
+	if endpoint == "" {
+		endpoint = "https://ccore.newebpay.com/MPG/mpg_gateway"
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "success", "url": endpoint, "params": gin.H{"MerchantID": operation_setting.GetPaymentSetting().NewebPayMerchantID, "TradeInfo": tradeInfo, "TradeSha": checkValue}})
+}
+
+func NewebPayNotify(c *gin.Context) {
+	if !operation_setting.IsNewebPayEnabled() {
+		c.String(http.StatusForbidden, "0|disabled")
+		return
+	}
+	if err := c.Request.ParseForm(); err != nil {
+		c.String(http.StatusBadRequest, "0|invalid")
+		return
+	}
+	tradeInfo, checkValue := c.PostForm("TradeInfo"), c.PostForm("TradeSha")
+	values, err := operation_setting.NewebPayDecodeTradeInfo(tradeInfo, checkValue)
+	if err != nil || values.Get("Status") != "SUCCESS" || values.Get("MerchantID") != operation_setting.GetPaymentSetting().NewebPayMerchantID {
+		c.String(http.StatusUnauthorized, "0|invalid")
+		return
+	}
+	topUp := model.GetTopUpByTradeNo(values.Get("MerchantOrderNo"))
+	amount, amountErr := decimal.NewFromString(values.Get("Amt"))
+	if topUp == nil || amountErr != nil || !amount.Equal(decimal.NewFromFloat(topUp.Money)) {
+		c.String(http.StatusBadRequest, "0|amount mismatch")
+		return
+	}
+	if _, err := model.RechargeNewebPay(values.Get("MerchantOrderNo"), c.ClientIP()); err != nil && !errors.Is(err, model.ErrTopUpStatusInvalid) {
+		c.String(http.StatusBadRequest, "0|failed")
+		return
+	}
+	c.String(http.StatusOK, "1|OK")
+}
+
 func RequestECPay(c *gin.Context) {
 	var req ECPayRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.Amount < getMinTopup() || rejectInvalidTopUpQuota(c, c.GetInt("id"), req.Amount) {
-		if err != nil {
-			paymentError(c, common.NewMessage("Invalid parameters"))
-		}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		paymentError(c, common.NewMessage("Invalid parameters"))
+		return
+	}
+	if req.Amount < getMinTopup() {
+		paymentError(c, common.NewMessage("Top-up amount cannot be less than {{min}}", map[string]any{"min": getMinTopup()}))
+		return
+	}
+	if rejectInvalidTopUpQuota(c, c.GetInt("id"), req.Amount) {
 		return
 	}
 	if !operation_setting.IsECPayEnabled() {
@@ -151,13 +292,18 @@ func RequestECPay(c *gin.Context) {
 		return
 	}
 	tradeNo := fmt.Sprintf("ECPAY%d%s", c.GetInt("id"), common.GetRandomString(20))
+	payAmount, err := providerTopUpAmount(c, req.Amount, model.PaymentProviderECPay)
+	if err != nil {
+		paymentError(c, err)
+		return
+	}
 	callback := service.GetCallbackAddress() + "/api/user/ecpay/notify"
 	fields := map[string]string{
 		"MerchantID":        operation_setting.GetPaymentSetting().ECPayMerchantID,
 		"MerchantTradeNo":   tradeNo,
 		"MerchantTradeDate": time.Now().Format("2006/01/02 15:04:05"),
 		"PaymentType":       "aio",
-		"TotalAmount":       strconv.FormatInt(req.Amount, 10),
+		"TotalAmount":       strconv.FormatFloat(payAmount, 'f', 0, 64),
 		"TradeDesc":         "API top-up",
 		"ItemName":          fmt.Sprintf("Quota %d", req.Amount),
 		"ReturnURL":         callback,
@@ -166,7 +312,7 @@ func RequestECPay(c *gin.Context) {
 		"EncryptType":       "1",
 	}
 	fields["CheckMacValue"] = operation_setting.ECPayCheckMacValue(fields, operation_setting.GetPaymentSetting().ECPayHashKey, operation_setting.GetPaymentSetting().ECPayHashIV)
-	topUp := &model.TopUp{UserId: c.GetInt("id"), Amount: req.Amount, Money: float64(req.Amount), TradeNo: tradeNo, PaymentProvider: model.PaymentProviderECPay, PaymentMethod: "ecpay", CreateTime: common.GetTimestamp(), Status: common.TopUpStatusPending}
+	topUp := &model.TopUp{UserId: c.GetInt("id"), Amount: req.Amount, Money: payAmount, TradeNo: tradeNo, PaymentProvider: model.PaymentProviderECPay, PaymentMethod: "ecpay", CreateTime: common.GetTimestamp(), Status: common.TopUpStatusPending}
 	if err := topUp.Insert(); err != nil {
 		paymentError(c, common.NewMessage("Failed to create order"))
 		return
@@ -193,6 +339,12 @@ func ECPayNotify(c *gin.Context) {
 	}
 	if fields["MerchantID"] != operation_setting.GetPaymentSetting().ECPayMerchantID || fields["CheckMacValue"] != operation_setting.ECPayCheckMacValue(fields, operation_setting.GetPaymentSetting().ECPayHashKey, operation_setting.GetPaymentSetting().ECPayHashIV) || fields["RtnCode"] != "1" {
 		c.String(http.StatusUnauthorized, "0|invalid")
+		return
+	}
+	topUp := model.GetTopUpByTradeNo(fields["MerchantTradeNo"])
+	callbackAmount, amountErr := decimal.NewFromString(fields["TradeAmt"])
+	if topUp == nil || amountErr != nil || !callbackAmount.Equal(decimal.NewFromFloat(topUp.Money)) {
+		c.String(http.StatusBadRequest, "0|amount mismatch")
 		return
 	}
 	if _, err := model.RechargeECPay(fields["MerchantTradeNo"], c.ClientIP()); err != nil && !errors.Is(err, model.ErrTopUpStatusInvalid) {

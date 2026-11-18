@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -171,6 +171,13 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     pagination.pageSize, columnFilters, searchParams, t,
   ], [logCategory, viewAccess, pagination.pageIndex, pagination.pageSize, columnFilters, searchParams, t])
   const queryClient = useQueryClient()
+  const incrementalCursor = useRef<{ createdAt: number; id: number } | null>(null)
+  const filterSignature = JSON.stringify([logCategory, viewAccess, pagination.pageIndex, pagination.pageSize, columnFilters, searchParams])
+  const previousFilterSignature = useRef(filterSignature)
+  if (previousFilterSignature.current !== filterSignature) {
+    previousFilterSignature.current = filterSignature
+    incrementalCursor.current = null
+  }
   const { data, isLoading, isFetching } = useQuery({
     queryKey,
     refetchInterval:
@@ -184,6 +191,10 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         pageSize: pagination.pageSize,
         searchParams,
         columnFilters,
+        after:
+          autoRefreshSeconds > 0 && pagination.pageIndex === 0
+            ? incrementalCursor.current ?? undefined
+            : undefined,
       })
 
       if (!result?.success) {
@@ -192,13 +203,25 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
 
       const next = result.data || DEFAULT_LOGS_DATA
       const previous = queryClient.getQueryData<typeof next>(queryKey)
-      if (!previous || next.items.length === 0) return next
+      const cursorItem = (previous ? next.items.at(-1) : next.items.at(0)) as { created_at?: number; id?: number } | undefined
+      if (cursorItem?.created_at && cursorItem.id) {
+        incrementalCursor.current = { createdAt: cursorItem.created_at, id: cursorItem.id }
+      }
+      if (!previous || !incrementalCursor.current || next.items.length === 0) {
+        return previous && next.items.length === 0 ? previous : next
+      }
       const previousById = new Map(previous.items.map((item) => [item.id, item]))
-      const mergedItems = next.items.map((item) => ({
+      const mergedItems = [...next.items, ...previous.items].map((item) => ({
         ...previousById.get(item.id),
         ...item,
-      }))
-      return { ...next, items: mergedItems }
+      })).filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index)
+      mergedItems.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0) || (b.id ?? 0) - (a.id ?? 0))
+      const addedCount = next.items.filter((item) => !previousById.has(item.id)).length
+      return {
+        ...next,
+        total: previous.total + addedCount,
+        items: mergedItems.slice(0, pagination.pageSize),
+      }
     },
     placeholderData: (previousData, previousQuery) => {
       if (

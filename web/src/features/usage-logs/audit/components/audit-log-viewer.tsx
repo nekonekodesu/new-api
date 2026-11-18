@@ -76,7 +76,8 @@ export function AuditLogViewer(props: {
       requireServerSuccess(await getAuditLogs(props.scope, params)),
     enabled: canQuery && !invalidRange,
     retry: false,
-    refetchInterval: autoRefreshSeconds > 0 ? autoRefreshSeconds * 1000 : false,
+    refetchInterval:
+      autoRefreshSeconds > 0 ? Math.max(autoRefreshSeconds * 1000, 2000) : false,
     refetchIntervalInBackground: false,
   })
   const accessDenied =

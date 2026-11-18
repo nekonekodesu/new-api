@@ -38,6 +38,21 @@ Each feature increment records its validation and remaining limitations. Payment
 
 No feature release has been published yet.
 
+## Release 1.2.3R1
+
+Version source is the root `VERSION` file: `Ver 1.2.3R1`. `common.Version` is a generic fallback and startup reads `VERSION` when no release environment or linker version is supplied. Release note: 基於 newapi v1.0.0-rc.51 深度訂製而來。
+
+The usage-log refresh path now supports a server-side `after_created_at` / `after_id` cursor for common logs. The first request loads the normal page; subsequent visible 0.1-second polls request only newer rows, then merge them into the current page. The page resets its cursor when filters or pagination change, and hidden browser pages stop polling and refresh on visibility restoration.
+
+NewebPay order creation and callback settlement are now wired through the existing top-up row-lock/idempotency path. Provider settings remain environment/admin configured; no credentials are stored in source.
+
+## Current Release
+
+- Version: `Ver 1.2.3R1`
+- Release note: 基於 newapi v1.0.0-rc.51 深度訂製而來。
+
+The release version is read from `VERSION` at startup when no `VERSION` environment variable or linker-injected release version is present. The fallback in `common/constants.go` is generic and no longer contains a deployment version string.
+
 ### Usage-log refresh and classifier tab optimization
 
 Usage-log refresh now remains limited to the usage-log surfaces, pauses while the page is hidden through the existing React Query background behavior, and invalidates the relevant table, statistics, and audit queries when the page becomes visible again. Poll results merge rows by log id so unchanged rows keep their existing object references and avoid unnecessary table updates.

@@ -19,10 +19,14 @@ func logFilterFromQuery(c *gin.Context, admin bool) model.LogFilter {
 	logType, _ := strconv.Atoi(c.Query("type"))
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
 	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+	afterCreatedAt, _ := strconv.ParseInt(c.Query("after_created_at"), 10, 64)
+	afterId, _ := strconv.Atoi(c.Query("after_id"))
 	filter := model.LogFilter{
 		Type:              logType,
 		StartTimestamp:    startTimestamp,
 		EndTimestamp:      endTimestamp,
+		AfterCreatedAt:    afterCreatedAt,
+		AfterId:           afterId,
 		ModelName:         c.Query("model_name"),
 		TokenName:         c.Query("token_name"),
 		Group:             c.Query("group"),
@@ -57,6 +61,10 @@ func limitLogTimeRange(startTimestamp int64, endTimestamp int64) (int64, error) 
 func GetAllLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	filter := logFilterFromQuery(c, true)
+	limit := pageInfo.GetPageSize()
+	if filter.AfterCreatedAt > 0 {
+		limit = pageInfo.GetPageSize() * 10
+	}
 	role := c.GetInt("role")
 	roleBucket := common.RoleAdminUser
 	if role >= common.RoleRootUser {
@@ -64,10 +72,13 @@ func GetAllLogs(c *gin.Context) {
 	}
 	cacheKey := model.BuildLogQueryCacheKey("all", 0, roleBucket, filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	logs, total, cached := model.GetCachedLogPage(cacheKey)
+	if filter.AfterCreatedAt > 0 {
+		logs, total, cached = nil, 0, false
+	}
 	if !cached {
 		verBefore := model.GetLogWriteVersion()
 		var err error
-		logs, total, err = model.GetAllLogs(filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+		logs, total, err = model.GetAllLogs(filter, pageInfo.GetStartIdx(), limit)
 		if err != nil {
 			common.ApiError(c, err)
 			return
@@ -77,7 +88,9 @@ func GetAllLogs(c *gin.Context) {
 		} else {
 			model.FormatRootLogs(logs)
 		}
-		model.SetCachedLogPage(cacheKey, verBefore, logs, total)
+		if filter.AfterCreatedAt == 0 {
+			model.SetCachedLogPage(cacheKey, verBefore, logs, total)
+		}
 	}
 	if pageInfo.GetStartIdx() == 0 {
 		activeLogs := service.GetActiveRelayLogs(filter, 0, true)
@@ -86,7 +99,11 @@ func GetAllLogs(c *gin.Context) {
 			total += int64(len(activeLogs))
 		}
 	}
-	pageInfo.SetTotal(int(total))
+	if filter.AfterCreatedAt > 0 {
+		pageInfo.SetTotal(int(total) + pageInfo.GetStartIdx())
+	} else {
+		pageInfo.SetTotal(int(total))
+	}
 	pageInfo.SetItems(logs)
 	common.ApiSuccess(c, pageInfo)
 	return
@@ -95,6 +112,10 @@ func GetAllLogs(c *gin.Context) {
 func GetUserLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	filter := logFilterFromQuery(c, false)
+	limit := pageInfo.GetPageSize()
+	if filter.AfterCreatedAt > 0 {
+		limit = pageInfo.GetPageSize() * 10
+	}
 	if c.GetInt("role") < common.RoleAdminUser {
 		startTimestamp, err := limitLogTimeRange(filter.StartTimestamp, filter.EndTimestamp)
 		if err != nil {
@@ -106,15 +127,20 @@ func GetUserLogs(c *gin.Context) {
 	userId := c.GetInt("id")
 	cacheKey := model.BuildLogQueryCacheKey("user", userId, common.RoleCommonUser, filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	logs, total, cached := model.GetCachedLogPage(cacheKey)
+	if filter.AfterCreatedAt > 0 {
+		logs, total, cached = nil, 0, false
+	}
 	if !cached {
 		verBefore := model.GetLogWriteVersion()
 		var err error
-		logs, total, err = model.GetUserLogs(userId, filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+		logs, total, err = model.GetUserLogs(userId, filter, pageInfo.GetStartIdx(), limit)
 		if err != nil {
 			common.ApiError(c, err)
 			return
 		}
-		model.SetCachedLogPage(cacheKey, verBefore, logs, total)
+		if filter.AfterCreatedAt == 0 {
+			model.SetCachedLogPage(cacheKey, verBefore, logs, total)
+		}
 	}
 	if pageInfo.GetStartIdx() == 0 {
 		activeLogs := service.GetActiveRelayLogs(filter, userId, false)
@@ -123,7 +149,11 @@ func GetUserLogs(c *gin.Context) {
 			total += int64(len(activeLogs))
 		}
 	}
-	pageInfo.SetTotal(int(total))
+	if filter.AfterCreatedAt > 0 {
+		pageInfo.SetTotal(int(total) + pageInfo.GetStartIdx())
+	} else {
+		pageInfo.SetTotal(int(total))
+	}
 	pageInfo.SetItems(logs)
 	common.ApiSuccess(c, pageInfo)
 	return

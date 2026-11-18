@@ -22,6 +22,22 @@ import { PAYMENT_TYPES } from '../constants'
 import { requestPaymentAmount } from './use-payment'
 
 describe('payment amount routing', () => {
+  test.each(['ecpay', 'newebpay'] as const)('routes %s quotes to its provider', async (provider) => {
+    const unexpected = async () => { throw new Error('Wrong provider') }
+    const amount = await requestPaymentAmount(10, provider, {
+      regular: unexpected,
+      stripe: unexpected,
+      waffo: unexpected,
+      waffoPancake: unexpected,
+      ecpay: unexpected,
+      newebpay: unexpected,
+      [provider]: async (request: { amount: number }) => {
+        expect(request.amount).toBe(10)
+        return { success: true, data: '335' }
+      },
+    })
+    expect(amount).toBe(335)
+  })
   test('uses the dedicated Waffo amount calculator', async () => {
     const calls: string[] = []
     const amount = await requestPaymentAmount(120, PAYMENT_TYPES.WAFFO, {
@@ -40,6 +56,14 @@ describe('payment amount routing', () => {
       waffoPancake: async () => {
         calls.push('pancake')
         return { success: true, data: '4' }
+      },
+      ecpay: async () => {
+        calls.push('ecpay')
+        return { success: true, data: '5' }
+      },
+      newebpay: async () => {
+        calls.push('newebpay')
+        return { success: true, data: '6' }
       },
     })
 

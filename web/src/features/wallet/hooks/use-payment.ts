@@ -26,8 +26,12 @@ import {
   calculateAmount,
   calculateStripeAmount,
   calculateWaffoAmount,
+  calculateECPayAmount,
+  calculateNewebPayAmount,
   calculateWaffoPancakeAmount,
   requestPayment,
+  requestECPayPayment,
+  requestNewebPayPayment,
   requestStripePayment,
   isApiSuccess,
 } from '../api'
@@ -50,6 +54,8 @@ export interface PaymentAmountCalculators {
   stripe: AmountCalculator
   waffo: AmountCalculator
   waffoPancake: AmountCalculator
+  ecpay: AmountCalculator
+  newebpay: AmountCalculator
 }
 
 const defaultPaymentAmountCalculators: PaymentAmountCalculators = {
@@ -57,6 +63,8 @@ const defaultPaymentAmountCalculators: PaymentAmountCalculators = {
   stripe: calculateStripeAmount,
   waffo: calculateWaffoAmount,
   waffoPancake: calculateWaffoPancakeAmount,
+  ecpay: calculateECPayAmount,
+  newebpay: calculateNewebPayAmount,
 }
 
 export async function requestPaymentAmount(
@@ -71,6 +79,10 @@ export async function requestPaymentAmount(
     calculator = calculators.waffo
   } else if (isWaffoPancakePayment(paymentType)) {
     calculator = calculators.waffoPancake
+  } else if (paymentType === 'ecpay') {
+    calculator = calculators.ecpay
+  } else if (paymentType === 'newebpay') {
+    calculator = calculators.newebpay
   }
 
   const response = await calculator({ amount: topupAmount })
@@ -116,15 +128,16 @@ export function usePayment() {
         const isStripe = isStripePayment(paymentType)
         const amount = Math.floor(topupAmount)
 
-        const response = isStripe
-          ? await requestStripePayment({
-              amount,
-              payment_method: 'stripe',
-            })
-          : await requestPayment({
-              amount,
-              payment_method: paymentType,
-            })
+        let response: Awaited<ReturnType<typeof requestPayment>>
+        if (isStripe) {
+          response = await requestStripePayment({ amount, payment_method: 'stripe' })
+        } else if (paymentType === 'ecpay') {
+          response = await requestECPayPayment({ amount })
+        } else if (paymentType === 'newebpay') {
+          response = await requestNewebPayPayment({ amount })
+        } else {
+          response = await requestPayment({ amount, payment_method: paymentType })
+        }
 
         if (!isApiSuccess(response)) {
           handleServerError(response, i18next.t('Payment request failed'))

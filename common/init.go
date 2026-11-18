@@ -35,6 +35,11 @@ func InitEnv() {
 	envVersion := os.Getenv("VERSION")
 	if envVersion != "" {
 		Version = envVersion
+	} else if Version == "v0.0.0" {
+		fileVersion := readVersionFile()
+		if fileVersion != "" {
+			Version = fileVersion
+		}
 	}
 
 	if *PrintVersion {
@@ -144,6 +149,22 @@ func InitEnv() {
 	SearchRateLimitNum = GetEnvOrDefault("SEARCH_RATE_LIMIT", 10)
 	SearchRateLimitDuration = int64(GetEnvOrDefault("SEARCH_RATE_LIMIT_DURATION", 60))
 	initConstantEnv()
+}
+
+func readVersionFile() string {
+	paths := []string{"VERSION"}
+	if executable, err := os.Executable(); err == nil {
+		paths = append(paths, filepath.Join(filepath.Dir(executable), "VERSION"))
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			if version := strings.TrimSpace(string(data)); version != "" {
+				return version
+			}
+		}
+	}
+	return ""
 }
 
 func initUserSessionSettings() {

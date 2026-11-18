@@ -89,6 +89,7 @@ func SetApiRouter(router *gin.Engine) {
 			userRoute.POST("/epay/notify", anonymousRequestBodyLimit, controller.EpayNotify)
 			userRoute.GET("/epay/notify", controller.EpayNotify)
 			userRoute.POST("/ecpay/notify", anonymousRequestBodyLimit, controller.ECPayNotify)
+			userRoute.POST("/newebpay/notify", anonymousRequestBodyLimit, controller.NewebPayNotify)
 			userRoute.GET("/groups", controller.GetUserGroups)
 
 			selfRoute := userRoute.Group("/")
@@ -125,6 +126,9 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/topup", middleware.CriticalRateLimit(), controller.TopUp)
 				selfRoute.POST("/pay", middleware.CriticalRateLimit(), controller.RequestEpay)
 				selfRoute.POST("/ecpay/pay", middleware.CriticalRateLimit(), controller.RequestECPay)
+				selfRoute.POST("/ecpay/amount", controller.RequestECPayAmount)
+				selfRoute.POST("/newebpay/pay", middleware.CriticalRateLimit(), controller.RequestNewebPay)
+				selfRoute.POST("/newebpay/amount", controller.RequestNewebPayAmount)
 				selfRoute.POST("/amount", controller.RequestAmount)
 				selfRoute.POST("/stripe/pay", middleware.CriticalRateLimit(), controller.RequestStripePay)
 				selfRoute.POST("/stripe/amount", controller.RequestStripeAmount)
