@@ -24,8 +24,10 @@ import {
   useSystemConfigStore,
   type CurrencyConfig,
   type CurrencyDisplayType,
+  type CurrencyRateConfig,
   type SystemConfig,
   DEFAULT_CURRENCY_CONFIG,
+  DEFAULT_CURRENCY_RATES,
 } from '@/stores/system-config-store'
 
 /**
@@ -57,6 +59,41 @@ function toNumber(value: unknown, fallback: number): number {
   return fallback
 }
 
+function parseCurrencyRates(
+  raw: unknown,
+  cnyRate: number,
+  ntdRate: number
+): Record<string, CurrencyRateConfig> {
+  const merged: Record<string, CurrencyRateConfig> = {
+    ...DEFAULT_CURRENCY_RATES,
+    CNY: { symbol: '¥', rate: cnyRate > 0 ? cnyRate : 7.3 },
+    TWD: { symbol: 'NT$', rate: ntdRate > 0 ? ntdRate : 32 },
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return merged
+  }
+  for (const [rawCode, entry] of Object.entries(
+    raw as Record<string, unknown>
+  )) {
+    const code = rawCode.trim().toUpperCase()
+    if (!code || code === 'TOKENS' || code === 'CUSTOM') continue
+    const normalizedCode = code === 'NTD' ? 'TWD' : code
+    if (!entry || typeof entry !== 'object') continue
+    const record = entry as Record<string, unknown>
+    const rate = toNumber(record.rate, 0)
+    const symbol =
+      typeof record.symbol === 'string' && record.symbol.trim()
+        ? record.symbol.trim()
+        : (merged[normalizedCode]?.symbol ?? `${normalizedCode} `)
+    if (normalizedCode === 'USD') {
+      merged.USD = { symbol, rate: 1 }
+    } else if (rate > 0) {
+      merged[normalizedCode] = { symbol, rate }
+    }
+  }
+  return merged
+}
+
 /**
  * Map `/api/status` response data to our persisted system config structure
  */
@@ -69,6 +106,15 @@ export function mapStatusDataToConfig(
     (data.quota_display_type as CurrencyDisplayType | undefined) ??
     DEFAULT_CURRENCY_CONFIG.quotaDisplayType
 
+  const usdExchangeRate = toNumber(
+    data.usd_exchange_rate,
+    DEFAULT_CURRENCY_CONFIG.usdExchangeRate
+  )
+  const ntdExchangeRate = toNumber(
+    data.ntd_exchange_rate,
+    DEFAULT_CURRENCY_CONFIG.ntdExchangeRate ?? 32
+  )
+
   const currency: CurrencyConfig = {
     displayInCurrency:
       (data.display_in_currency as boolean | undefined) ??
@@ -78,9 +124,12 @@ export function mapStatusDataToConfig(
       data.quota_per_unit,
       DEFAULT_CURRENCY_CONFIG.quotaPerUnit
     ),
-    usdExchangeRate: toNumber(
-      data.usd_exchange_rate,
-      DEFAULT_CURRENCY_CONFIG.usdExchangeRate
+    usdExchangeRate,
+    ntdExchangeRate,
+    currencyRates: parseCurrencyRates(
+      data.currency_rates,
+      usdExchangeRate,
+      ntdExchangeRate
     ),
     customCurrencySymbol:
       (data.custom_currency_symbol as string | undefined)?.trim() ||

@@ -95,7 +95,9 @@ func GetOptions(c *gin.Context) {
 			strings.HasSuffix(k, "Key") ||
 			strings.HasSuffix(k, "secret") ||
 			strings.HasSuffix(k, "api_key") ||
-			strings.HasSuffix(k, "private_key")
+			strings.HasSuffix(k, "private_key") ||
+			strings.HasSuffix(k, "hash_key") ||
+			strings.HasSuffix(k, "hash_iv")
 		if isSensitiveKey {
 			continue
 		}

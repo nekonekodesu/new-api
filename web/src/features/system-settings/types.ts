@@ -284,6 +284,7 @@ export type BillingSettings = {
   'general_setting.quota_display_type': string
   'general_setting.custom_currency_symbol': string
   'general_setting.custom_currency_exchange_rate': number
+  'general_setting.currency_rates': string
   DisplayInCurrencyEnabled: boolean
   DisplayTokenStatEnabled: boolean
   ModelPrice: string
@@ -316,6 +317,15 @@ export type BillingSettings = {
   PayMethods: string
   'payment_setting.amount_options': string
   'payment_setting.amount_discount': string
+  'payment_setting.payment_methods': string
+  'payment_setting.ecpay_merchant_id': string
+  'payment_setting.ecpay_hash_key': string
+  'payment_setting.ecpay_hash_iv': string
+  'payment_setting.ecpay_endpoint': string
+  'payment_setting.newebpay_merchant_id': string
+  'payment_setting.newebpay_hash_key': string
+  'payment_setting.newebpay_hash_iv': string
+  'payment_setting.newebpay_endpoint': string
   'payment_setting.epay_sign_type': string
   'payment_setting.epay_merchant_private_key': string
   'payment_setting.epay_platform_public_key': string

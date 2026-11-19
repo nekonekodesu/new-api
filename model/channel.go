@@ -46,15 +46,17 @@ type Channel struct {
 	UsedQuota          int64   `json:"used_quota" gorm:"bigint;default:0"`
 	ModelMapping       *string `json:"model_mapping" gorm:"type:text"`
 	//MaxInputTokens     *int    `json:"max_input_tokens" gorm:"default:0"`
-	StatusCodeMapping *string `json:"status_code_mapping" gorm:"type:varchar(1024);default:''"`
-	Priority          *int64  `json:"priority" gorm:"bigint;default:0"`
-	AutoBan           *int    `json:"auto_ban" gorm:"default:1"`
-	OtherInfo         string  `json:"other_info"`
-	Tag               *string `json:"tag" gorm:"index"`
-	Setting           *string `json:"setting" gorm:"type:text"` // 渠道额外设置
-	ParamOverride     *string `json:"param_override" gorm:"type:text"`
-	HeaderOverride    *string `json:"header_override" gorm:"type:text"`
-	Remark            *string `json:"remark" gorm:"type:varchar(255)" validate:"max=255"`
+	StatusCodeMapping *string  `json:"status_code_mapping" gorm:"type:varchar(1024);default:''"`
+	Priority          *int64   `json:"priority" gorm:"bigint;default:0"`
+	AutoBan           *int     `json:"auto_ban" gorm:"default:1"`
+	OtherInfo         string   `json:"other_info"`
+	Tag               *string  `json:"tag" gorm:"index"`
+	Setting           *string  `json:"setting" gorm:"type:text"` // 渠道额外设置
+	ParamOverride     *string  `json:"param_override" gorm:"type:text"`
+	HeaderOverride    *string  `json:"header_override" gorm:"type:text"`
+	Remark            *string  `json:"remark" gorm:"type:varchar(255)" validate:"max=255"`
+	CurrencyCode      *string  `json:"currency_code" gorm:"type:varchar(16);default:''"`
+	ExchangeRate      *float64 `json:"exchange_rate" gorm:"default:0"`
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
@@ -68,6 +70,20 @@ type Channel struct {
 }
 
 const ChannelStatusReasonAllKeysDisabled = "All keys are disabled"
+
+func (channel *Channel) BeforeSave(_ *gorm.DB) error {
+	if channel.CurrencyCode != nil {
+		normalized := strings.ToUpper(strings.TrimSpace(*channel.CurrencyCode))
+		if len(normalized) > 16 {
+			normalized = normalized[:16]
+		}
+		*channel.CurrencyCode = normalized
+	}
+	if channel.ExchangeRate != nil && *channel.ExchangeRate < 0 {
+		return errors.New("exchange_rate must be non-negative")
+	}
+	return nil
+}
 
 type ChannelInfo struct {
 	IsMultiKey             bool                  `json:"is_multi_key"`                        // 是否多Key模式

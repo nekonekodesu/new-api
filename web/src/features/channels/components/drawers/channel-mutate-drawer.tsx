@@ -2204,6 +2204,69 @@ export function ChannelMutateDrawer({
             </FormItem>
           )}
         />
+
+        <div className='grid grid-cols-1 gap-4 sm:grid-cols-2'>
+          <FormField
+            control={form.control}
+            name='currency_code'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Channel Currency')}</FormLabel>
+                <FormControl>
+                  <Input
+                    maxLength={16}
+                    placeholder={t('e.g. USD, CNY, TWD (optional)')}
+                    value={field.value ?? ''}
+                    onChange={(e) =>
+                      field.onChange(e.target.value.toUpperCase())
+                    }
+                    onBlur={field.onBlur}
+                    name={field.name}
+                    ref={field.ref}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Upstream settlement currency code; leave empty to use system default'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='exchange_rate'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Channel Exchange Rate')}</FormLabel>
+                <FormControl>
+                  <Input
+                    type='number'
+                    step='0.0001'
+                    min='0'
+                    placeholder={t('0 = use system default')}
+                    value={field.value ?? 0}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      field.onChange(val === '' ? 0 : Number(val))
+                    }}
+                    onBlur={field.onBlur}
+                    name={field.name}
+                    ref={field.ref}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Custom exchange rate (channel currency per 1 USD); 0 uses system rate'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
       </div>
     </div>
   )

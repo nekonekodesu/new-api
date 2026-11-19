@@ -21,7 +21,21 @@ import { persist } from 'zustand/middleware'
 
 import { DEFAULT_SYSTEM_NAME, DEFAULT_LOGO } from '@/lib/constants'
 
-export type CurrencyDisplayType = 'USD' | 'CNY' | 'NTD' | 'TOKENS' | 'CUSTOM'
+export type BuiltInCurrencyDisplayType =
+  | 'USD'
+  | 'CNY'
+  | 'NTD'
+  | 'TOKENS'
+  | 'CUSTOM'
+
+export type CurrencyDisplayType =
+  | BuiltInCurrencyDisplayType
+  | (string & Record<never, never>)
+
+export interface CurrencyRateConfig {
+  symbol: string
+  rate: number
+}
 
 export interface CurrencyConfig {
   /** Whether to render quota values as currency instead of raw units */
@@ -30,8 +44,12 @@ export interface CurrencyConfig {
   quotaDisplayType: CurrencyDisplayType
   /** Number of quota units that equal one USD */
   quotaPerUnit: number
-  /** Exchange rate from USD to the configured local currency */
+  /** Exchange rate from USD to CNY */
   usdExchangeRate: number
+  /** Exchange rate from USD to NTD/TWD */
+  ntdExchangeRate?: number
+  /** Multi-currency exchange rate table keyed by uppercase currency code */
+  currencyRates?: Record<string, CurrencyRateConfig>
   /** Custom currency symbol configured by the admin (used when type === CUSTOM) */
   customCurrencySymbol: string
   /** Exchange rate from USD to the custom currency (used when type === CUSTOM) */
@@ -47,11 +65,21 @@ export interface SystemConfig {
   currency: CurrencyConfig
 }
 
+export const DEFAULT_CURRENCY_RATES: Record<string, CurrencyRateConfig> = {
+  USD: { symbol: '$', rate: 1 },
+  CNY: { symbol: '¥', rate: 7.3 },
+  TWD: { symbol: 'NT$', rate: 32 },
+  JPY: { symbol: '¥', rate: 150 },
+  EUR: { symbol: '€', rate: 0.92 },
+}
+
 export const DEFAULT_CURRENCY_CONFIG: CurrencyConfig = {
   displayInCurrency: true,
   quotaDisplayType: 'USD',
   quotaPerUnit: 500000,
-  usdExchangeRate: 1,
+  usdExchangeRate: 7.3,
+  ntdExchangeRate: 32,
+  currencyRates: { ...DEFAULT_CURRENCY_RATES },
   customCurrencySymbol: '¤',
   customCurrencyExchangeRate: 1,
 }
@@ -86,7 +114,7 @@ export const useSystemConfigStore = create<SystemConfigState>()(
             ...newConfig,
             currency: {
               ...state.config.currency,
-              ...(newConfig.currency ?? {}),
+              ...newConfig.currency,
             },
           },
         })),

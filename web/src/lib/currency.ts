@@ -81,8 +81,10 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   useSystemConfigStore,
   DEFAULT_CURRENCY_CONFIG,
+  DEFAULT_CURRENCY_RATES,
   type CurrencyConfig,
   type CurrencyDisplayType,
+  type CurrencyRateConfig,
 } from '@/stores/system-config-store'
 
 export interface CurrencyFormatOptions {
@@ -141,27 +143,44 @@ const DEFAULT_FORMAT_OPTIONS: ResolvedCurrencyFormatOptions = {
 }
 
 const DISPLAY_TYPE_VALUES = ['USD', 'CNY', 'NTD', 'TOKENS', 'CUSTOM'] as const
-type DisplayTypeLiteral = (typeof DISPLAY_TYPE_VALUES)[number]
+const CURRENCY_CODE_PATTERN = /^[A-Z]{2,8}$/
 
 export function isCurrencyDisplayType(
   value: unknown
 ): value is CurrencyDisplayType {
-  return (
-    typeof value === 'string' &&
-    DISPLAY_TYPE_VALUES.includes(value as DisplayTypeLiteral)
-  )
+  if (typeof value !== 'string') return false
+  const normalized = value.trim().toUpperCase()
+  if ((DISPLAY_TYPE_VALUES as readonly string[]).includes(normalized)) {
+    return true
+  }
+  return CURRENCY_CODE_PATTERN.test(normalized)
 }
 
 export function parseCurrencyDisplayType(
   value: unknown,
   fallback: CurrencyDisplayType = 'USD'
 ): CurrencyDisplayType {
-  return isCurrencyDisplayType(value) ? value : fallback
+  if (typeof value !== 'string') return fallback
+  const normalized = value.trim().toUpperCase()
+  return isCurrencyDisplayType(normalized) ? normalized : fallback
 }
 
 function getConfig(): CurrencyConfig {
   const { config } = useSystemConfigStore.getState()
   const currency = config?.currency ?? DEFAULT_CURRENCY_CONFIG
+  const usdExchangeRate =
+    currency?.usdExchangeRate && currency.usdExchangeRate > 0
+      ? currency.usdExchangeRate
+      : DEFAULT_CURRENCY_CONFIG.usdExchangeRate
+  const ntdExchangeRate =
+    currency?.ntdExchangeRate && currency.ntdExchangeRate > 0
+      ? currency.ntdExchangeRate
+      : DEFAULT_CURRENCY_CONFIG.ntdExchangeRate
+  const currencyRates: Record<string, CurrencyRateConfig> = {
+    ...DEFAULT_CURRENCY_RATES,
+    ...currency?.currencyRates,
+  }
+
   return {
     ...DEFAULT_CURRENCY_CONFIG,
     ...currency,
@@ -169,10 +188,9 @@ function getConfig(): CurrencyConfig {
       currency?.quotaPerUnit && currency.quotaPerUnit > 0
         ? currency.quotaPerUnit
         : DEFAULT_CURRENCY_CONFIG.quotaPerUnit,
-    usdExchangeRate:
-      currency?.usdExchangeRate && currency.usdExchangeRate > 0
-        ? currency.usdExchangeRate
-        : DEFAULT_CURRENCY_CONFIG.usdExchangeRate,
+    usdExchangeRate,
+    ntdExchangeRate,
+    currencyRates,
     customCurrencyExchangeRate:
       currency?.customCurrencyExchangeRate &&
       currency.customCurrencyExchangeRate > 0
@@ -184,22 +202,42 @@ function getConfig(): CurrencyConfig {
   }
 }
 
-function getDisplayMeta(config: CurrencyConfig): DisplayMeta {
-  switch (config.quotaDisplayType) {
-    case 'CNY':
+function resolveDisplayMetaForCode(
+  code: string,
+  config: CurrencyConfig
+): DisplayMeta {
+  const normalized = code.trim().toUpperCase()
+  const rates = config.currencyRates ?? DEFAULT_CURRENCY_RATES
+  const ntdFallbackRate =
+    config.ntdExchangeRate && config.ntdExchangeRate > 0
+      ? config.ntdExchangeRate
+      : (DEFAULT_CURRENCY_CONFIG.ntdExchangeRate ?? 32)
+  switch (normalized) {
+    case 'CNY': {
+      const configured = rates.CNY
       return {
         kind: 'currency',
-        symbol: '¥',
+        symbol: configured?.symbol || '¥',
         currencyCode: 'CNY',
-        exchangeRate: config.usdExchangeRate,
+        exchangeRate:
+          configured && configured.rate > 0
+            ? configured.rate
+            : config.usdExchangeRate,
       }
+    }
     case 'NTD':
+    case 'TWD': {
+      const configured = rates.TWD ?? rates.NTD
       return {
         kind: 'currency',
-        symbol: 'NT$',
+        symbol: configured?.symbol || 'NT$',
         currencyCode: 'TWD',
-        exchangeRate: config.usdExchangeRate,
+        exchangeRate:
+          configured && configured.rate > 0
+            ? configured.rate
+            : ntdFallbackRate,
       }
+    }
     case 'CUSTOM':
       return {
         kind: 'custom',
@@ -212,14 +250,34 @@ function getDisplayMeta(config: CurrencyConfig): DisplayMeta {
         quotaPerUnit: config.quotaPerUnit,
       }
     case 'USD':
-    default:
+      return {
+        kind: 'currency',
+        symbol: rates.USD?.symbol || '$',
+        currencyCode: 'USD',
+        exchangeRate: 1,
+      }
+    default: {
+      const configured = rates[normalized]
+      if (configured && configured.rate > 0) {
+        return {
+          kind: 'currency',
+          symbol: configured.symbol || `${normalized} `,
+          currencyCode: normalized,
+          exchangeRate: configured.rate,
+        }
+      }
       return {
         kind: 'currency',
         symbol: '$',
         currencyCode: 'USD',
         exchangeRate: 1,
       }
+    }
   }
+}
+
+function getDisplayMeta(config: CurrencyConfig): DisplayMeta {
+  return resolveDisplayMetaForCode(config.quotaDisplayType, config)
 }
 
 function getBillingDisplayMeta(config: CurrencyConfig): DisplayMeta {
@@ -340,15 +398,25 @@ function formatCurrencyValue(
       }).format(adjustedValue)
     }
 
-    const formatted = new Intl.NumberFormat(options.locale, {
-      style: 'currency',
-      currency: meta.currencyCode,
-      currencyDisplay: meta.currencyCode === 'TWD' ? 'symbol' : 'narrowSymbol',
-      notation: options.compact ? 'compact' : 'standard',
-      minimumFractionDigits: 0,
-      maximumFractionDigits: options.compact ? 1 : digits,
-    }).format(adjustedValue)
-    return formatted
+    try {
+      const formatted = new Intl.NumberFormat(options.locale, {
+        style: 'currency',
+        currency: meta.currencyCode,
+        currencyDisplay:
+          meta.currencyCode === 'TWD' ? 'symbol' : 'narrowSymbol',
+        notation: options.compact ? 'compact' : 'standard',
+        minimumFractionDigits: 0,
+        maximumFractionDigits: options.compact ? 1 : digits,
+      }).format(adjustedValue)
+      return formatted
+    } catch {
+      const decimal = new Intl.NumberFormat(options.locale, {
+        notation: options.compact ? 'compact' : 'standard',
+        minimumFractionDigits: 0,
+        maximumFractionDigits: options.compact ? 1 : digits,
+      }).format(adjustedValue)
+      return `${meta.symbol}${decimal}`
+    }
   }
 
   const decimal = new Intl.NumberFormat(options.locale, {
@@ -643,4 +711,28 @@ export function formatLocalCurrencyAmount(
   const merged = mergeOptions(options)
 
   return formatCurrencyValue(amount, merged, meta)
+}
+
+/**
+ * Format a USD amount in a specific configured currency code (or the active
+ * display currency when `currencyCode` is omitted).
+ */
+export function formatAmount(
+  amountUSD: number | null | undefined,
+  currencyCode?: string,
+  options?: CurrencyFormatOptions
+): string {
+  if (amountUSD == null || Number.isNaN(amountUSD)) return '-'
+
+  const config = getConfig()
+  const meta = currencyCode
+    ? resolveDisplayMetaForCode(currencyCode, config)
+    : getBillingDisplayMeta(config)
+  const merged = mergeOptions(options)
+
+  if (meta.kind === 'tokens') {
+    return formatCurrencyValue(amountUSD * meta.quotaPerUnit, merged, meta)
+  }
+
+  return formatCurrencyValue(amountUSD * meta.exchangeRate, merged, meta)
 }

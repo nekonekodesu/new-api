@@ -98,6 +98,7 @@ const BILLING_SECTIONS = [
               settings['general_setting.custom_currency_symbol'] ?? '¤',
             custom_currency_exchange_rate:
               settings['general_setting.custom_currency_exchange_rate'] ?? 1,
+            currency_rates: settings['general_setting.currency_rates'] ?? '',
           },
         }}
       />
@@ -181,6 +182,19 @@ const BILLING_SECTIONS = [
           WaffoPancakeMerchantID: settings.WaffoPancakeMerchantID ?? '',
           WaffoPancakePrivateKey: settings.WaffoPancakePrivateKey ?? '',
           WaffoPancakeReturnURL: settings.WaffoPancakeReturnURL ?? '',
+        }}
+        taiwanPaymentDefaultValues={{
+          PaymentMethodsConfig:
+            settings['payment_setting.payment_methods'] ?? '{}',
+          ECPayMerchantID: settings['payment_setting.ecpay_merchant_id'] ?? '',
+          ECPayHashKey: settings['payment_setting.ecpay_hash_key'] ?? '',
+          ECPayHashIV: settings['payment_setting.ecpay_hash_iv'] ?? '',
+          ECPayEndpoint: settings['payment_setting.ecpay_endpoint'] ?? '',
+          NewebPayMerchantID:
+            settings['payment_setting.newebpay_merchant_id'] ?? '',
+          NewebPayHashKey: settings['payment_setting.newebpay_hash_key'] ?? '',
+          NewebPayHashIV: settings['payment_setting.newebpay_hash_iv'] ?? '',
+          NewebPayEndpoint: settings['payment_setting.newebpay_endpoint'] ?? '',
         }}
         waffoPancakeProvisionedStoreID={settings.WaffoPancakeStoreID ?? ''}
         waffoPancakeProvisionedProductID={settings.WaffoPancakeProductID ?? ''}

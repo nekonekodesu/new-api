@@ -195,3 +195,83 @@ func TestInferencePresetSettingsAndDatabaseRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestChannelCurrencyCodeAndExchangeRateMigrationAndRoundTrip(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var driver gorm.Dialector
+			switch dialect {
+			case "sqlite":
+				driver = sqlite.Open(filepath.Join(t.TempDir(), "channel_currency.db"))
+			case "mysql":
+				dsn := os.Getenv("TEST_MYSQL_DSN")
+				if dsn == "" {
+					t.Skip("TEST_MYSQL_DSN is not configured")
+				}
+				driver = mysql.Open(dsn)
+			case "postgres":
+				dsn := os.Getenv("TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("TEST_POSTGRES_DSN is not configured")
+				}
+				driver = postgres.Open(dsn)
+			}
+
+			db, err := gorm.Open(driver, &gorm.Config{})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+
+			table := db.Table("channel_currency_test").Session(&gorm.Session{})
+			// Run AutoMigrate twice to prove idempotency.
+			require.NoError(t, table.AutoMigrate(&Channel{}))
+			require.NoError(t, table.AutoMigrate(&Channel{}))
+			t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable("channel_currency_test")) })
+
+			rawCode := " twd "
+			rate := 32.5
+			ch := &Channel{
+				Type:         constant.ChannelTypeOpenAI,
+				Key:          "sk-test",
+				Name:         "twd-channel",
+				Status:       common.ChannelStatusEnabled,
+				CurrencyCode: &rawCode,
+				ExchangeRate: &rate,
+			}
+			require.NoError(t, table.Create(ch).Error)
+
+			var loaded Channel
+			require.NoError(t, table.First(&loaded, ch.Id).Error)
+			require.NotNil(t, loaded.CurrencyCode)
+			require.NotNil(t, loaded.ExchangeRate)
+			assert.Equal(t, "TWD", *loaded.CurrencyCode)
+			assert.Equal(t, 32.5, *loaded.ExchangeRate)
+
+			// Clearing back to empty/zero via pointer fields must persist.
+			emptyCode := ""
+			zeroRate := 0.0
+			require.NoError(t, table.Model(&loaded).Omit("key").Updates(&Channel{
+				CurrencyCode: &emptyCode,
+				ExchangeRate: &zeroRate,
+			}).Error)
+
+			var reloaded Channel
+			require.NoError(t, table.First(&reloaded, ch.Id).Error)
+			require.NotNil(t, reloaded.CurrencyCode)
+			require.NotNil(t, reloaded.ExchangeRate)
+			assert.Equal(t, "", *reloaded.CurrencyCode)
+			assert.Equal(t, 0.0, *reloaded.ExchangeRate)
+
+			// Negative exchange rate must be rejected by BeforeSave.
+			negRate := -1.5
+			invalid := &Channel{
+				Type:         constant.ChannelTypeOpenAI,
+				Key:          "sk-invalid",
+				Name:         "invalid-rate",
+				ExchangeRate: &negRate,
+			}
+			require.Error(t, table.Create(invalid).Error)
+		})
+	}
+}

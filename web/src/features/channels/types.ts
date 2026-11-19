@@ -93,6 +93,8 @@ export const channelSchema = z.object({
   param_override: z.string().nullish(),
   header_override: z.string().nullish(),
   remark: z.string().default(''),
+  currency_code: z.string().nullish(),
+  exchange_rate: z.number().nullish(),
   max_input_tokens: z.number().default(0),
   channel_info: channelInfoSchema.default({
     is_multi_key: false,

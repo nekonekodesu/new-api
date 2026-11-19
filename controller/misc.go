@@ -96,6 +96,7 @@ func GetStatus(c *gin.Context) {
 
 		"usd_exchange_rate": operation_setting.USDExchangeRate,
 		"ntd_exchange_rate": operation_setting.NTDExchangeRate,
+		"currency_rates":    operation_setting.GetEffectiveCurrencyRates(),
 		"price":             operation_setting.Price,
 		"stripe_unit_price": setting.StripeUnitPrice,
 

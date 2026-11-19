@@ -166,7 +166,7 @@ export function Channels() {
 
   let sectionTitle = t('Channels')
   if (isCronSection) {
-    sectionTitle = t('CRON')
+    sectionTitle = t('Scheduled Tasks')
   } else if (isCostSection) {
     sectionTitle = t('Cost Management')
   }

@@ -19,6 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Clock,
   Edit3,
   FileTerminal,
@@ -30,14 +34,20 @@ import {
   Trash2,
   XCircle,
 } from 'lucide-react'
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Dialog } from '@/components/dialog'
+import { EmptyState } from '@/components/empty-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
@@ -107,13 +117,44 @@ export function CronJobsPanel() {
   const [draft, setDraft] = useState<Partial<CronJob>>(EMPTY_JOB_DRAFT)
   const [outputModalJob, setOutputModalJob] = useState<CronJob | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<CronJob | null>(null)
-  const [runningJobId, setRunningJobId] = useState<string | null>(null)
+  const [runningJobIds, setRunningJobIds] = useState<Set<string>>(
+    () => new Set()
+  )
+  const [togglingJobIds, setTogglingJobIds] = useState<Set<string>>(
+    () => new Set()
+  )
+  const [expandedJobIds, setExpandedJobIds] = useState<Set<string>>(
+    () => new Set()
+  )
+
+  const toggleJobExpanded = (id: string) => {
+    setExpandedJobIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const allExpanded =
+    jobs.length > 0 && jobs.every((job) => expandedJobIds.has(job.id))
+
+  const toggleExpandAll = () => {
+    if (allExpanded) {
+      setExpandedJobIds(new Set())
+    } else {
+      setExpandedJobIds(new Set(jobs.map((job) => job.id)))
+    }
+  }
 
   const saveMutation = useMutation({
     mutationFn: async (payload: Partial<CronJob>) =>
       requireServerSuccess(await saveCronJob(payload)),
     onSuccess: () => {
-      toast.success(t('CRON task saved'))
+      toast.success(t('Scheduled task saved'))
       setEditorOpen(false)
       void queryClient.invalidateQueries({ queryKey: ['channel-cron-jobs'] })
       void queryClient.invalidateQueries({
@@ -121,39 +162,81 @@ export function CronJobsPanel() {
       })
     },
     onError: (err) => {
-      handleServerError(err, t('Failed to save CRON task'))
+      handleServerError(err, t('Failed to save scheduled task'))
+    },
+  })
+
+  const toggleEnabledMutation = useMutation({
+    mutationFn: async (payload: CronJob) => {
+      setTogglingJobIds((prev) => new Set(prev).add(payload.id))
+      return requireServerSuccess(await saveCronJob(payload))
+    },
+    onSuccess: (_res, variables) => {
+      const displayName = variables.built_in
+        ? t(variables.name)
+        : variables.name
+      toast.success(
+        variables.enabled
+          ? `${t('Scheduled task enabled')}: ${displayName}`
+          : `${t('Scheduled task disabled')}: ${displayName}`
+      )
+      void queryClient.invalidateQueries({ queryKey: ['channel-cron-jobs'] })
+      void queryClient.invalidateQueries({
+        queryKey: ['channel-cron-sync-config'],
+      })
+    },
+    onError: (err) => {
+      handleServerError(err, t('Failed to save scheduled task'))
+    },
+    onSettled: (_data, _err, variables) => {
+      setTogglingJobIds((prev) => {
+        const next = new Set(prev)
+        next.delete(variables.id)
+        return next
+      })
     },
   })
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) =>
       requireServerSuccess(await deleteCronJob(id)),
-    onSuccess: () => {
-      toast.success(t('CRON task deleted'))
+    onSuccess: (_res, id) => {
+      toast.success(t('Scheduled task deleted'))
       setDeleteTarget(null)
+      setExpandedJobIds((prev) => {
+        if (!prev.has(id)) return prev
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
       void queryClient.invalidateQueries({ queryKey: ['channel-cron-jobs'] })
     },
     onError: (err) => {
-      handleServerError(err, t('Failed to delete CRON task'))
+      handleServerError(err, t('Failed to delete scheduled task'))
     },
   })
 
   const runNowMutation = useMutation({
     mutationFn: async (id: string) => {
-      setRunningJobId(id)
+      setRunningJobIds((prev) => new Set(prev).add(id))
       return requireServerSuccess(await runCronJobNow(id))
     },
-    onSuccess: (res) => {
-      setRunningJobId(null)
+    onSuccess: (res, id) => {
       const job = res.data?.job
-      if (job?.last_status === 'failed') {
-        toast.error(`${t('CRON task failed')}: ${job.name}`)
-      } else {
-        toast.success(`${t('CRON task executed')}: ${job?.name ?? ''}`)
-      }
+      let displayName = ''
       if (job) {
-        setOutputModalJob(job)
+        displayName = job.built_in ? t(job.name) : job.name
       }
+      if (job?.last_status === 'failed') {
+        toast.error(`${t('Scheduled task failed')}: ${displayName}`)
+      } else {
+        const durationLabel =
+          job && job.last_duration_ms > 0 ? ` (${job.last_duration_ms}ms)` : ''
+        toast.success(
+          `${t('Scheduled task executed')}: ${displayName}${durationLabel}`
+        )
+      }
+      setExpandedJobIds((prev) => new Set(prev).add(id))
       void queryClient.invalidateQueries({ queryKey: ['channel-cron-jobs'] })
       void queryClient.invalidateQueries({
         queryKey: ['channel-cron-sync-config'],
@@ -165,8 +248,14 @@ export function CronJobsPanel() {
       void queryClient.invalidateQueries({ queryKey: ['channels'] })
     },
     onError: (err) => {
-      setRunningJobId(null)
-      handleServerError(err, t('Failed to execute CRON task'))
+      handleServerError(err, t('Failed to execute scheduled task'))
+    },
+    onSettled: (_data, _err, id) => {
+      setRunningJobIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
     },
   })
 
@@ -214,6 +303,188 @@ export function CronJobsPanel() {
     }
   }
 
+  const getDisplayName = (job: CronJob) =>
+    job.built_in ? t(job.name) : job.name
+
+  const getDisplayDescription = (job: CronJob) => {
+    if (!job.description) return ''
+    return job.built_in ? t(job.description) : job.description
+  }
+
+  const renderStatusBadge = (job: CronJob, isRunning: boolean) => {
+    if (isRunning) {
+      return (
+        <Badge
+          variant='secondary'
+          className='gap-1 px-1.5 py-0 text-[11px] text-amber-600 dark:text-amber-400'
+        >
+          <RefreshCw aria-hidden='true' className='size-3 animate-spin' />
+          <span>{t('Running')}</span>
+        </Badge>
+      )
+    }
+    if (job.last_run_at <= 0) {
+      return (
+        <span className='text-muted-foreground text-xs'>
+          {t('Never executed')}
+        </span>
+      )
+    }
+    if (job.last_status === 'success') {
+      return (
+        <div className='flex items-center gap-1.5'>
+          <CheckCircle2
+            aria-hidden='true'
+            className='size-3.5 shrink-0 text-emerald-500'
+          />
+          <span className='font-mono text-xs'>
+            {formatUnixTime(job.last_run_at)}
+          </span>
+          {job.last_duration_ms > 0 ? (
+            <span className='text-muted-foreground text-[11px]'>
+              ({job.last_duration_ms}ms)
+            </span>
+          ) : null}
+        </div>
+      )
+    }
+    if (job.last_status === 'failed') {
+      return (
+        <div className='flex items-center gap-1.5'>
+          <XCircle
+            aria-hidden='true'
+            className='size-3.5 shrink-0 text-rose-500'
+          />
+          <span className='font-mono text-xs'>
+            {formatUnixTime(job.last_run_at)}
+          </span>
+          {job.last_duration_ms > 0 ? (
+            <span className='text-muted-foreground text-[11px]'>
+              ({job.last_duration_ms}ms)
+            </span>
+          ) : null}
+        </div>
+      )
+    }
+    return (
+      <div className='flex items-center gap-1.5'>
+        <RefreshCw
+          aria-hidden='true'
+          className='size-3.5 shrink-0 animate-spin text-amber-500'
+        />
+        <span className='font-mono text-xs'>
+          {formatUnixTime(job.last_run_at)}
+        </span>
+      </div>
+    )
+  }
+
+  const renderJobDetailsContent = (job: CronJob) => {
+    const description = getDisplayDescription(job)
+    return (
+      <div className='flex flex-col gap-3 text-xs'>
+        {description ? (
+          <p className='text-muted-foreground'>{description}</p>
+        ) : null}
+
+        <div className='grid grid-cols-1 gap-2.5 sm:grid-cols-3'>
+          <div className='bg-muted/30 flex flex-col gap-0.5 rounded-md px-2.5 py-2'>
+            <span className='text-muted-foreground text-[11px]'>
+              {t('Task Type')}
+            </span>
+            <span className='font-medium'>{getJobTypeLabel(job.job_type)}</span>
+          </div>
+          <div className='bg-muted/30 flex flex-col gap-0.5 rounded-md px-2.5 py-2'>
+            <span className='text-muted-foreground text-[11px]'>
+              {t('Timeout (sec)')}
+            </span>
+            <span className='font-mono'>{job.timeout_sec || 120}s</span>
+          </div>
+          {job.job_type === 'http_request' ? (
+            <div className='bg-muted/30 flex flex-col gap-0.5 rounded-md px-2.5 py-2'>
+              <span className='text-muted-foreground text-[11px]'>
+                {t('HTTP Method')}
+              </span>
+              <span className='font-mono'>{job.http_method || 'GET'}</span>
+            </div>
+          ) : (
+            <div className='bg-muted/30 flex flex-col gap-0.5 rounded-md px-2.5 py-2'>
+              <span className='text-muted-foreground text-[11px]'>
+                {t('Working Directory')}
+              </span>
+              <span className='truncate font-mono'>
+                {job.working_dir || '-'}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {job.script ? (
+          <div className='flex flex-col gap-1'>
+            <span className='text-muted-foreground text-[11px] font-medium'>
+              {job.job_type === 'http_request'
+                ? t('Target URL')
+                : t('Script / Command')}
+            </span>
+            <pre className='bg-muted/40 max-h-32 overflow-auto rounded-md p-2.5 font-mono text-[11px] break-all whitespace-pre-wrap'>
+              {job.script}
+            </pre>
+          </div>
+        ) : null}
+
+        {job.job_type === 'http_request' && job.http_headers ? (
+          <div className='flex flex-col gap-1'>
+            <span className='text-muted-foreground text-[11px] font-medium'>
+              {t('HTTP Headers')}
+            </span>
+            <pre className='bg-muted/40 max-h-24 overflow-auto rounded-md p-2 font-mono text-[11px] break-all whitespace-pre-wrap'>
+              {job.http_headers}
+            </pre>
+          </div>
+        ) : null}
+
+        {job.job_type === 'http_request' && job.http_body ? (
+          <div className='flex flex-col gap-1'>
+            <span className='text-muted-foreground text-[11px] font-medium'>
+              {t('HTTP Body')}
+            </span>
+            <pre className='bg-muted/40 max-h-24 overflow-auto rounded-md p-2 font-mono text-[11px] break-all whitespace-pre-wrap'>
+              {job.http_body}
+            </pre>
+          </div>
+        ) : null}
+
+        <div className='flex flex-col gap-1'>
+          <div className='flex items-center justify-between gap-2'>
+            <span className='text-muted-foreground text-[11px] font-medium'>
+              {t('Last Execution Output')}
+            </span>
+            {job.last_output ? (
+              <Button
+                variant='ghost'
+                size='sm'
+                onClick={() => setOutputModalJob(job)}
+                className='h-6 gap-1 px-2 text-[11px]'
+              >
+                <FileTerminal aria-hidden='true' className='size-3' />
+                <span>{t('View Full Logs')}</span>
+              </Button>
+            ) : null}
+          </div>
+          {job.last_output ? (
+            <pre className='bg-muted/50 max-h-36 overflow-auto rounded-md p-2.5 font-mono text-[11px] break-all whitespace-pre-wrap'>
+              {job.last_output}
+            </pre>
+          ) : (
+            <span className='text-muted-foreground text-[11px]'>
+              {t('No execution output yet')}
+            </span>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   if (jobsQuery.isLoading) {
     return (
       <div className='space-y-4'>
@@ -230,9 +501,7 @@ export function CronJobsPanel() {
         <div className='flex items-center gap-2.5'>
           <Clock aria-hidden='true' className='text-primary size-5' />
           <div>
-            <h3 className='text-sm font-semibold'>
-              {t('CRON Scheduled Tasks')}
-            </h3>
+            <h3 className='text-sm font-semibold'>{t('Scheduled Tasks')}</h3>
             <p className='text-muted-foreground text-xs'>
               {t(
                 'Schedule automated maintenance tasks, upstream synchronization, HTTP webhooks, or custom shell scripts with standard 5-field cron expressions'
@@ -242,9 +511,25 @@ export function CronJobsPanel() {
         </div>
 
         <div className='flex w-full flex-wrap items-center gap-2 sm:w-auto'>
+          {jobs.length > 0 ? (
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={toggleExpandAll}
+              className='flex-1 gap-1.5 sm:flex-initial'
+            >
+              {allExpanded ? (
+                <ChevronsDownUp aria-hidden='true' className='size-3.5' />
+              ) : (
+                <ChevronsUpDown aria-hidden='true' className='size-3.5' />
+              )}
+              <span>{allExpanded ? t('Collapse All') : t('Expand All')}</span>
+            </Button>
+          ) : null}
           <Button
             variant='outline'
             size='sm'
+            disabled={jobsQuery.isFetching}
             onClick={() =>
               void queryClient.invalidateQueries({
                 queryKey: ['channel-cron-jobs'],
@@ -252,7 +537,10 @@ export function CronJobsPanel() {
             }
             className='flex-1 gap-1.5 sm:flex-initial'
           >
-            <RefreshCw aria-hidden='true' className='size-3.5' />
+            <RefreshCw
+              aria-hidden='true'
+              className={`size-3.5 ${jobsQuery.isFetching ? 'animate-spin' : ''}`}
+            />
             <span>{t('Refresh')}</span>
           </Button>
           <Button
@@ -261,55 +549,85 @@ export function CronJobsPanel() {
             className='flex-1 gap-1.5 sm:flex-initial'
           >
             <Plus aria-hidden='true' className='size-3.5' />
-            <span>{t('New CRON Task')}</span>
+            <span>{t('New Scheduled Task')}</span>
           </Button>
         </div>
       </div>
 
       {/* Jobs Table / Mobile Cards */}
       <div className='border-border/60 bg-card flex flex-col gap-3 rounded-xl border p-4'>
-        {isMobile ? (
+        {jobs.length === 0 ? (
+          <EmptyState
+            icon={Clock}
+            title={t('No scheduled tasks')}
+            description={t(
+              'Create a scheduled task to automate upstream syncs, webhooks, or custom scripts.'
+            )}
+            action={
+              <Button size='sm' onClick={openCreateModal} className='gap-1.5'>
+                <Plus aria-hidden='true' className='size-3.5' />
+                <span>{t('New Scheduled Task')}</span>
+              </Button>
+            }
+          />
+        ) : null}
+        {jobs.length > 0 && isMobile ? (
           <div className='flex flex-col gap-2.5'>
             {jobs.map((job) => {
               const isRunning =
-                runningJobId === job.id || job.last_status === 'running'
+                runningJobIds.has(job.id) || job.last_status === 'running'
+              const isToggling = togglingJobIds.has(job.id)
+              const isExpanded = expandedJobIds.has(job.id)
+              const displayName = getDisplayName(job)
+
               return (
-                <div
+                <Collapsible
                   key={job.id}
-                  className='border-border/60 bg-background/60 flex flex-col gap-2.5 rounded-lg border p-3'
+                  open={isExpanded}
+                  onOpenChange={() => toggleJobExpanded(job.id)}
+                  className='border-border/60 bg-background/60 rounded-lg border p-3'
                 >
                   <div className='flex items-start justify-between gap-2'>
-                    <div className='flex min-w-0 items-start gap-2.5'>
+                    <div className='flex min-w-0 items-center gap-2'>
+                      <CollapsibleTrigger
+                        render={
+                          <Button
+                            variant='ghost'
+                            size='sm'
+                            aria-label={`${isExpanded ? t('Collapse details') : t('Expand details')} ${displayName}`}
+                            className='size-6 shrink-0 p-0'
+                          />
+                        }
+                      >
+                        {isExpanded ? (
+                          <ChevronDown aria-hidden='true' className='size-4' />
+                        ) : (
+                          <ChevronRight aria-hidden='true' className='size-4' />
+                        )}
+                      </CollapsibleTrigger>
                       <Switch
                         checked={job.enabled}
+                        disabled={isToggling}
+                        aria-label={`${t('Toggle')} ${displayName}`}
                         onCheckedChange={(val) =>
-                          saveMutation.mutate({
+                          toggleEnabledMutation.mutate({
                             ...job,
                             enabled: Boolean(val),
                           })
                         }
-                        className='mt-0.5 shrink-0'
+                        className='shrink-0'
                       />
-                      <div className='flex min-w-0 flex-col gap-0.5'>
-                        <div className='flex flex-wrap items-center gap-1.5'>
-                          <span className='truncate text-xs font-semibold'>
-                            {job.built_in ? t(job.name) : job.name}
-                          </span>
-                          {job.built_in ? (
-                            <Badge
-                              variant='secondary'
-                              className='px-1.5 py-0 text-[10px]'
-                            >
-                              {t('Built-in')}
-                            </Badge>
-                          ) : null}
-                        </div>
-                        {job.description ? (
-                          <span className='text-muted-foreground text-[11px]'>
-                            {job.built_in
-                              ? t(job.description)
-                              : job.description}
-                          </span>
+                      <div className='flex min-w-0 flex-wrap items-center gap-1.5'>
+                        <span className='truncate text-xs font-semibold'>
+                          {displayName}
+                        </span>
+                        {job.built_in ? (
+                          <Badge
+                            variant='secondary'
+                            className='px-1.5 py-0 text-[10px]'
+                          >
+                            {t('Built-in')}
+                          </Badge>
                         ) : null}
                       </div>
                     </div>
@@ -321,89 +639,10 @@ export function CronJobsPanel() {
                     </Badge>
                   </div>
 
-                  {job.script ? (
-                    <div className='bg-muted/30 text-muted-foreground truncate rounded px-2 py-1 font-mono text-[11px]'>
-                      {job.script}
+                  <div className='mt-2 flex flex-wrap items-center justify-between gap-2 pl-8'>
+                    <div className='flex items-center gap-2'>
+                      {renderStatusBadge(job, isRunning)}
                     </div>
-                  ) : null}
-
-                  <div className='bg-muted/20 grid grid-cols-2 gap-2 rounded-md p-2 text-xs'>
-                    <div className='col-span-2 flex items-center gap-1.5'>
-                      {job.job_type === 'shell_script' ? (
-                        <Terminal
-                          aria-hidden='true'
-                          className='text-primary size-3.5 shrink-0'
-                        />
-                      ) : null}
-                      {job.job_type === 'http_request' ? (
-                        <Globe
-                          aria-hidden='true'
-                          className='text-primary size-3.5 shrink-0'
-                        />
-                      ) : null}
-                      {job.job_type !== 'shell_script' &&
-                      job.job_type !== 'http_request' ? (
-                        <RefreshCw
-                          aria-hidden='true'
-                          className='text-primary size-3.5 shrink-0'
-                        />
-                      ) : null}
-                      <span className='truncate font-medium'>
-                        {getJobTypeLabel(job.job_type)}
-                      </span>
-                    </div>
-                    <div className='flex flex-col gap-0.5'>
-                      <span className='text-muted-foreground text-[10px]'>
-                        {t('Next Run')}
-                      </span>
-                      <span className='font-mono text-[11px]'>
-                        {job.enabled ? formatUnixTime(job.next_run_at) : '-'}
-                      </span>
-                    </div>
-                    <div className='flex flex-col gap-0.5'>
-                      <span className='text-muted-foreground text-[10px]'>
-                        {t('Last Run & Status')}
-                      </span>
-                      {job.last_run_at > 0 ? (
-                        <div className='flex items-center gap-1'>
-                          {job.last_status === 'success' ? (
-                            <CheckCircle2
-                              aria-hidden='true'
-                              className='size-3 shrink-0 text-emerald-500'
-                            />
-                          ) : null}
-                          {job.last_status === 'failed' ? (
-                            <XCircle
-                              aria-hidden='true'
-                              className='size-3 shrink-0 text-rose-500'
-                            />
-                          ) : null}
-                          {job.last_status !== 'success' &&
-                          job.last_status !== 'failed' ? (
-                            <RefreshCw
-                              aria-hidden='true'
-                              className='size-3 shrink-0 animate-spin text-amber-500'
-                            />
-                          ) : null}
-                          <span className='truncate font-mono text-[11px]'>
-                            {formatUnixTime(job.last_run_at)}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className='text-muted-foreground text-[11px]'>
-                          {t('Never executed')}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {job.last_output ? (
-                    <span className='text-muted-foreground truncate font-mono text-[11px]'>
-                      {job.last_output}
-                    </span>
-                  ) : null}
-
-                  <div className='border-border/40 flex flex-wrap items-center justify-end gap-1.5 border-t pt-2'>
                     <Button
                       variant='outline'
                       size='sm'
@@ -419,49 +658,72 @@ export function CronJobsPanel() {
                       ) : (
                         <Play aria-hidden='true' className='size-3' />
                       )}
-                      <span>{t('Run Now')}</span>
+                      <span>{isRunning ? t('Running') : t('Run Now')}</span>
                     </Button>
-                    {job.last_output ? (
+                  </div>
+
+                  <CollapsibleContent className='border-border/40 mt-3 flex flex-col gap-3 border-t pt-3'>
+                    <div className='flex items-center justify-between text-xs'>
+                      <span className='text-muted-foreground'>
+                        {t('Next Run')}
+                      </span>
+                      <span className='font-mono'>
+                        {job.enabled ? formatUnixTime(job.next_run_at) : '-'}
+                      </span>
+                    </div>
+
+                    {renderJobDetailsContent(job)}
+
+                    <div className='border-border/40 flex flex-wrap items-center justify-end gap-1.5 border-t pt-2'>
+                      {job.last_output ? (
+                        <Button
+                          variant='ghost'
+                          size='sm'
+                          onClick={() => setOutputModalJob(job)}
+                          className='h-7 gap-1 px-2 text-xs'
+                        >
+                          <FileTerminal
+                            aria-hidden='true'
+                            className='size-3.5'
+                          />
+                          <span>{t('Logs')}</span>
+                        </Button>
+                      ) : null}
                       <Button
                         variant='ghost'
                         size='sm'
-                        onClick={() => setOutputModalJob(job)}
+                        aria-label={`${t('Edit CRON Task')} ${displayName}`}
+                        onClick={() => openEditModal(job)}
                         className='h-7 gap-1 px-2 text-xs'
                       >
-                        <FileTerminal aria-hidden='true' className='size-3.5' />
-                        <span>{t('Logs')}</span>
+                        <Edit3 aria-hidden='true' className='size-3.5' />
+                        <span>{t('Edit')}</span>
                       </Button>
-                    ) : null}
-                    <Button
-                      variant='ghost'
-                      size='sm'
-                      aria-label={`${t('Edit CRON Task')} ${job.built_in ? t(job.name) : job.name}`}
-                      onClick={() => openEditModal(job)}
-                      className='h-7 px-2 text-xs'
-                    >
-                      <Edit3 aria-hidden='true' className='size-3.5' />
-                    </Button>
-                    {!job.built_in ? (
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        aria-label={`${t('Delete CRON Task')} ${job.name}`}
-                        onClick={() => setDeleteTarget(job)}
-                        className='h-7 px-2 text-xs text-rose-500 hover:text-rose-600'
-                      >
-                        <Trash2 aria-hidden='true' className='size-3.5' />
-                      </Button>
-                    ) : null}
-                  </div>
-                </div>
+                      {!job.built_in ? (
+                        <Button
+                          variant='ghost'
+                          size='sm'
+                          aria-label={`${t('Delete CRON Task')} ${job.name}`}
+                          onClick={() => setDeleteTarget(job)}
+                          className='h-7 gap-1 px-2 text-xs text-rose-500 hover:text-rose-600'
+                        >
+                          <Trash2 aria-hidden='true' className='size-3.5' />
+                          <span>{t('Delete')}</span>
+                        </Button>
+                      ) : null}
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
               )
             })}
           </div>
-        ) : (
+        ) : null}
+        {jobs.length > 0 && !isMobile ? (
           <div className='border-border/50 overflow-auto rounded-lg border'>
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className='w-10' />
                   <TableHead className='w-20 text-center'>
                     {t('Enabled')}
                   </TableHead>
@@ -476,26 +738,58 @@ export function CronJobsPanel() {
               <TableBody>
                 {jobs.map((job) => {
                   const isRunning =
-                    runningJobId === job.id || job.last_status === 'running'
+                    runningJobIds.has(job.id) || job.last_status === 'running'
+                  const isToggling = togglingJobIds.has(job.id)
+                  const isExpanded = expandedJobIds.has(job.id)
+                  const displayName = getDisplayName(job)
+
                   return (
-                    <TableRow key={job.id}>
-                      <TableCell className='text-center'>
-                        <Switch
-                          checked={job.enabled}
-                          onCheckedChange={(val) =>
-                            saveMutation.mutate({
-                              ...job,
-                              enabled: Boolean(val),
-                            })
-                          }
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <div className='flex flex-col gap-0.5'>
+                    <Fragment key={job.id}>
+                      <TableRow>
+                        <TableCell className='pr-0'>
+                          <Button
+                            variant='ghost'
+                            size='sm'
+                            aria-expanded={isExpanded}
+                            aria-label={`${isExpanded ? t('Collapse details') : t('Expand details')} ${displayName}`}
+                            onClick={() => toggleJobExpanded(job.id)}
+                            className='size-7 p-0'
+                          >
+                            {isExpanded ? (
+                              <ChevronDown
+                                aria-hidden='true'
+                                className='size-4'
+                              />
+                            ) : (
+                              <ChevronRight
+                                aria-hidden='true'
+                                className='size-4'
+                              />
+                            )}
+                          </Button>
+                        </TableCell>
+                        <TableCell className='text-center'>
+                          <Switch
+                            checked={job.enabled}
+                            disabled={isToggling}
+                            aria-label={`${t('Toggle')} ${displayName}`}
+                            onCheckedChange={(val) =>
+                              toggleEnabledMutation.mutate({
+                                ...job,
+                                enabled: Boolean(val),
+                              })
+                            }
+                          />
+                        </TableCell>
+                        <TableCell>
                           <div className='flex items-center gap-1.5'>
-                            <span className='text-xs font-medium'>
-                              {job.built_in ? t(job.name) : job.name}
-                            </span>
+                            <button
+                              type='button'
+                              onClick={() => toggleJobExpanded(job.id)}
+                              className='hover:text-primary cursor-pointer text-left text-xs font-medium transition-colors'
+                            >
+                              {displayName}
+                            </button>
                             {job.built_in ? (
                               <Badge
                                 variant='secondary'
@@ -505,156 +799,120 @@ export function CronJobsPanel() {
                               </Badge>
                             ) : null}
                           </div>
-                          {job.description ? (
-                            <span className='text-muted-foreground text-[11px]'>
-                              {job.built_in
-                                ? t(job.description)
-                                : job.description}
-                            </span>
-                          ) : null}
-                          {job.script ? (
-                            <span className='text-muted-foreground max-w-xs truncate font-mono text-[11px]'>
-                              {job.script}
-                            </span>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className='flex items-center gap-1.5 text-xs'>
-                          {job.job_type === 'shell_script' ? (
-                            <Terminal
-                              aria-hidden='true'
-                              className='text-primary size-3.5'
-                            />
-                          ) : null}
-                          {job.job_type === 'http_request' ? (
-                            <Globe
-                              aria-hidden='true'
-                              className='text-primary size-3.5'
-                            />
-                          ) : null}
-                          {job.job_type !== 'shell_script' &&
-                          job.job_type !== 'http_request' ? (
-                            <RefreshCw
-                              aria-hidden='true'
-                              className='text-primary size-3.5'
-                            />
-                          ) : null}
-                          <span>{getJobTypeLabel(job.job_type)}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant='outline' className='font-mono text-xs'>
-                          {job.cron_expr}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className='font-mono text-xs'>
-                        {job.enabled ? formatUnixTime(job.next_run_at) : '-'}
-                      </TableCell>
-                      <TableCell className='text-xs'>
-                        {job.last_run_at > 0 ? (
-                          <div className='flex flex-col gap-0.5'>
-                            <div className='flex items-center gap-1.5'>
-                              {job.last_status === 'success' ? (
-                                <CheckCircle2
-                                  aria-hidden='true'
-                                  className='size-3.5 text-emerald-500'
-                                />
-                              ) : null}
-                              {job.last_status === 'failed' ? (
-                                <XCircle
-                                  aria-hidden='true'
-                                  className='size-3.5 text-rose-500'
-                                />
-                              ) : null}
-                              {job.last_status !== 'success' &&
-                              job.last_status !== 'failed' ? (
-                                <RefreshCw
-                                  aria-hidden='true'
-                                  className='size-3.5 animate-spin text-amber-500'
-                                />
-                              ) : null}
-                              <span className='font-mono'>
-                                {formatUnixTime(job.last_run_at)}
-                              </span>
-                              <span className='text-muted-foreground'>
-                                ({job.last_duration_ms}ms)
-                              </span>
-                            </div>
-                            {job.last_output ? (
-                              <span className='text-muted-foreground max-w-xs truncate font-mono text-[11px]'>
-                                {job.last_output}
-                              </span>
+                        </TableCell>
+                        <TableCell>
+                          <div className='flex items-center gap-1.5 text-xs'>
+                            {job.job_type === 'shell_script' ? (
+                              <Terminal
+                                aria-hidden='true'
+                                className='text-primary size-3.5'
+                              />
                             ) : null}
-                          </div>
-                        ) : (
-                          <span className='text-muted-foreground'>
-                            {t('Never executed')}
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className='text-right'>
-                        <div className='flex items-center justify-end gap-1.5'>
-                          <Button
-                            variant='outline'
-                            size='sm'
-                            disabled={isRunning}
-                            onClick={() => runNowMutation.mutate(job.id)}
-                            className='h-7 gap-1 px-2 text-xs'
-                          >
-                            {isRunning ? (
+                            {job.job_type === 'http_request' ? (
+                              <Globe
+                                aria-hidden='true'
+                                className='text-primary size-3.5'
+                              />
+                            ) : null}
+                            {job.job_type !== 'shell_script' &&
+                            job.job_type !== 'http_request' ? (
                               <RefreshCw
                                 aria-hidden='true'
-                                className='size-3 animate-spin'
+                                className='text-primary size-3.5'
                               />
-                            ) : (
-                              <Play aria-hidden='true' className='size-3' />
-                            )}
-                            <span>{t('Run Now')}</span>
-                          </Button>
-                          {job.last_output ? (
+                            ) : null}
+                            <span>{getJobTypeLabel(job.job_type)}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            variant='outline'
+                            className='font-mono text-xs'
+                          >
+                            {job.cron_expr}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className='font-mono text-xs'>
+                          {job.enabled ? formatUnixTime(job.next_run_at) : '-'}
+                        </TableCell>
+                        <TableCell className='text-xs'>
+                          {renderStatusBadge(job, isRunning)}
+                        </TableCell>
+                        <TableCell className='text-right'>
+                          <div className='flex items-center justify-end gap-1.5'>
                             <Button
-                              variant='ghost'
+                              variant='outline'
                               size='sm'
-                              onClick={() => setOutputModalJob(job)}
+                              disabled={isRunning}
+                              onClick={() => runNowMutation.mutate(job.id)}
                               className='h-7 gap-1 px-2 text-xs'
                             >
-                              <FileTerminal
-                                aria-hidden='true'
-                                className='size-3.5'
-                              />
-                              <span>{t('Logs')}</span>
+                              {isRunning ? (
+                                <RefreshCw
+                                  aria-hidden='true'
+                                  className='size-3 animate-spin'
+                                />
+                              ) : (
+                                <Play aria-hidden='true' className='size-3' />
+                              )}
+                              <span>
+                                {isRunning ? t('Running') : t('Run Now')}
+                              </span>
                             </Button>
-                          ) : null}
-                          <Button
-                            variant='ghost'
-                            size='sm'
-                            aria-label={`${t('Edit CRON Task')} ${job.built_in ? t(job.name) : job.name}`}
-                            onClick={() => openEditModal(job)}
-                            className='h-7 px-2 text-xs'
-                          >
-                            <Edit3 aria-hidden='true' className='size-3.5' />
-                          </Button>
-                          {!job.built_in ? (
+                            {job.last_output ? (
+                              <Button
+                                variant='ghost'
+                                size='sm'
+                                onClick={() => setOutputModalJob(job)}
+                                className='h-7 gap-1 px-2 text-xs'
+                              >
+                                <FileTerminal
+                                  aria-hidden='true'
+                                  className='size-3.5'
+                                />
+                                <span>{t('Logs')}</span>
+                              </Button>
+                            ) : null}
                             <Button
                               variant='ghost'
                               size='sm'
-                              aria-label={`${t('Delete CRON Task')} ${job.name}`}
-                              onClick={() => setDeleteTarget(job)}
-                              className='h-7 px-2 text-xs text-rose-500 hover:text-rose-600'
+                              aria-label={`${t('Edit CRON Task')} ${displayName}`}
+                              onClick={() => openEditModal(job)}
+                              className='h-7 px-2 text-xs'
                             >
-                              <Trash2 aria-hidden='true' className='size-3.5' />
+                              <Edit3 aria-hidden='true' className='size-3.5' />
                             </Button>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                    </TableRow>
+                            {!job.built_in ? (
+                              <Button
+                                variant='ghost'
+                                size='sm'
+                                aria-label={`${t('Delete CRON Task')} ${job.name}`}
+                                onClick={() => setDeleteTarget(job)}
+                                className='h-7 px-2 text-xs text-rose-500 hover:text-rose-600'
+                              >
+                                <Trash2
+                                  aria-hidden='true'
+                                  className='size-3.5'
+                                />
+                              </Button>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {isExpanded ? (
+                        <TableRow className='bg-muted/20 hover:bg-muted/20'>
+                          <TableCell colSpan={8} className='px-6 py-4'>
+                            {renderJobDetailsContent(job)}
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
                   )
                 })}
               </TableBody>
             </Table>
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* Create / Edit CRON Job Modal */}

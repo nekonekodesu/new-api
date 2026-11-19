@@ -238,6 +238,14 @@ export const channelFormSchema = z
       .string()
       .max(255, 'Remark must be less than 255 characters')
       .optional(),
+    currency_code: z
+      .string()
+      .max(16, 'Currency code must be at most 16 characters')
+      .optional(),
+    exchange_rate: z
+      .number()
+      .min(0, 'Exchange rate must be 0 or greater')
+      .optional(),
     setting: z
       .string()
       .optional()
@@ -458,6 +466,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   status_code_mapping: '',
   tag: '',
   remark: '',
+  currency_code: '',
+  exchange_rate: 0,
   setting: '',
   param_override: '',
   header_override: '',
@@ -645,6 +655,8 @@ export function transformChannelToFormDefaults(
     status_code_mapping: channel.status_code_mapping || '',
     tag: channel.tag || '',
     remark: channel.remark || '',
+    currency_code: channel.currency_code || '',
+    exchange_rate: channel.exchange_rate ?? 0,
     setting: channel.setting || '',
     param_override: channel.param_override || '',
     header_override: channel.header_override || '',
@@ -934,6 +946,8 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     status_code_mapping: formData.status_code_mapping || null,
     tag: formData.tag || null,
     remark: formData.remark || '',
+    currency_code: formData.currency_code?.trim().toUpperCase() || '',
+    exchange_rate: formData.exchange_rate ?? 0,
     setting: buildSettingJSON(formData),
     param_override: formData.param_override || null,
     header_override: formData.header_override || null,
@@ -981,6 +995,8 @@ export function transformFormDataToUpdatePayload(
     status_code_mapping: formData.status_code_mapping || null,
     tag: formData.tag || null,
     remark: formData.remark || '',
+    currency_code: formData.currency_code?.trim().toUpperCase() || '',
+    exchange_rate: formData.exchange_rate ?? 0,
     setting: buildSettingJSON(formData),
     param_override: formData.param_override || null,
     header_override: formData.header_override || null,

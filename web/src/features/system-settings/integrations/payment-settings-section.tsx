@@ -86,6 +86,11 @@ import {
   type WaffoPancakeSettingsValues,
 } from './waffo-pancake-settings-section'
 import {
+  PaymentMethodRatesSection,
+  TaiwanPaymentSettingsSection,
+  type TaiwanPaymentSettingsValues,
+} from './taiwan-payment-rates-section'
+import {
   type PayMethod,
   WaffoSettingsSection,
   type WaffoSettingsValues,
@@ -190,14 +195,37 @@ const paymentSchema = z.object({
   WaffoPancakeMerchantID: z.string(),
   WaffoPancakePrivateKey: z.string(),
   WaffoPancakeReturnURL: z.string(),
+  PaymentMethodsConfig: z.string(),
+  ECPayMerchantID: z.string(),
+  ECPayHashKey: z.string(),
+  ECPayHashIV: z.string(),
+  ECPayEndpoint: z.string(),
+  NewebPayMerchantID: z.string(),
+  NewebPayHashKey: z.string(),
+  NewebPayHashIV: z.string(),
+  NewebPayEndpoint: z.string(),
 })
 
 type PaymentFormValues = z.infer<typeof paymentSchema>
 type WaffoFormFieldValues = Omit<WaffoSettingsValues, 'WaffoPayMethods'>
 type PaymentBaseFormValues = Omit<
   PaymentFormValues,
-  keyof WaffoFormFieldValues | keyof WaffoPancakeSettingsValues
+  | keyof WaffoFormFieldValues
+  | keyof WaffoPancakeSettingsValues
+  | keyof TaiwanPaymentSettingsValues
 >
+
+const DEFAULT_TAIWAN_PAYMENT_SETTINGS: TaiwanPaymentSettingsValues = {
+  PaymentMethodsConfig: '{}',
+  ECPayMerchantID: '',
+  ECPayHashKey: '',
+  ECPayHashIV: '',
+  ECPayEndpoint: '',
+  NewebPayMerchantID: '',
+  NewebPayHashKey: '',
+  NewebPayHashIV: '',
+  NewebPayEndpoint: '',
+}
 
 const CURRENT_COMPLIANCE_TERMS_VERSION = 'v1'
 const paymentTabContentClassName = 'mt-6 min-w-0'
@@ -213,6 +241,7 @@ type PaymentSettingsSectionProps = {
   defaultValues: PaymentBaseFormValues
   waffoDefaultValues: WaffoSettingsValues
   waffoPancakeDefaultValues: WaffoPancakeSettingsValues
+  taiwanPaymentDefaultValues?: TaiwanPaymentSettingsValues
   waffoPancakeProvisionedStoreID?: string
   waffoPancakeProvisionedProductID?: string
   complianceDefaults: PaymentComplianceDefaults
@@ -231,6 +260,7 @@ export function PaymentSettingsSection({
   defaultValues,
   waffoDefaultValues,
   waffoPancakeDefaultValues,
+  taiwanPaymentDefaultValues = DEFAULT_TAIWAN_PAYMENT_SETTINGS,
   waffoPancakeProvisionedStoreID,
   waffoPancakeProvisionedProductID,
   complianceDefaults,
@@ -243,8 +273,14 @@ export function PaymentSettingsSection({
       ...defaultValues,
       ...waffoDefaultValues,
       ...waffoPancakeDefaultValues,
+      ...taiwanPaymentDefaultValues,
     }),
-    [defaultValues, waffoDefaultValues, waffoPancakeDefaultValues]
+    [
+      defaultValues,
+      waffoDefaultValues,
+      waffoPancakeDefaultValues,
+      taiwanPaymentDefaultValues,
+    ]
   )
   const initialRef = React.useRef(initialFormValues)
   const defaultsSignature = React.useMemo(
@@ -474,6 +510,15 @@ export function PaymentSettingsSection({
       WaffoPancakeReturnURL: removeTrailingSlash(
         values.WaffoPancakeReturnURL.trim()
       ),
+      PaymentMethodsConfig: values.PaymentMethodsConfig.trim() || '{}',
+      ECPayMerchantID: values.ECPayMerchantID.trim(),
+      ECPayHashKey: values.ECPayHashKey.trim(),
+      ECPayHashIV: values.ECPayHashIV.trim(),
+      ECPayEndpoint: values.ECPayEndpoint.trim(),
+      NewebPayMerchantID: values.NewebPayMerchantID.trim(),
+      NewebPayHashKey: values.NewebPayHashKey.trim(),
+      NewebPayHashIV: values.NewebPayHashIV.trim(),
+      NewebPayEndpoint: values.NewebPayEndpoint.trim(),
     }
 
     const initial = {
@@ -524,6 +569,16 @@ export function PaymentSettingsSection({
       WaffoPancakeReturnURL: removeTrailingSlash(
         initialRef.current.WaffoPancakeReturnURL.trim()
       ),
+      PaymentMethodsConfig:
+        initialRef.current.PaymentMethodsConfig.trim() || '{}',
+      ECPayMerchantID: initialRef.current.ECPayMerchantID.trim(),
+      ECPayHashKey: initialRef.current.ECPayHashKey.trim(),
+      ECPayHashIV: initialRef.current.ECPayHashIV.trim(),
+      ECPayEndpoint: initialRef.current.ECPayEndpoint.trim(),
+      NewebPayMerchantID: initialRef.current.NewebPayMerchantID.trim(),
+      NewebPayHashKey: initialRef.current.NewebPayHashKey.trim(),
+      NewebPayHashIV: initialRef.current.NewebPayHashIV.trim(),
+      NewebPayEndpoint: initialRef.current.NewebPayEndpoint.trim(),
     }
 
     const updates: Array<{ key: string; value: string | number | boolean }> = []
@@ -746,6 +801,65 @@ export function PaymentSettingsSection({
       updates.push({ key: 'WaffoPayMethods', value: sanitized.WaffoPayMethods })
     }
 
+    if (
+      normalizeJsonForComparison(sanitized.PaymentMethodsConfig) !==
+      normalizeJsonForComparison(initial.PaymentMethodsConfig)
+    ) {
+      updates.push({
+        key: 'payment_setting.payment_methods',
+        value: sanitized.PaymentMethodsConfig,
+      })
+    }
+
+    if (sanitized.ECPayMerchantID !== initial.ECPayMerchantID) {
+      updates.push({
+        key: 'payment_setting.ecpay_merchant_id',
+        value: sanitized.ECPayMerchantID,
+      })
+    }
+    if (sanitized.ECPayHashKey) {
+      updates.push({
+        key: 'payment_setting.ecpay_hash_key',
+        value: sanitized.ECPayHashKey,
+      })
+    }
+    if (sanitized.ECPayHashIV) {
+      updates.push({
+        key: 'payment_setting.ecpay_hash_iv',
+        value: sanitized.ECPayHashIV,
+      })
+    }
+    if (sanitized.ECPayEndpoint !== initial.ECPayEndpoint) {
+      updates.push({
+        key: 'payment_setting.ecpay_endpoint',
+        value: sanitized.ECPayEndpoint,
+      })
+    }
+    if (sanitized.NewebPayMerchantID !== initial.NewebPayMerchantID) {
+      updates.push({
+        key: 'payment_setting.newebpay_merchant_id',
+        value: sanitized.NewebPayMerchantID,
+      })
+    }
+    if (sanitized.NewebPayHashKey) {
+      updates.push({
+        key: 'payment_setting.newebpay_hash_key',
+        value: sanitized.NewebPayHashKey,
+      })
+    }
+    if (sanitized.NewebPayHashIV) {
+      updates.push({
+        key: 'payment_setting.newebpay_hash_iv',
+        value: sanitized.NewebPayHashIV,
+      })
+    }
+    if (sanitized.NewebPayEndpoint !== initial.NewebPayEndpoint) {
+      updates.push({
+        key: 'payment_setting.newebpay_endpoint',
+        value: sanitized.NewebPayEndpoint,
+      })
+    }
+
     const hasWaffoPancakeChanges =
       sanitized.WaffoPancakeMerchantID !== initial.WaffoPancakeMerchantID ||
       sanitized.WaffoPancakePrivateKey.length > 0 ||
@@ -843,6 +957,23 @@ export function PaymentSettingsSection({
     WaffoPancakePrivateKey: currentFormValues.WaffoPancakePrivateKey,
     WaffoPancakeReturnURL: currentFormValues.WaffoPancakeReturnURL,
   }
+  const taiwanPaymentValues: TaiwanPaymentSettingsValues = {
+    PaymentMethodsConfig: currentFormValues.PaymentMethodsConfig,
+    ECPayMerchantID: currentFormValues.ECPayMerchantID,
+    ECPayHashKey: currentFormValues.ECPayHashKey,
+    ECPayHashIV: currentFormValues.ECPayHashIV,
+    ECPayEndpoint: currentFormValues.ECPayEndpoint,
+    NewebPayMerchantID: currentFormValues.NewebPayMerchantID,
+    NewebPayHashKey: currentFormValues.NewebPayHashKey,
+    NewebPayHashIV: currentFormValues.NewebPayHashIV,
+    NewebPayEndpoint: currentFormValues.NewebPayEndpoint,
+  }
+  const setTaiwanPaymentField = <K extends keyof TaiwanPaymentSettingsValues>(
+    field: K,
+    value: TaiwanPaymentSettingsValues[K]
+  ) => {
+    form.setValue(field, value as never, { shouldDirty: true })
+  }
 
   return (
     <SettingsSection title={t('Payment Gateway')}>
@@ -925,8 +1056,14 @@ export function PaymentSettingsSection({
           />
           <Tabs defaultValue='general' className='min-w-0'>
             <div className='overflow-x-auto pb-1'>
-              <TabsList className='grid min-w-[44rem] grid-cols-6'>
+              <TabsList className='grid min-w-[56rem] grid-cols-8'>
                 <TabsTrigger value='general'>{t('General')}</TabsTrigger>
+                <TabsTrigger value='method-rates'>
+                  {t('Method Rates')}
+                </TabsTrigger>
+                <TabsTrigger value='taiwan-pay'>
+                  {t('ECPay / NewebPay')}
+                </TabsTrigger>
                 <TabsTrigger value='epay'>Epay</TabsTrigger>
                 <TabsTrigger value='stripe'>{t('Stripe')}</TabsTrigger>
                 <TabsTrigger value='creem'>Creem</TabsTrigger>
@@ -1759,6 +1896,30 @@ export function PaymentSettingsSection({
                 onValueChange={setWaffoValue}
                 payMethods={waffoPayMethods}
                 onPayMethodsChange={setWaffoPayMethods}
+              />
+            </TabsContent>
+
+            <TabsContent
+              value='method-rates'
+              className={paymentTabContentClassName}
+            >
+              <PaymentMethodRatesSection
+                value={taiwanPaymentValues.PaymentMethodsConfig}
+                onChange={(nextJson) =>
+                  setTaiwanPaymentField('PaymentMethodsConfig', nextJson)
+                }
+                disabled={!complianceConfirmed}
+              />
+            </TabsContent>
+
+            <TabsContent
+              value='taiwan-pay'
+              className={paymentTabContentClassName}
+            >
+              <TaiwanPaymentSettingsSection
+                values={taiwanPaymentValues}
+                onFieldChange={setTaiwanPaymentField}
+                disabled={!complianceConfirmed}
               />
             </TabsContent>
           </Tabs>
