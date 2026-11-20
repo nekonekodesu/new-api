@@ -58,18 +58,11 @@ func GetGeneralSetting() *GeneralSetting {
 // admin-configured multi-currency rates. USD is always anchored at 1.
 func GetEffectiveCurrencyRates() map[string]CurrencyRate {
 	cnyRate := USDExchangeRate
-	ntdRate := NTDExchangeRate
-	// Guard against legacy TWD rates accidentally stored in USDExchangeRate
-	// (e.g. 5.0 TWD/CNY or 32.0~35.0 TWD/USD before NTDExchangeRate existed).
-	if cnyRate >= 15.0 {
-		if ntdRate <= 0 || ntdRate < 15.0 {
-			ntdRate = cnyRate
-		}
-		cnyRate = 7.3
-	} else if cnyRate <= 5.5 {
+	if cnyRate <= 0 {
 		cnyRate = 7.3
 	}
-	if ntdRate < 15.0 {
+	ntdRate := NTDExchangeRate
+	if ntdRate <= 0 {
 		ntdRate = 32.0
 	}
 	rates := map[string]CurrencyRate{
@@ -98,12 +91,6 @@ func GetEffectiveCurrencyRates() map[string]CurrencyRate {
 		if entry.Rate <= 0 {
 			continue
 		}
-		rateVal := entry.Rate
-		if code == "CNY" && (rateVal <= 5.5 || rateVal >= 15.0) {
-			rateVal = cnyRate
-		} else if code == "TWD" && rateVal < 15.0 {
-			rateVal = ntdRate
-		}
 		symbol := strings.TrimSpace(entry.Symbol)
 		if symbol == "" {
 			if existing, ok := rates[code]; ok {
@@ -112,9 +99,56 @@ func GetEffectiveCurrencyRates() map[string]CurrencyRate {
 				symbol = code + " "
 			}
 		}
-		rates[code] = CurrencyRate{Symbol: symbol, Rate: rateVal}
+		rates[code] = CurrencyRate{Symbol: symbol, Rate: entry.Rate}
 	}
 	return rates
+}
+
+// ResolveCentralCurrencyRateAndUSDMultiplier resolves the centrally configured
+// exchange rate and the multiplier to convert 1 unit of `currency` into 1 system USD unit.
+//
+// Supports both CNY conventions in the central currency table:
+//   - TWD-relative CNY rate (0 < rate <= 5.8, e.g. 1 CNY = 4.75 TWD with 1 USD = 32 TWD):
+//     1 CNY = 4.75 TWD = (4.75 / 32) USD.
+//   - USD-relative CNY rate (rate > 5.8, e.g. 1 USD = 7.3 CNY):
+//     1 CNY = (1 / 7.3) USD.
+func ResolveCentralCurrencyRateAndUSDMultiplier(currency string) (displayRate float64, usdMult float64) {
+	curr := strings.ToUpper(strings.TrimSpace(currency))
+	if curr == "" || curr == "AUTO" || curr == "USD" {
+		return 1.0, 1.0
+	}
+	if curr == "RMB" {
+		curr = "CNY"
+	}
+	if curr == "NTD" {
+		curr = "TWD"
+	}
+
+	rates := GetEffectiveCurrencyRates()
+	twdRate := 32.0
+	if twdEntry, ok := rates["TWD"]; ok && twdEntry.Rate >= 15.0 {
+		twdRate = twdEntry.Rate
+	}
+
+	switch curr {
+	case "TWD":
+		return twdRate, 1.0 / twdRate
+	case "CNY":
+		cnyRate := 7.3
+		if cnyEntry, ok := rates["CNY"]; ok && cnyEntry.Rate > 0 {
+			cnyRate = cnyEntry.Rate
+		}
+		if cnyRate <= 5.8 {
+			// Configured as 1 CNY = cnyRate TWD (e.g. 4.75 TWD)
+			return cnyRate, cnyRate / twdRate
+		}
+		return cnyRate, 1.0 / cnyRate
+	default:
+		if entry, ok := rates[curr]; ok && entry.Rate > 0 {
+			return entry.Rate, 1.0 / entry.Rate
+		}
+		return 1.0, 1.0
+	}
 }
 
 // IsCurrencyDisplay 是否以货币形式展示（非 TOKENS）
@@ -170,16 +204,14 @@ func GetUsdToCurrencyRate(usdToCny float64) float64 {
 	case QuotaDisplayTypeUSD:
 		return 1
 	case QuotaDisplayTypeCNY:
-		if entry, ok := GetEffectiveCurrencyRates()["CNY"]; ok && entry.Rate > 0 {
-			if _, hasConfigured := generalSetting.CurrencyRates["CNY"]; hasConfigured {
-				return entry.Rate
+		if _, hasConfigured := generalSetting.CurrencyRates["CNY"]; hasConfigured {
+			_, usdMult := ResolveCentralCurrencyRateAndUSDMultiplier("CNY")
+			if usdMult > 0 {
+				return 1.0 / usdMult
 			}
 		}
-		if usdToCny > 5.5 && usdToCny < 15.0 {
+		if usdToCny > 0 {
 			return usdToCny
-		}
-		if entry, ok := GetEffectiveCurrencyRates()["CNY"]; ok && entry.Rate > 0 {
-			return entry.Rate
 		}
 		return 7.3
 	case QuotaDisplayTypeNTD, "TWD":

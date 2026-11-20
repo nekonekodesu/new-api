@@ -88,7 +88,7 @@ function parseCurrencyRates(
   cnyRate: number,
   ntdRate: number
 ): Record<string, CurrencyRateConfig> {
-  const safeCny = normalizeUsdToCnyRate(cnyRate)
+  const safeCny = cnyRate > 0 ? cnyRate : 7.3
   const safeTwd = normalizeUsdToTwdRate(ntdRate, cnyRate)
   const merged: Record<string, CurrencyRateConfig> = {
     ...DEFAULT_CURRENCY_RATES,
@@ -107,9 +107,7 @@ function parseCurrencyRates(
     if (!entry || typeof entry !== 'object') continue
     const record = entry as Record<string, unknown>
     let rate = toNumber(record.rate, 0)
-    if (normalizedCode === 'CNY' && (rate <= 5.5 || rate >= 15)) {
-      rate = safeCny
-    } else if (normalizedCode === 'TWD' && rate > 0 && rate < 15) {
+    if (normalizedCode === 'TWD' && rate > 0 && rate < 15) {
       rate = safeTwd
     }
     const symbol =

@@ -212,30 +212,38 @@ function resolveDisplayMetaForCode(
     config.ntdExchangeRate && config.ntdExchangeRate > 0
       ? config.ntdExchangeRate
       : (DEFAULT_CURRENCY_CONFIG.ntdExchangeRate ?? 32)
+  const configuredTwd = rates.TWD ?? rates.NTD
+  const effectiveTwdRate =
+    configuredTwd && configuredTwd.rate >= 15
+      ? configuredTwd.rate
+      : ntdFallbackRate
   switch (normalized) {
     case 'CNY': {
       const configured = rates.CNY
+      const rawCnyRate =
+        configured && configured.rate > 0
+          ? configured.rate
+          : config.usdExchangeRate
+      // When CNY rate is configured as TWD-per-CNY (e.g. 1 CNY = 4.75 TWD with 1 USD = 32 TWD),
+      // 1 USD equals (effectiveTwdRate / rawCnyRate) CNY.
+      const cnyPerUsd =
+        rawCnyRate > 0 && rawCnyRate <= 5.8
+          ? effectiveTwdRate / rawCnyRate
+          : rawCnyRate
       return {
         kind: 'currency',
         symbol: configured?.symbol || '¥',
         currencyCode: 'CNY',
-        exchangeRate:
-          configured && configured.rate > 0
-            ? configured.rate
-            : config.usdExchangeRate,
+        exchangeRate: cnyPerUsd,
       }
     }
     case 'NTD':
     case 'TWD': {
-      const configured = rates.TWD ?? rates.NTD
       return {
         kind: 'currency',
-        symbol: configured?.symbol || 'NT$',
+        symbol: configuredTwd?.symbol || 'NT$',
         currencyCode: 'TWD',
-        exchangeRate:
-          configured && configured.rate > 0
-            ? configured.rate
-            : ntdFallbackRate,
+        exchangeRate: effectiveTwdRate,
       }
     }
     case 'CUSTOM':

@@ -489,13 +489,32 @@ func buildModelPriceTableRows(keyword string) ([]ModelPriceTableRow, model.Model
 			}
 			telemetry := model.GetChannelModelTelemetry(ch.Id, m)
 
-			inCostUSD, outCostUSD, rawInCost, rawOutCost, effCurr, effRate := effectiveEntryCostsUSD(costEntry, cfg)
+			_, _, rawInCost, rawOutCost, effCurr, effRate := effectiveEntryCostsUSD(costEntry, cfg)
+			unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(effCurr, effRate)
 
 			// Only synced upstream prices compete first for the selected price,
 			// since local fallback entries mirror the site's current price.
-			// Compare by effective USD price (inCostUSD + outCostUSD) so Highest Price Priority
-			// always highlights the row with the highest displayed price.
-			basePriceScore := inCostUSD + outCostUSD
+			// Restore channel price to 1x first and then convert by the central currency rate.
+			mult := costEntry.BaseMultiplier
+			if mult <= 0 {
+				mult = 1.0
+			}
+			baseRawIn := roundMoney6(rawInCost / mult)
+			baseRawOut := roundMoney6(rawOutCost / mult)
+			baseInUSD := roundMoney6(baseRawIn * unitMult)
+			baseOutUSD := roundMoney6(baseRawOut * unitMult)
+			basePriceScore := baseInUSD + baseOutUSD
+			if costEntry.QuotaType == 1 && (costEntry.RawModelPrice > 0 || costEntry.ModelPrice > 0) {
+				rawP := costEntry.RawModelPrice
+				if rawP <= 0 {
+					rawP = costEntry.ModelPrice
+				}
+				baseRawIn = roundMoney6(rawP)
+				baseRawOut = baseRawIn
+				baseInUSD = roundMoney6(rawP * unitMult)
+				baseOutUSD = baseInUSD
+				basePriceScore = baseInUSD
+			}
 			if prevBest, exists := highestAnyScoreByModel[m]; !exists || basePriceScore > prevBest {
 				highestAnyScoreByModel[m] = basePriceScore
 				highestAnyChByModel[m] = ch.Id
@@ -512,10 +531,10 @@ func buildModelPriceTableRows(keyword string) ([]ModelPriceTableRow, model.Model
 				ChannelType:      ch.Type,
 				ChannelStatus:    ch.Status,
 				Model:            m,
-				InputCost:        inCostUSD,
-				OutputCost:       outCostUSD,
-				RawInputCost:     rawInCost,
-				RawOutputCost:    rawOutCost,
+				InputCost:        baseInUSD,
+				OutputCost:       baseOutUSD,
+				RawInputCost:     baseRawIn,
+				RawOutputCost:    baseRawOut,
 				ModelRatio:       costEntry.ModelRatio,
 				CompletionRatio:  costEntry.CompletionRatio,
 				CacheRatio:       costEntry.CacheRatio,
@@ -659,12 +678,25 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 			}
 		}
 		if chosen == nil {
-			// Highest price priority (or default fallback) comparing effective USD row prices
+			// Highest price priority (or default fallback): restore channel price to 1x first,
+			// then convert by the central currency rate.
 			bestIdx := 0
 			bestScore := -1.0
 			for i := range entries {
-				inUSD, outUSD, _, _, _, _ := effectiveEntryCostsUSD(entries[i], cfg)
-				score := inUSD + outUSD
+				inUSD, outUSD, _, _, effCurr, effRate := effectiveEntryCostsUSD(entries[i], cfg)
+				unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(effCurr, effRate)
+				mult := entries[i].BaseMultiplier
+				if mult <= 0 {
+					mult = 1.0
+				}
+				score := (inUSD + outUSD) / mult
+				if entries[i].QuotaType == 1 && (entries[i].RawModelPrice > 0 || entries[i].ModelPrice > 0) {
+					rawP := entries[i].RawModelPrice
+					if rawP <= 0 {
+						rawP = entries[i].ModelPrice
+					}
+					score = rawP * unitMult
+				}
 				if score > bestScore {
 					bestScore = score
 					bestIdx = i
@@ -675,14 +707,29 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 		if chosen == nil {
 			continue
 		}
-		// Sync the chosen row's effective USD price into ratio_setting so system 1x pricing,
-		// Model Plaza (/pricing), and Usage Logs match the Active Price row in the Price Table.
-		inCostUSD, outCostUSD, _, _, _, _ := effectiveEntryCostsUSD(*chosen, cfg)
-		usdBasePrice := roundRatioValue(inCostUSD)
-		usdBaseModelRatio := roundRatioValue(inCostUSD / 2.0)
+		// Restore the chosen channel's price to 1x first, then multiply by the central currency multiplier.
+		_, _, rawInCost, rawOutCost, effCurr, effRate := effectiveEntryCostsUSD(*chosen, cfg)
+		unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(effCurr, effRate)
+		mult := chosen.BaseMultiplier
+		if mult <= 0 {
+			mult = 1.0
+		}
+		basePrice := chosen.RawModelPrice
+		if basePrice <= 0 {
+			basePrice = chosen.ModelPrice
+		}
+		if basePrice <= 0 && rawInCost > 0 {
+			basePrice = rawInCost / mult
+		}
+		baseModelRatio := chosen.ModelRatio
+		if rawInCost > 0 {
+			baseModelRatio = rawInCost / (2.0 * mult)
+		}
+		usdBasePrice := roundRatioValue(basePrice * unitMult)
+		usdBaseModelRatio := roundRatioValue(baseModelRatio * unitMult)
 		compRatio := chosen.CompletionRatio
-		if compRatio <= 0 && inCostUSD > 0 && outCostUSD > 0 {
-			compRatio = outCostUSD / inCostUSD
+		if compRatio <= 0 && rawInCost > 0 && rawOutCost > 0 {
+			compRatio = rawOutCost / rawInCost
 		}
 		if chosen.QuotaType == 1 && usdBasePrice > 0 {
 			modelPriceCopy[m] = usdBasePrice

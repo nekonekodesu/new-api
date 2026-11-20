@@ -354,7 +354,7 @@ export function UpstreamAccountSyncPanel() {
                                 variant='outline'
                                 className='font-mono text-[10px]'
                               >
-                                {acc.currency || 'CNY'} (÷{acc.exchange_rate || 7.3})
+                                {acc.currency || 'CNY'}
                               </Badge>
                               {typeof acc.balance_usd === 'number' &&
                               (acc.balance_usd > 0 || acc.last_sync_at > 0) ? (
@@ -738,7 +738,7 @@ export function UpstreamAccountSyncPanel() {
                                   variant='outline'
                                   className='font-mono text-[10px]'
                                 >
-                                  {acc.currency || 'CNY'} (÷{acc.exchange_rate || 7.3})
+                                  {acc.currency || 'CNY'}
                                 </Badge>
                                 {typeof acc.balance_usd === 'number' &&
                                 (acc.balance_usd > 0 || acc.last_sync_at > 0) ? (
@@ -1271,24 +1271,19 @@ export function UpstreamAccountSyncPanel() {
                   />
                 </div>
                 <div className='space-y-1.5'>
-                  <Label>{t('Upstream Currency & Exchange Rate')}</Label>
+                  <Label>{t('Channel Currency')}</Label>
                   <div className='flex items-center gap-2'>
                     <Select
                       value={editingAccount.currency ?? 'CNY'}
                       onValueChange={(val) => {
                         const c = String(val)
-                        let rate = editingAccount.exchange_rate ?? 7.3
-                        if (c === 'USD') rate = 1
-                        if (c === 'CNY') rate = 7.3
-                        if (c === 'TWD') rate = 32
                         setEditingAccount({
                           ...editingAccount,
                           currency: c,
-                          exchange_rate: rate,
                         })
                       }}
                     >
-                      <SelectTrigger className='w-28 text-xs'>
+                      <SelectTrigger className='w-full text-xs'>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -1297,18 +1292,6 @@ export function UpstreamAccountSyncPanel() {
                         <SelectItem value='TWD'>TWD (NT$ 台幣)</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Input
-                      type='number'
-                      step='0.1'
-                      value={editingAccount.exchange_rate ?? 7.3}
-                      onChange={(e) =>
-                        setEditingAccount({
-                          ...editingAccount,
-                          exchange_rate: Number(e.target.value) || 1.0,
-                        })
-                      }
-                      className='w-24 font-mono text-xs'
-                    />
                   </div>
                 </div>
               </div>

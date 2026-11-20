@@ -193,35 +193,11 @@ export function CronUpstreamSyncPanel() {
   }
 
   const updateChannelCurrency = (channelId: number, currency: string) => {
-    setFormCfg((prev) => {
-      let nextRate = 0
-      if (currency === 'USD') {
-        nextRate = 1
-      } else if (currency === 'CNY') {
-        nextRate = prev.cny_exchange_rate || 7.3
-      } else if (currency === 'TWD') {
-        nextRate = prev.twd_exchange_rate || 32
-      }
-      return {
-        ...prev,
-        channel_currencies: {
-          ...prev.channel_currencies,
-          [channelId]: currency,
-        },
-        channel_exchange_rates: {
-          ...prev.channel_exchange_rates,
-          [channelId]: nextRate,
-        },
-      }
-    })
-  }
-
-  const updateChannelRate = (channelId: number, rate: number) => {
     setFormCfg((prev) => ({
       ...prev,
-      channel_exchange_rates: {
-        ...prev.channel_exchange_rates,
-        [channelId]: rate,
+      channel_currencies: {
+        ...prev.channel_currencies,
+        [channelId]: currency,
       },
     }))
   }
@@ -375,54 +351,32 @@ export function CronUpstreamSyncPanel() {
               <div className='flex items-center gap-1.5'>
                 <Coins aria-hidden='true' className='text-primary size-3.5' />
                 <Label className='text-xs font-semibold'>
-                  {t('Upstream Currency & Exchange Rate')}
+                  {t('Channel Currency')}
                 </Label>
               </div>
-              <Badge variant='outline' className='font-mono text-[10px]'>
-                1 USD = {formCfg.cny_exchange_rate || 7.3} CNY | 1 USD ={' '}
-                {formCfg.twd_exchange_rate || 32} TWD
-              </Badge>
+              <NativeSelect
+                size='sm'
+                value={formCfg.default_currency || 'AUTO'}
+                onChange={(e) =>
+                  setFormCfg((p) => ({
+                    ...p,
+                    default_currency: e.target.value,
+                  }))
+                }
+              >
+                <NativeSelectOption value='AUTO'>
+                  {t('Auto Detect')}
+                </NativeSelectOption>
+                <NativeSelectOption value='CNY'>CNY (¥)</NativeSelectOption>
+                <NativeSelectOption value='USD'>USD ($)</NativeSelectOption>
+                <NativeSelectOption value='TWD'>TWD (NT$)</NativeSelectOption>
+              </NativeSelect>
             </div>
-            <div className='grid grid-cols-2 gap-2'>
-              <div className='flex items-center gap-1.5'>
-                <span className='text-muted-foreground shrink-0 font-mono text-[11px]'>
-                  CNY (¥):
-                </span>
-                <Input
-                  type='number'
-                  step='0.1'
-                  min={0}
-                  value={formCfg.cny_exchange_rate ?? 7.3}
-                  onChange={(e) => {
-                    const nextCny = Number(e.target.value) || 7.3
-                    setFormCfg((p) => ({
-                      ...p,
-                      cny_exchange_rate: nextCny,
-                    }))
-                  }}
-                  className='h-7 w-full font-mono text-xs'
-                />
-              </div>
-              <div className='flex items-center gap-1.5'>
-                <span className='text-muted-foreground shrink-0 font-mono text-[11px]'>
-                  TWD (NT$):
-                </span>
-                <Input
-                  type='number'
-                  step='0.1'
-                  min={0}
-                  value={formCfg.twd_exchange_rate ?? 32}
-                  onChange={(e) => {
-                    const nextTwd = Number(e.target.value) || 32
-                    setFormCfg((p) => ({
-                      ...p,
-                      twd_exchange_rate: nextTwd,
-                    }))
-                  }}
-                  className='h-7 w-full font-mono text-xs'
-                />
-              </div>
-            </div>
+            <p className='text-muted-foreground text-[11px]'>
+              {t(
+                'Upstream settlement currency code; leave empty to use system default'
+              )}
+            </p>
           </div>
         </div>
       </div>
@@ -461,7 +415,6 @@ export function CronUpstreamSyncPanel() {
               channels.map((ch) => {
               const isSelected = selectedChannelIds.includes(ch.id)
               const chCurrency = formCfg.channel_currencies?.[ch.id] || 'AUTO'
-              const chRate = formCfg.channel_exchange_rates?.[ch.id] || 0
               const syncRes = lastSyncResults.find(
                 (r) => r.channel_id === ch.id
               )
@@ -543,20 +496,6 @@ export function CronUpstreamSyncPanel() {
                             TWD
                           </NativeSelectOption>
                         </NativeSelect>
-                        <Input
-                          type='number'
-                          step='0.01'
-                          min={0}
-                          placeholder='Rate'
-                          value={chRate || ''}
-                          onChange={(e) =>
-                            updateChannelRate(
-                              ch.id,
-                              Number(e.target.value) || 0
-                            )
-                          }
-                          className='h-7 w-20 text-xs'
-                        />
                       </div>
                     </div>
 
@@ -677,7 +616,6 @@ export function CronUpstreamSyncPanel() {
                   const isSelected = selectedChannelIds.includes(ch.id)
                   const chCurrency =
                     formCfg.channel_currencies?.[ch.id] || 'AUTO'
-                  const chRate = formCfg.channel_exchange_rates?.[ch.id] || 0
                   const syncRes = lastSyncResults.find(
                     (r) => r.channel_id === ch.id
                   )
@@ -750,20 +688,6 @@ export function CronUpstreamSyncPanel() {
                               TWD
                             </NativeSelectOption>
                           </NativeSelect>
-                          <Input
-                            type='number'
-                            step='0.01'
-                            min={0}
-                            placeholder='Rate'
-                            value={chRate || ''}
-                            onChange={(e) =>
-                              updateChannelRate(
-                                ch.id,
-                                Number(e.target.value) || 0
-                              )
-                            }
-                            className='h-7 w-20 text-xs'
-                          />
                         </div>
                       </TableCell>
                       <TableCell>

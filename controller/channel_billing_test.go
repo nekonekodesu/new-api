@@ -241,8 +241,8 @@ func TestResolveUnifiedChannelExchangeRateAndMultiplier(t *testing.T) {
 		wantMult float64
 	}{
 		{name: "USD ignores legacy 35 default", currency: "USD", rate: 35.0, wantRate: 1.0, wantMult: 1.0},
-		{name: "CNY ignores legacy 5 default", currency: "CNY", rate: 5.0, wantRate: 7.3, wantMult: 1.0 / 7.3},
-		{name: "CNY preserves explicit USD-based override", currency: "CNY", rate: 7.1, wantRate: 7.1, wantMult: 1.0 / 7.1},
+		{name: "CNY uses central rate table ignoring per-channel rate", currency: "CNY", rate: 5.0, wantRate: 7.3, wantMult: 1.0 / 7.3},
+		{name: "CNY ignores stale per-account 7.1 override", currency: "CNY", rate: 7.1, wantRate: 7.3, wantMult: 1.0 / 7.3},
 		{name: "TWD ignores legacy 1 default", currency: "TWD", rate: 1.0, wantRate: 32.0, wantMult: 1.0 / 32.0},
 		{name: "NTD alias uses TWD rate", currency: "NTD", rate: 0, wantRate: 32.0, wantMult: 1.0 / 32.0},
 		{name: "JPY uses unified rate table", currency: "JPY", rate: 0, wantRate: 150.0, wantMult: 1.0 / 150.0},
@@ -252,6 +252,11 @@ func TestResolveUnifiedChannelExchangeRateAndMultiplier(t *testing.T) {
 			assert.InDelta(t, tc.wantMult, model.ResolveUpstreamToQuotaUnitMultiplier(tc.currency, tc.rate), 1e-9)
 		})
 	}
+
+	// Also verify TWD-relative CNY rate in central table (e.g. CNY = 4.75 TWD, TWD = 32 TWD/USD).
+	gs.CurrencyRates["CNY"] = operation_setting.CurrencyRate{Symbol: "¥", Rate: 4.75}
+	assert.InDelta(t, 4.75, model.ResolveEffectiveChannelExchangeRate("CNY", 7.1), 1e-9)
+	assert.InDelta(t, 4.75/32.0, model.ResolveUpstreamToQuotaUnitMultiplier("CNY", 7.1), 1e-9)
 }
 
 func TestApplyAuthoritativeModelPricesConvertsUpstreamCurrencyToUSD(t *testing.T) {
@@ -407,7 +412,7 @@ func TestApplyAuthoritativeModelPricesConvertsUpstreamCurrencyToUSD(t *testing.T
 
 	discountedRatio, ok, _ := ratio_setting.GetModelRatio(discountedModel)
 	require.True(t, ok)
-	assert.InDelta(t, (3.2/7.3)/2.0, discountedRatio, 1e-5, "0.4x channel (¥3.2/1M) must win over 0.2x channel (¥1.6/1M) and sync its actual displayed USD ratio")
+	assert.InDelta(t, 4.0/7.3, discountedRatio, 1e-5, "discounted channel (0.4x ¥3.2/1M -> 1x ¥8.0/1M) must restore to 1x first and then convert by central CNY rate")
 
 	unconfRatio, ok, _ := ratio_setting.GetModelRatio(unconfiguredModel)
 	require.True(t, ok)

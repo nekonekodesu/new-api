@@ -97,6 +97,15 @@ export function ModelPriceTablePanel() {
     return `${sym}${Number(rawVal.toFixed(4))} ${c}`
   }
 
+  const formatExchangeFormula = (rate: number, curr: string) => {
+    if (!(rate > 0) || Math.abs(rate - 1) <= 1e-4) return ''
+    const c = (curr || '').toUpperCase().trim()
+    if (c === 'CNY' && rate <= 5.8) {
+      return ` × ${rate}`
+    }
+    return ` ÷ ${rate}`
+  }
+
   const priceTableQuery = useQuery({
     queryKey: ['channel-model-price-table'],
     queryFn: async () => requireServerSuccess(await getModelPriceTable()),
@@ -327,10 +336,7 @@ export function ModelPriceTablePanel() {
                     {formatRawCurrency(row.raw_input_cost, row.currency) ? (
                       <div className='text-muted-foreground font-mono text-[10px]'>
                         {formatRawCurrency(row.raw_input_cost, row.currency)}
-                        {row.exchange_rate > 0 &&
-                        Math.abs(row.exchange_rate - 1) > 1e-4
-                          ? ` ÷ ${row.exchange_rate}`
-                          : ''}
+                        {formatExchangeFormula(row.exchange_rate, row.currency)}
                       </div>
                     ) : null}
                   </div>
@@ -344,10 +350,7 @@ export function ModelPriceTablePanel() {
                     {formatRawCurrency(row.raw_output_cost, row.currency) ? (
                       <div className='text-muted-foreground font-mono text-[10px]'>
                         {formatRawCurrency(row.raw_output_cost, row.currency)}
-                        {row.exchange_rate > 0 &&
-                        Math.abs(row.exchange_rate - 1) > 1e-4
-                          ? ` ÷ ${row.exchange_rate}`
-                          : ''}
+                        {formatExchangeFormula(row.exchange_rate, row.currency)}
                       </div>
                     ) : null}
                   </div>
@@ -486,10 +489,10 @@ export function ModelPriceTablePanel() {
                                 row.raw_input_cost,
                                 row.currency
                               )}
-                              {row.exchange_rate > 0 &&
-                              Math.abs(row.exchange_rate - 1) > 1e-4
-                                ? ` ÷ ${row.exchange_rate}`
-                                : ''}
+                              {formatExchangeFormula(
+                                row.exchange_rate,
+                                row.currency
+                              )}
                             </span>
                           ) : null}
                         </div>
@@ -506,10 +509,10 @@ export function ModelPriceTablePanel() {
                                 row.raw_output_cost,
                                 row.currency
                               )}
-                              {row.exchange_rate > 0 &&
-                              Math.abs(row.exchange_rate - 1) > 1e-4
-                                ? ` ÷ ${row.exchange_rate}`
-                                : ''}
+                              {formatExchangeFormula(
+                                row.exchange_rate,
+                                row.currency
+                              )}
                             </span>
                           ) : null}
                         </div>

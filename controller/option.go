@@ -434,6 +434,10 @@ func UpdateOption(c *gin.Context) {
 		}
 		return
 	}
+	if strings.HasPrefix(option.Key, "general_setting.") || option.Key == "USDExchangeRate" || option.Key == "NTDExchangeRate" {
+		model.RecalculateAllChannelModelCosts(true)
+		_, _ = applyAuthoritativeModelPricesToSystem(model.GetModelPriceSyncConfig())
+	}
 	// 出于安全考虑只记录被修改的配置项名称，不记录配置值（可能含密钥等敏感信息）。
 	recordManageAudit(c, "option.update", map[string]any{
 		"key": option.Key,

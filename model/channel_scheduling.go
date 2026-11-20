@@ -1836,23 +1836,34 @@ func ResolveAuthoritativeModelPricingUSD(modelName string) (quotaType int, model
 		}
 		effRate := ResolveEffectiveChannelExchangeRate(entry.Currency, entry.ExchangeRate)
 		unitMult := ResolveUpstreamToQuotaUnitMultiplier(entry.Currency, effRate)
-		rawIn := entry.RawInputCost
-		rawOut := entry.RawOutputCost
-		if rawIn <= 0 {
-			mult := entry.BaseMultiplier
-			if mult <= 0 {
-				mult = 1.0
-			}
-			if entry.QuotaType == 1 && entry.ModelPrice > 0 {
-				rawIn = roundCost(entry.ModelPrice * mult)
-				rawOut = rawIn
-			} else if entry.ModelRatio > 0 {
-				rawIn = roundCost(entry.ModelRatio * 2.0 * mult)
-				rawOut = roundCost(rawIn * max(entry.CompletionRatio, 1.0))
-			}
+		mult := entry.BaseMultiplier
+		if mult <= 0 {
+			mult = 1.0
 		}
-		inUSD := roundCost(rawIn * unitMult)
-		outUSD := roundCost(rawOut * unitMult)
+		var rawBaseIn, rawBaseOut float64
+		if entry.QuotaType == 1 {
+			rawBaseIn = entry.RawModelPrice
+			if rawBaseIn <= 0 {
+				rawBaseIn = entry.ModelPrice
+			}
+			if rawBaseIn <= 0 && entry.RawInputCost > 0 {
+				rawBaseIn = roundCost(entry.RawInputCost / mult)
+			}
+			rawBaseOut = rawBaseIn
+		} else {
+			comp := entry.CompletionRatio
+			if comp <= 0 {
+				comp = 1.0
+			}
+			if entry.RawInputCost > 0 {
+				rawBaseIn = roundCost(entry.RawInputCost / mult)
+			} else if entry.ModelRatio > 0 {
+				rawBaseIn = roundCost(entry.ModelRatio * 2.0)
+			}
+			rawBaseOut = roundCost(rawBaseIn * comp)
+		}
+		inUSD := roundCost(rawBaseIn * unitMult)
+		outUSD := roundCost(rawBaseOut * unitMult)
 		if inUSD <= 0 && outUSD <= 0 {
 			continue
 		}
@@ -1902,65 +1913,24 @@ func roundCost(v float64) float64 {
 }
 
 // ResolveUpstreamToQuotaUnitMultiplier returns how many system USD quota units
-// (1 unit = QuotaPerUnit = 1 USD) equal 1 unit of the upstream currency.
-//
-// All exchange rates in the unified currency system are expressed as
-// "units of currency per 1 USD" (e.g. USD=1, CNY=7.3, TWD=32, JPY=150),
-// sourced from operation_setting.GetEffectiveCurrencyRates() with optional
-// per-channel overrides.
-func ResolveUpstreamToQuotaUnitMultiplier(currency string, exchangeRate float64) float64 {
-	ratePerUSD := ResolveEffectiveChannelExchangeRate(currency, exchangeRate)
-	if ratePerUSD <= 0 {
+// (1 unit = QuotaPerUnit = 1 USD) equal 1 unit of the upstream currency,
+// using the centrally configured exchange rates in operation_setting.
+func ResolveUpstreamToQuotaUnitMultiplier(currency string, _ float64) float64 {
+	_, usdMult := operation_setting.ResolveCentralCurrencyRateAndUSDMultiplier(currency)
+	if usdMult <= 0 {
 		return 1.0
 	}
-	return 1.0 / ratePerUSD
+	return usdMult
 }
 
-// ResolveEffectiveChannelExchangeRate returns the unified exchange rate
-// (units of currency per 1 USD) for a channel/upstream currency.
-// Legacy TWD-based defaults (USD=35, CNY=5, TWD=1) automatically fall back
-// to the site's unified multi-currency rate table.
-func ResolveEffectiveChannelExchangeRate(currency string, exchangeRate float64) float64 {
-	curr := strings.ToUpper(strings.TrimSpace(currency))
-	if curr == "" || curr == "AUTO" || curr == "USD" {
+// ResolveEffectiveChannelExchangeRate returns the centrally configured exchange rate
+// for a channel/upstream currency from operation_setting.
+func ResolveEffectiveChannelExchangeRate(currency string, _ float64) float64 {
+	displayRate, _ := operation_setting.ResolveCentralCurrencyRateAndUSDMultiplier(currency)
+	if displayRate <= 0 {
 		return 1.0
 	}
-	if curr == "RMB" {
-		curr = "CNY"
-	}
-	if curr == "NTD" {
-		curr = "TWD"
-	}
-
-	rates := operation_setting.GetEffectiveCurrencyRates()
-	defaultRate := 1.0
-	if entry, ok := rates[curr]; ok && entry.Rate > 0 {
-		defaultRate = entry.Rate
-	} else if curr == "CNY" {
-		defaultRate = 7.3
-	} else if curr == "TWD" {
-		defaultRate = 32.0
-	}
-
-	switch curr {
-	case "CNY":
-		// Ignore legacy TWD-per-CNY default (<= 5.5) or TWD-per-USD (>= 15) so existing configs seamlessly use USD-based CNY rate.
-		if exchangeRate > 5.5 && exchangeRate < 15.0 {
-			return exchangeRate
-		}
-		return defaultRate
-	case "TWD":
-		// Ignore legacy TWD-per-TWD default (1.0) or CNY rate (< 15) so existing configs seamlessly use USD-based TWD rate.
-		if exchangeRate >= 15.0 {
-			return exchangeRate
-		}
-		return defaultRate
-	default:
-		if exchangeRate > 0 {
-			return exchangeRate
-		}
-		return defaultRate
-	}
+	return displayRate
 }
 
 // RecalculateAllChannelModelCosts pre-calculates and caches per-channel, per-model costs.

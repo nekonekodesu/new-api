@@ -2208,7 +2208,7 @@ export function ChannelMutateDrawer({
           )}
         />
 
-        <div className='grid grid-cols-1 gap-4 sm:grid-cols-2'>
+        <div className='grid grid-cols-1 gap-4'>
           <FormField
             control={form.control}
             name='currency_code'
@@ -2231,38 +2231,6 @@ export function ChannelMutateDrawer({
                 <FormDescription>
                   {t(
                     'Upstream settlement currency code; leave empty to use system default'
-                  )}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name='exchange_rate'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('Channel Exchange Rate')}</FormLabel>
-                <FormControl>
-                  <Input
-                    type='number'
-                    step='0.0001'
-                    min='0'
-                    placeholder={t('0 = use system default')}
-                    value={field.value ?? 0}
-                    onChange={(e) => {
-                      const val = e.target.value
-                      field.onChange(val === '' ? 0 : Number(val))
-                    }}
-                    onBlur={field.onBlur}
-                    name={field.name}
-                    ref={field.ref}
-                  />
-                </FormControl>
-                <FormDescription>
-                  {t(
-                    'Custom exchange rate (channel currency per 1 USD); 0 uses system rate'
                   )}
                 </FormDescription>
                 <FormMessage />
