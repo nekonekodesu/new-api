@@ -865,3 +865,29 @@ test('an empty plugin filter reports that no plugins can be bound', async () => 
   expect(screen.getByText('No plugins available for binding')).toBeVisible()
   expect(screen.queryByRole('option')).not.toBeInTheDocument()
 })
+
+test('plugins with null models do not crash the provider picker on creation', () => {
+  render(
+    <ChannelProviderPicker
+      isCreating
+      plugins={[
+        {
+          key: 'provider_only_plugin',
+          name: 'Provider Only Plugin',
+          models: null as unknown as string[],
+        },
+      ]}
+      canBindPlugin
+      loading={false}
+      failed={false}
+      disabled={false}
+      onRetry={vi.fn()}
+      onSelect={vi.fn()}
+    />
+  )
+  expect(
+    screen.getByRole('option', {
+      name: 'Provider Only Plugin Plugin provider_only_plugin',
+    })
+  ).toBeVisible()
+})

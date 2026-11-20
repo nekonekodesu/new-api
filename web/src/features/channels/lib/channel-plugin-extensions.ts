@@ -78,10 +78,12 @@ export function supportsNewAPIUpstream(
 
 export function getChannelPluginExtensions(
   channelType: number,
-  plugins: TaskPluginOption[],
+  plugins: TaskPluginOption[] | null | undefined,
   extendPluginKeys: readonly string[] = []
 ): TaskPluginOption[] {
-  if (!supportsChannelPluginExtensions(channelType)) return []
+  if (!supportsChannelPluginExtensions(channelType) || !Array.isArray(plugins)) {
+    return []
+  }
   if (channelType === CHANNEL_TYPE_NEW_API) {
     return plugins.filter((plugin) => extendPluginKeys.includes(plugin.key))
   }

@@ -122,9 +122,17 @@ export type TaskPluginOption = {
 export async function getTaskPluginOptions(): Promise<TaskPluginOption[]> {
   const response = await api.get<{
     success: boolean
-    data: TaskPluginOption[]
+    data: TaskPluginOption[] | null
   }>('/api/task_plugin_options')
-  return requireServerSuccess(response.data).data
+  const items = requireServerSuccess(response.data).data
+  if (!Array.isArray(items)) return []
+  return items.map((item) => ({
+    ...item,
+    models: Array.isArray(item.models) ? item.models : [],
+    channelTypes: Array.isArray(item.channelTypes) ? item.channelTypes : [],
+    upstreams: Array.isArray(item.upstreams) ? item.upstreams : [],
+    samples: Array.isArray(item.samples) ? item.samples : [],
+  }))
 }
 
 export async function startPluginLogin(

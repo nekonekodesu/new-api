@@ -77,10 +77,9 @@ export function ChannelProviderPicker(props: ChannelProviderPickerProps) {
     !props.canBindPlugin && selectedFilter === 'plugin' ? 'all' : selectedFilter
   const keyword = search.trim().toLocaleLowerCase()
   const options = useMemo(() => {
+    const safePlugins = Array.isArray(props.plugins) ? props.plugins : []
     const availablePlugins =
-      props.canBindPlugin && !props.loading && !props.failed
-        ? props.plugins
-        : []
+      props.canBindPlugin && !props.loading && !props.failed ? safePlugins : []
     const pluginAliases = new Map<string, string>()
     const replacedTypes = new Set<number>()
     if (props.isCreating) {
@@ -119,7 +118,7 @@ export function ChannelProviderPicker(props: ChannelProviderPickerProps) {
         if (!props.canBindPlugin || (filter !== 'all' && filter !== 'plugin')) {
           continue
         }
-        for (const plugin of props.plugins) {
+        for (const plugin of availablePlugins) {
           entries.push({
             id: `plugin:${plugin.key}`,
             label: plugin.name,
@@ -388,7 +387,7 @@ export function ChannelProviderPicker(props: ChannelProviderPickerProps) {
                     {option.plugin && (
                       <span className='text-muted-foreground ml-auto shrink-0 text-[11px]'>
                         {t('{{count}} models', {
-                          count: option.plugin.models.length,
+                          count: option.plugin.models?.length ?? 0,
                         })}
                       </span>
                     )}

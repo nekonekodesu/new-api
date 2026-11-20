@@ -777,7 +777,10 @@ export function ChannelMutateDrawer({
 
   // Get all models list
   const allModelsList = useMemo(
-    () => allModelsData?.data?.map((model) => model.id).filter(Boolean) || [],
+    () =>
+      Array.isArray(allModelsData?.data)
+        ? allModelsData.data.map((model) => model.id).filter(Boolean)
+        : [],
     [allModelsData]
   )
 
@@ -795,13 +798,13 @@ export function ChannelMutateDrawer({
 
   // Get prefill groups
   const prefillGroups = useMemo(
-    () => prefillGroupsData?.data || [],
+    () => (Array.isArray(prefillGroupsData?.data) ? prefillGroupsData.data : []),
     [prefillGroupsData]
   )
 
   // Transform groups to multi-select options
   const groupOptions = useMemo(() => {
-    if (!groupsData?.data) return []
+    if (!Array.isArray(groupsData?.data)) return []
     const allGroups = new Set([...groupsData.data, ...(currentGroups || [])])
     return [...allGroups].map((group) => ({
       value: group,
@@ -923,7 +926,7 @@ export function ChannelMutateDrawer({
         if (!isEditing && !providerTarget && !form.getValues('name').trim()) {
           form.setValue('name', plugin.name)
         }
-        if (plugin.models.length) {
+        if (plugin.models?.length) {
           form.setValue('models', formatModelsArray(plugin.models), {
             shouldDirty: true,
           })
@@ -1082,7 +1085,7 @@ export function ChannelMutateDrawer({
     const allModels = new Set([
       ...allModelsList,
       ...currentModelsArray,
-      ...pluginExtensions.flatMap((plugin) => plugin.models),
+      ...pluginExtensions.flatMap((plugin) => plugin.models ?? []),
     ])
     return [...allModels].map((model) => {
       const target = targetBySource.get(model)
@@ -1474,7 +1477,7 @@ export function ChannelMutateDrawer({
         new Set(
           plugins
             .filter((plugin) => bound.includes(plugin.key))
-            .flatMap((plugin) => plugin.models)
+            .flatMap((plugin) => plugin.models ?? [])
         )
       const previous = form.getValues('task_extend_plugin_keys') ?? []
       const added = declaredBy(keys.filter((key) => !previous.includes(key)))
@@ -3426,7 +3429,7 @@ export function ChannelMutateDrawer({
                       disabled={
                         currentModelsArray.length === 0 &&
                         !pluginExtensions.some(
-                          (plugin) => plugin.models.length > 0
+                          (plugin) => (plugin.models?.length ?? 0) > 0
                         )
                       }
                     >

@@ -31,7 +31,9 @@ export function ChannelPluginExtensions(props: {
   onConfigure: (pluginKey: string) => void
 }) {
   const { t, i18n } = useTranslation()
-  const plugins = props.plugins.filter((plugin) => plugin.models.length > 0)
+  const plugins = props.plugins.filter(
+    (plugin) => (plugin.models?.length ?? 0) > 0
+  )
   if (plugins.length === 0) return null
   const selected = new Set(props.selected)
 
