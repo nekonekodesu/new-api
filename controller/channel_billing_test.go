@@ -10,6 +10,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -208,4 +210,151 @@ func TestUpdateChannelNewAPIBalanceUsesTheSmallerRemainingQuota(t *testing.T) {
 			assert.InDelta(t, tc.want, channel.Balance, 1e-9)
 		})
 	}
+}
+
+func TestResolveUnifiedChannelExchangeRateAndMultiplier(t *testing.T) {
+	origRates := operation_setting.GetGeneralSetting().CurrencyRates
+	origUSD := operation_setting.USDExchangeRate
+	origNTD := operation_setting.NTDExchangeRate
+	t.Cleanup(func() {
+		gs := operation_setting.GetGeneralSetting()
+		gs.CurrencyRates = origRates
+		operation_setting.USDExchangeRate = origUSD
+		operation_setting.NTDExchangeRate = origNTD
+	})
+
+	gs := operation_setting.GetGeneralSetting()
+	operation_setting.USDExchangeRate = 7.3
+	operation_setting.NTDExchangeRate = 32.0
+	gs.CurrencyRates = map[string]operation_setting.CurrencyRate{
+		"USD": {Symbol: "$", Rate: 1.0},
+		"CNY": {Symbol: "¥", Rate: 7.3},
+		"TWD": {Symbol: "NT$", Rate: 32.0},
+		"JPY": {Symbol: "¥", Rate: 150.0},
+	}
+
+	for _, tc := range []struct {
+		name     string
+		currency string
+		rate     float64
+		wantRate float64
+		wantMult float64
+	}{
+		{name: "USD ignores legacy 35 default", currency: "USD", rate: 35.0, wantRate: 1.0, wantMult: 1.0},
+		{name: "CNY ignores legacy 5 default", currency: "CNY", rate: 5.0, wantRate: 7.3, wantMult: 1.0 / 7.3},
+		{name: "CNY preserves explicit USD-based override", currency: "CNY", rate: 7.1, wantRate: 7.1, wantMult: 1.0 / 7.1},
+		{name: "TWD ignores legacy 1 default", currency: "TWD", rate: 1.0, wantRate: 32.0, wantMult: 1.0 / 32.0},
+		{name: "NTD alias uses TWD rate", currency: "NTD", rate: 0, wantRate: 32.0, wantMult: 1.0 / 32.0},
+		{name: "JPY uses unified rate table", currency: "JPY", rate: 0, wantRate: 150.0, wantMult: 1.0 / 150.0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.InDelta(t, tc.wantRate, model.ResolveEffectiveChannelExchangeRate(tc.currency, tc.rate), 1e-9)
+			assert.InDelta(t, tc.wantMult, model.ResolveUpstreamToQuotaUnitMultiplier(tc.currency, tc.rate), 1e-9)
+		})
+	}
+}
+
+func TestApplyAuthoritativeModelPricesConvertsUpstreamCurrencyToUSD(t *testing.T) {
+	origDB := model.DB
+	model.DB = nil
+	origRates := operation_setting.GetGeneralSetting().CurrencyRates
+	origUSD := operation_setting.USDExchangeRate
+	origModelRatioBytes, err := common.Marshal(ratio_setting.GetModelRatioCopy())
+	require.NoError(t, err)
+	origCompletionRatioBytes, err := common.Marshal(ratio_setting.GetCompletionRatioCopy())
+	require.NoError(t, err)
+	origModelPriceBytes, err := common.Marshal(ratio_setting.GetModelPriceCopy())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		model.DB = origDB
+		gs := operation_setting.GetGeneralSetting()
+		gs.CurrencyRates = origRates
+		operation_setting.USDExchangeRate = origUSD
+		_ = ratio_setting.UpdateModelRatioByJSONString(string(origModelRatioBytes))
+		_ = ratio_setting.UpdateCompletionRatioByJSONString(string(origCompletionRatioBytes))
+		_ = ratio_setting.UpdateModelPriceByJSONString(string(origModelPriceBytes))
+	})
+
+	gs := operation_setting.GetGeneralSetting()
+	operation_setting.USDExchangeRate = 7.3
+	gs.CurrencyRates = map[string]operation_setting.CurrencyRate{
+		"USD": {Symbol: "$", Rate: 1.0},
+		"CNY": {Symbol: "¥", Rate: 7.3},
+		"TWD": {Symbol: "NT$", Rate: 32.0},
+	}
+
+	const cnyModel = "test-deepseek-cny-sync"
+	const compareModel = "test-cny-vs-usd-priority"
+
+	// Channel 901: CNY upstream priced at ¥2/1M input, ¥8/1M output (1x).
+	// Expected system USD ModelRatio = 2.0 / (2.0 * 7.3) ≈ 0.136986 (NOT 1.0!).
+	model.SetChannelUpstreamModelCosts(901, map[string]model.ChannelModelCostEntry{
+		cnyModel: {
+			ChannelID:       901,
+			ChannelName:     "gc-default-1",
+			Model:           cnyModel,
+			QuotaType:       0,
+			RawInputCost:    2.0,
+			RawOutputCost:   8.0,
+			InputCost:       2.0 / 7.3,
+			OutputCost:      8.0 / 7.3,
+			ModelRatio:      1.0,
+			CompletionRatio: 4.0,
+			BaseMultiplier:  1.0,
+			Currency:        "CNY",
+			ExchangeRate:    5.0, // legacy TWD-per-CNY default must fall back to 7.3
+			FromUpstream:    true,
+		},
+		compareModel: {
+			ChannelID:       901,
+			ChannelName:     "gc-cny-1",
+			Model:           compareModel,
+			QuotaType:       0,
+			RawInputCost:    2.0, // ¥2 CNY ≈ $0.274 USD
+			RawOutputCost:   4.0,
+			InputCost:       2.0 / 7.3,
+			OutputCost:      4.0 / 7.3,
+			ModelRatio:      1.0,
+			CompletionRatio: 2.0,
+			BaseMultiplier:  1.0,
+			Currency:        "CNY",
+			ExchangeRate:    7.3,
+			FromUpstream:    true,
+		},
+	}, false)
+
+	// Channel 902: USD upstream priced at $1/1M input, $2/1M output (higher USD price than ¥2 CNY).
+	model.SetChannelUpstreamModelCosts(902, map[string]model.ChannelModelCostEntry{
+		compareModel: {
+			ChannelID:       902,
+			ChannelName:     "official-usd",
+			Model:           compareModel,
+			QuotaType:       0,
+			RawInputCost:    1.0, // $1.00 USD > ¥2 CNY ($0.274 USD)
+			RawOutputCost:   2.0,
+			InputCost:       1.0,
+			OutputCost:      2.0,
+			ModelRatio:      0.5,
+			CompletionRatio: 2.0,
+			BaseMultiplier:  1.0,
+			Currency:        "USD",
+			ExchangeRate:    1.0,
+			FromUpstream:    true,
+		},
+	}, false)
+
+	updated, err := applyAuthoritativeModelPricesToSystem(model.ModelPriceSyncConfig{
+		HighestPricePriority: true,
+	})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, updated, 2)
+
+	cnyRatio, ok, _ := ratio_setting.GetModelRatio(cnyModel)
+	require.True(t, ok)
+	assert.InDelta(t, 1.0/7.3, cnyRatio, 1e-5, "CNY ¥2/1M must convert to USD ModelRatio ≈ 0.136986 instead of inflated 1.0")
+	assert.InDelta(t, 4.0, ratio_setting.GetCompletionRatio(cnyModel), 1e-6)
+
+	compareRatio, ok, _ := ratio_setting.GetModelRatio(compareModel)
+	require.True(t, ok)
+	assert.InDelta(t, 0.5, compareRatio, 1e-5, "USD $1/1M channel must win HighestPricePriority over CNY ¥2/1M ($0.274/1M)")
 }

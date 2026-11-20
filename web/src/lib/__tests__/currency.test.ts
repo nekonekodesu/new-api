@@ -69,6 +69,18 @@ describe('multi-currency exchange rates and formatting', () => {
         locale: toIntlLocale('en'),
       })
     ).toBe('NT$320')
+    expect(
+      formatCurrencyFromUSD(10, {
+        abbreviate: false,
+        locale: toIntlLocale('zhTW'),
+      })
+    ).toBe('NT$320')
+    expect(
+      formatCurrencyFromUSD(-10, {
+        abbreviate: false,
+        locale: toIntlLocale('zhTW'),
+      })
+    ).toBe('-NT$320')
   })
 
   it('formats dynamic currencies via formatAmount and active quotaDisplayType', () => {

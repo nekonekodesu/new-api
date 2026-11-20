@@ -398,12 +398,21 @@ function formatCurrencyValue(
       }).format(adjustedValue)
     }
 
+    if (meta.currencyCode === 'TWD') {
+      const isNegative = adjustedValue < 0
+      const decimal = new Intl.NumberFormat(options.locale, {
+        notation: options.compact ? 'compact' : 'standard',
+        minimumFractionDigits: 0,
+        maximumFractionDigits: options.compact ? 1 : digits,
+      }).format(Math.abs(adjustedValue))
+      return `${isNegative ? '-' : ''}${meta.symbol}${decimal}`
+    }
+
     try {
       const formatted = new Intl.NumberFormat(options.locale, {
         style: 'currency',
         currency: meta.currencyCode,
-        currencyDisplay:
-          meta.currencyCode === 'TWD' ? 'symbol' : 'narrowSymbol',
+        currencyDisplay: 'narrowSymbol',
         notation: options.compact ? 'compact' : 'standard',
         minimumFractionDigits: 0,
         maximumFractionDigits: options.compact ? 1 : digits,

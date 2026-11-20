@@ -284,8 +284,11 @@ export function ModelPriceTablePanel() {
                     </div>
                     {formatRawCurrency(row.raw_input_cost, row.currency) ? (
                       <div className='text-muted-foreground font-mono text-[10px]'>
-                        {formatRawCurrency(row.raw_input_cost, row.currency)} ×{' '}
-                        {row.exchange_rate}
+                        {formatRawCurrency(row.raw_input_cost, row.currency)}
+                        {row.exchange_rate > 0 &&
+                        Math.abs(row.exchange_rate - 1) > 1e-4
+                          ? ` ÷ ${row.exchange_rate}`
+                          : ''}
                       </div>
                     ) : null}
                   </div>
@@ -298,8 +301,11 @@ export function ModelPriceTablePanel() {
                     </div>
                     {formatRawCurrency(row.raw_output_cost, row.currency) ? (
                       <div className='text-muted-foreground font-mono text-[10px]'>
-                        {formatRawCurrency(row.raw_output_cost, row.currency)} ×{' '}
-                        {row.exchange_rate}
+                        {formatRawCurrency(row.raw_output_cost, row.currency)}
+                        {row.exchange_rate > 0 &&
+                        Math.abs(row.exchange_rate - 1) > 1e-4
+                          ? ` ÷ ${row.exchange_rate}`
+                          : ''}
                       </div>
                     ) : null}
                   </div>
@@ -437,8 +443,11 @@ export function ModelPriceTablePanel() {
                               {formatRawCurrency(
                                 row.raw_input_cost,
                                 row.currency
-                              )}{' '}
-                              × {row.exchange_rate}
+                              )}
+                              {row.exchange_rate > 0 &&
+                              Math.abs(row.exchange_rate - 1) > 1e-4
+                                ? ` ÷ ${row.exchange_rate}`
+                                : ''}
                             </span>
                           ) : null}
                         </div>
@@ -454,8 +463,11 @@ export function ModelPriceTablePanel() {
                               {formatRawCurrency(
                                 row.raw_output_cost,
                                 row.currency
-                              )}{' '}
-                              × {row.exchange_rate}
+                              )}
+                              {row.exchange_rate > 0 &&
+                              Math.abs(row.exchange_rate - 1) > 1e-4
+                                ? ` ÷ ${row.exchange_rate}`
+                                : ''}
                             </span>
                           ) : null}
                         </div>

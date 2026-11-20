@@ -639,20 +639,21 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 			}
 		}
 		if chosen == nil {
-			// Highest price priority (or default fallback) using unscaled 1x base ratios
+			// Highest price priority (or default fallback) comparing USD-normalized 1x base prices
 			bestIdx := 0
 			bestScore := -1.0
 			for i := range entries {
+				unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(entries[i].Currency, entries[i].ExchangeRate)
 				mr := entries[i].ModelRatio
 				if entries[i].RawInputCost > 0 && entries[i].BaseMultiplier > 0 {
 					mr = entries[i].RawInputCost / (2.0 * entries[i].BaseMultiplier)
 				}
-				score := mr * 2.0 * (1.0 + entries[i].CompletionRatio)
+				score := mr * unitMult * 2.0 * (1.0 + entries[i].CompletionRatio)
 				if entries[i].QuotaType == 1 && (entries[i].RawModelPrice > 0 || entries[i].ModelPrice > 0) {
 					if entries[i].RawModelPrice > 0 {
-						score = entries[i].RawModelPrice
+						score = entries[i].RawModelPrice * unitMult
 					} else {
-						score = entries[i].ModelPrice
+						score = entries[i].ModelPrice * unitMult
 					}
 				}
 				if score > bestScore {
@@ -665,23 +666,26 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 		if chosen == nil {
 			continue
 		}
-		// Apply unscaled 1x base price to downstream ratio_setting (group multiplier is configured per group).
+		// Convert unscaled 1x upstream price into system USD before writing to ratio_setting.
+		unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(chosen.Currency, chosen.ExchangeRate)
 		basePrice := chosen.RawModelPrice
 		if basePrice <= 0 {
 			basePrice = chosen.ModelPrice
 		}
 		baseModelRatio := chosen.ModelRatio
 		if chosen.RawInputCost > 0 && chosen.BaseMultiplier > 0 {
-			baseModelRatio = roundRatioValue(chosen.RawInputCost / (2.0 * chosen.BaseMultiplier))
+			baseModelRatio = chosen.RawInputCost / (2.0 * chosen.BaseMultiplier)
 		}
-		if chosen.QuotaType == 1 && basePrice > 0 {
-			modelPriceCopy[m] = roundRatioValue(basePrice)
+		usdBasePrice := roundRatioValue(basePrice * unitMult)
+		usdBaseModelRatio := roundRatioValue(baseModelRatio * unitMult)
+		if chosen.QuotaType == 1 && usdBasePrice > 0 {
+			modelPriceCopy[m] = usdBasePrice
 			if isUnconfiguredDefaultModelRatio(m, 0, modelRatioCopy[m], compRatioCopy[m]) {
 				delete(modelRatioCopy, m)
 			}
 			updatedCount++
-		} else if chosen.QuotaType == 0 && baseModelRatio > 0 {
-			modelRatioCopy[m] = roundRatioValue(baseModelRatio)
+		} else if chosen.QuotaType == 0 && usdBaseModelRatio > 0 {
+			modelRatioCopy[m] = usdBaseModelRatio
 			if chosen.CompletionRatio > 0 {
 				compRatioCopy[m] = roundRatioValue(chosen.CompletionRatio)
 			}

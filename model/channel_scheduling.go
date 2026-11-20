@@ -1538,6 +1538,16 @@ func ResolveChannelCurrencyAndMultiplier(ch *Channel, existingEntries map[string
 			rawRate = r
 		}
 	}
+	if ch != nil {
+		if currency == "" && ch.CurrencyCode != nil {
+			if c := strings.TrimSpace(*ch.CurrencyCode); c != "" && !strings.EqualFold(c, "AUTO") {
+				currency = strings.ToUpper(c)
+			}
+		}
+		if rawRate <= 0 && ch.ExchangeRate != nil && *ch.ExchangeRate > 0 {
+			rawRate = *ch.ExchangeRate
+		}
+	}
 
 	for _, e := range existingEntries {
 		if !e.FromUpstream {
@@ -1706,120 +1716,65 @@ func roundCost(v float64) float64 {
 	return math.Round(v*1e6) / 1e6
 }
 
-// ResolveUpstreamToQuotaUnitMultiplier returns how many local quota units (1 unit = QuotaPerUnit = 500,000 tokens)
-// equal 1 upstream quota unit (500,000 tokens on the upstream).
+// ResolveUpstreamToQuotaUnitMultiplier returns how many system USD quota units
+// (1 unit = QuotaPerUnit = 1 USD) equal 1 unit of the upstream currency.
 //
-// In this system:
-//   - Site display currency (e.g. NTD) uses `siteRate = operation_setting.USDExchangeRate` (e.g. 1 local unit = NT$5).
-//   - Upstream currency has a TWD exchange rate `upRate` (e.g. CNY = 5 TWD, USD = 35 TWD, TWD = 1 TWD).
-//   - Therefore, 1 upstream unit = `upRate` TWD = `(upRate / siteRate)` local quota units!
-//   - When the frontend formats a local quota unit via `formatBillingCurrencyFromUSD(val)`, it multiplies by `siteRate`,
-//     producing `val * siteRate = (rawUpstream * upRate / siteRate) * siteRate = rawUpstream * upRate` TWD!
+// All exchange rates in the unified currency system are expressed as
+// "units of currency per 1 USD" (e.g. USD=1, CNY=7.3, TWD=32, JPY=150),
+// sourced from operation_setting.GetEffectiveCurrencyRates() with optional
+// per-channel overrides.
 func ResolveUpstreamToQuotaUnitMultiplier(currency string, exchangeRate float64) float64 {
-	curr := strings.ToUpper(strings.TrimSpace(currency))
-	cfg := GetModelPriceSyncConfig()
-
-	siteDisplay := strings.ToUpper(strings.TrimSpace(operation_setting.GetQuotaDisplayType()))
-	siteRate := operation_setting.GetUsdToCurrencyRate(operation_setting.USDExchangeRate)
-	if siteRate <= 0 {
-		siteRate = 1.0
-	}
-
-	// If the site itself displays in USD (siteRate == 1), then exchangeRate is "upstream units per 1 USD" (e.g. 7.2 CNY/USD)
-	if siteDisplay == "" || siteDisplay == "USD" || siteDisplay == "TOKENS" {
-		if curr == "" || curr == "USD" || curr == "AUTO" {
-			return 1.0
-		}
-		if exchangeRate > 0 {
-			return 1.0 / exchangeRate
-		}
-		if curr == "CNY" {
-			return 1.0 / 7.2
-		}
-		if curr == "TWD" || curr == "NTD" {
-			return 1.0 / 32.0
-		}
+	ratePerUSD := ResolveEffectiveChannelExchangeRate(currency, exchangeRate)
+	if ratePerUSD <= 0 {
 		return 1.0
 	}
-
-	// Site displays in NTD / CNY / CUSTOM where 1 local quota unit = siteRate (e.g. 4.75 or 5.0 NTD)
-	upTwdRate := exchangeRate
-	switch curr {
-	case "USD":
-		if upTwdRate <= 1.01 {
-			if cfg.USDExchangeRate > 0 {
-				upTwdRate = cfg.USDExchangeRate
-			} else {
-				upTwdRate = 35.0
-			}
-		}
-	case "CNY", "RMB":
-		// If channel still has legacy 7.1 / 7.2 default, use configured CNYExchangeRate (5.0)
-		if upTwdRate <= 0 || math.Abs(upTwdRate-7.1) < 1e-4 || math.Abs(upTwdRate-7.2) < 1e-4 {
-			if cfg.CNYExchangeRate > 0 {
-				upTwdRate = cfg.CNYExchangeRate
-			} else {
-				upTwdRate = 5.0
-			}
-		}
-	case "TWD", "NTD":
-		if upTwdRate <= 0 || math.Abs(upTwdRate-32.0) < 1e-4 {
-			if cfg.TWDExchangeRate > 0 {
-				upTwdRate = cfg.TWDExchangeRate
-			} else {
-				upTwdRate = 1.0
-			}
-		}
-	default:
-		// AUTO or unset: default to CNY rate for New-API upstreams or USD rate for official
-		if upTwdRate <= 0 {
-			if cfg.CNYExchangeRate > 0 {
-				upTwdRate = cfg.CNYExchangeRate
-			} else {
-				upTwdRate = siteRate
-			}
-		}
-	}
-	if upTwdRate <= 0 {
-		upTwdRate = siteRate
-	}
-	return upTwdRate / siteRate
+	return 1.0 / ratePerUSD
 }
 
-// ResolveEffectiveChannelExchangeRate returns the display rate (e.g. 5 for CNY, 35 for USD) for UI metadata.
+// ResolveEffectiveChannelExchangeRate returns the unified exchange rate
+// (units of currency per 1 USD) for a channel/upstream currency.
+// Legacy TWD-based defaults (USD=35, CNY=5, TWD=1) automatically fall back
+// to the site's unified multi-currency rate table.
 func ResolveEffectiveChannelExchangeRate(currency string, exchangeRate float64) float64 {
 	curr := strings.ToUpper(strings.TrimSpace(currency))
-	cfg := GetModelPriceSyncConfig()
+	if curr == "" || curr == "AUTO" || curr == "USD" {
+		return 1.0
+	}
+	if curr == "RMB" {
+		curr = "CNY"
+	}
+	if curr == "NTD" {
+		curr = "TWD"
+	}
+
+	rates := operation_setting.GetEffectiveCurrencyRates()
+	defaultRate := 1.0
+	if entry, ok := rates[curr]; ok && entry.Rate > 0 {
+		defaultRate = entry.Rate
+	} else if curr == "CNY" {
+		defaultRate = 7.3
+	} else if curr == "TWD" {
+		defaultRate = 32.0
+	}
+
 	switch curr {
-	case "USD":
+	case "CNY":
+		// Ignore legacy TWD-per-CNY default (5.0) so existing configs seamlessly use USD-based CNY rate.
+		if exchangeRate > 0 && math.Abs(exchangeRate-5.0) > 1e-4 {
+			return exchangeRate
+		}
+		return defaultRate
+	case "TWD":
+		// Ignore legacy TWD-per-TWD default (1.0) so existing configs seamlessly use USD-based TWD rate.
 		if exchangeRate > 1.01 {
 			return exchangeRate
 		}
-		if cfg.USDExchangeRate > 0 {
-			return cfg.USDExchangeRate
-		}
-		return 35.0
-	case "CNY", "RMB":
-		if exchangeRate > 0 && math.Abs(exchangeRate-7.1) > 1e-4 && math.Abs(exchangeRate-7.2) > 1e-4 {
-			return exchangeRate
-		}
-		if cfg.CNYExchangeRate > 0 {
-			return cfg.CNYExchangeRate
-		}
-		return 5.0
-	case "TWD", "NTD":
-		if exchangeRate > 0 && math.Abs(exchangeRate-32.0) > 1e-4 {
-			return exchangeRate
-		}
-		if cfg.TWDExchangeRate > 0 {
-			return cfg.TWDExchangeRate
-		}
-		return 1.0
+		return defaultRate
 	default:
 		if exchangeRate > 0 {
 			return exchangeRate
 		}
-		return 1.0
+		return defaultRate
 	}
 }
 
