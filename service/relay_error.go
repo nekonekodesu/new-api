@@ -91,6 +91,7 @@ func RecordRelayErrorLog(c *gin.Context, channelId int, err *types.NewAPIError, 
 	if c.Request != nil && c.Request.URL != nil {
 		other.SetPublic("request_path", c.Request.URL.Path)
 	}
+	appendRequestBodySize(c, relayInfo, other)
 	other.SetPublic("error_type", err.GetErrorType())
 	other.SetPublic("error_code", err.GetErrorCode())
 	other.SetPublic("status_code", err.StatusCode)

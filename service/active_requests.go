@@ -198,6 +198,9 @@ func GetActiveRelayLogs(filter model.LogFilter, userId int, isAdmin bool) []*mod
 		if entry.requestPath != "" {
 			otherMap["request_path"] = entry.requestPath
 		}
+		if info.RequestBodySize > 0 {
+			otherMap["request_body_size"] = info.RequestBodySize
+		}
 		if info.HasSendResponse() {
 			otherMap["frt"] = float64(max(info.FirstResponseTime.Sub(info.StartTime).Milliseconds(), 0))
 		}

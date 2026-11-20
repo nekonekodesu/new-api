@@ -95,19 +95,19 @@ afterEach(() => {
 })
 
 describe('usage log upstream and final error responses', () => {
-  test('shows measured request body size between IP and response time', () => {
+  test('shows measured request body size below response time', () => {
     renderDetails(
       makeLog({ ip: '192.0.2.1' }, { request_body_size: 406062 }),
       true
     )
     const ip = screen.getByText('IP Address')
-    const size = screen.getByText('Request Body Size')
     const timing = screen.getByText('Response Time')
+    const size = screen.getByText('Request Body Size')
     expect(
-      ip.compareDocumentPosition(size) & Node.DOCUMENT_POSITION_FOLLOWING
+      ip.compareDocumentPosition(timing) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
     expect(
-      size.compareDocumentPosition(timing) & Node.DOCUMENT_POSITION_FOLLOWING
+      timing.compareDocumentPosition(size) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
     expect(screen.getByText(/406,062 bytes/)).toBeVisible()
   })

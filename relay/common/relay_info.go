@@ -79,20 +79,23 @@ type ChannelMeta struct {
 
 type TokenCountMeta struct {
 	//promptTokens int
-	estimatePromptTokens int
-	livePromptTokens     atomic.Int64
-	liveCompletionTokens atomic.Int64
+	estimatePromptTokens        int
+	livePromptTokens            atomic.Int64
+	liveAppendedPromptTokens    atomic.Int64
+	liveCompletionTokens        atomic.Int64
+	liveRollingCompletionTokens atomic.Int64
 }
 
 type RelayInfo struct {
-	TokenId        int
-	TokenKey       string
-	TokenGroup     string
-	UserId         int
-	UsingGroup     string // 使用的分组，当auto跨分组重试时，会变动
-	UserGroup      string // 用户所在分组
-	TokenUnlimited bool
-	StartTime      time.Time
+	TokenId         int
+	TokenKey        string
+	TokenGroup      string
+	UserId          int
+	UsingGroup      string // 使用的分组，当auto跨分组重试时，会变动
+	UserGroup       string // 用户所在分组
+	TokenUnlimited  bool
+	StartTime       time.Time
+	RequestBodySize int64 // Measured client request body size in bytes (-1 when unavailable)
 	// AttemptStartTime is when the current channel attempt began. It differs
 	// from StartTime after a retry, so per-channel latency excludes the time
 	// spent on channels that already failed.
@@ -776,8 +779,26 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 		return nil, errors.New("failed to build relay info")
 	}
 
+	info.RequestBodySize = MeasureRequestBodySize(c)
 	info.InitRequestConversionChain()
 	return info, nil
+}
+
+// MeasureRequestBodySize returns the measured request body length in bytes, or
+// -1 when no request body size is available on the context.
+func MeasureRequestBodySize(c *gin.Context) int64 {
+	if c == nil {
+		return -1
+	}
+	if cached, exists := c.Get(common.KeyRequestBody); exists {
+		if body, ok := cached.([]byte); ok {
+			return int64(len(body))
+		}
+	}
+	if c.Request != nil && c.Request.ContentLength >= 0 {
+		return c.Request.ContentLength
+	}
+	return -1
 }
 
 func (info *RelayInfo) InitRequestConversionChain() {
@@ -875,24 +896,61 @@ func (info *RelayInfo) SetLivePromptTokens(tokens int) {
 	if info == nil || tokens < 0 {
 		return
 	}
-	info.livePromptTokens.Store(int64(tokens))
+	appended := info.liveAppendedPromptTokens.Load()
+	if appended == 0 {
+		info.livePromptTokens.Store(int64(tokens))
+		return
+	}
+	currentBase := info.livePromptTokens.Load()
+	if currentBase <= 0 {
+		currentBase = int64(info.estimatePromptTokens)
+	}
+	if int64(tokens) >= currentBase+appended {
+		info.livePromptTokens.Store(int64(tokens))
+		info.liveAppendedPromptTokens.Store(0)
+	}
+}
+
+func (info *RelayInfo) AddLivePromptTokens(delta int) {
+	if info == nil || delta <= 0 {
+		return
+	}
+	info.liveAppendedPromptTokens.Add(int64(delta))
 }
 
 func (info *RelayInfo) GetLivePromptTokens() int {
 	if info == nil {
 		return 0
 	}
-	if v := int(info.livePromptTokens.Load()); v > 0 {
-		return v
+	base := int(info.livePromptTokens.Load())
+	if base <= 0 {
+		base = info.estimatePromptTokens
 	}
-	return info.estimatePromptTokens
+	return base + int(info.liveAppendedPromptTokens.Load())
 }
 
 func (info *RelayInfo) SetLiveCompletionTokens(tokens int) {
 	if info == nil || tokens < 0 {
 		return
 	}
+	if tokens == 0 {
+		info.liveRollingCompletionTokens.Store(0)
+	}
 	info.liveCompletionTokens.Store(int64(tokens))
+}
+
+func (info *RelayInfo) AddLiveRollingCompletionTokens(delta int) int {
+	if info == nil || delta <= 0 {
+		return int(info.liveRollingCompletionTokens.Load())
+	}
+	return int(info.liveRollingCompletionTokens.Add(int64(delta)))
+}
+
+func (info *RelayInfo) GetLiveRollingCompletionTokens() int {
+	if info == nil {
+		return 0
+	}
+	return int(info.liveRollingCompletionTokens.Load())
 }
 
 func (info *RelayInfo) GetLiveCompletionTokens() int {

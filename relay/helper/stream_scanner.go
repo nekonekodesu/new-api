@@ -373,19 +373,30 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 }
 
-const maxLiveStreamTextEstimateBytes = 256 << 10
+const liveStreamRollingFlushBytes = 64 << 10
 
 // ObserveLiveStreamData updates display-only live token counters on info so
 // in-progress streaming requests in the Usage Logs console reflect input/output
-// token progress and live TPS before settlement completes.
+// token progress (including MCP / server-side tool results appended mid-stream)
+// and live TPS before settlement completes.
 func ObserveLiveStreamData(info *relaycommon.RelayInfo, data string, liveStreamText *strings.Builder, hasUpstreamCompletionUsage *bool) {
 	if info == nil || data == "" {
 		return
 	}
 
+	modelName := info.UpstreamModelName
+	if modelName == "" {
+		modelName = info.OriginModelName
+	}
+
 	if promptTokens := extractLivePromptTokens(data); promptTokens > 0 {
 		info.SetLivePromptTokens(promptTokens)
+	} else if appendedInput := extractLiveAppendedInputText(data); appendedInput != "" {
+		if delta := tokenkit.Estimate(modelName, appendedInput); delta > 0 {
+			info.AddLivePromptTokens(delta)
+		}
 	}
+
 	if completionTokens := extractLiveCompletionTokens(data); completionTokens > 0 {
 		if hasUpstreamCompletionUsage != nil {
 			*hasUpstreamCompletionUsage = true
@@ -394,7 +405,7 @@ func ObserveLiveStreamData(info *relaycommon.RelayInfo, data string, liveStreamT
 		return
 	}
 
-	if liveStreamText == nil || liveStreamText.Len() >= maxLiveStreamTextEstimateBytes {
+	if liveStreamText == nil {
 		return
 	}
 
@@ -407,11 +418,98 @@ func ObserveLiveStreamData(info *relaycommon.RelayInfo, data string, liveStreamT
 		return
 	}
 
-	modelName := info.UpstreamModelName
-	if modelName == "" {
-		modelName = info.OriginModelName
+	bufferedTokens := tokenkit.Estimate(modelName, liveStreamText.String())
+	if liveStreamText.Len() >= liveStreamRollingFlushBytes {
+		total := info.AddLiveRollingCompletionTokens(bufferedTokens)
+		liveStreamText.Reset()
+		info.SetLiveCompletionTokens(total)
+		return
 	}
-	info.SetLiveCompletionTokens(tokenkit.Estimate(modelName, liveStreamText.String()))
+	info.SetLiveCompletionTokens(info.GetLiveRollingCompletionTokens() + bufferedTokens)
+}
+
+// extractLiveAppendedInputText extracts MCP or server-side tool result payloads
+// streamed mid-request so in-progress usage logs reflect appended input tokens
+// before the upstream emits final usage metrics.
+func extractLiveAppendedInputText(data string) string {
+	var sb strings.Builder
+
+	eventType := gjson.Get(data, "type").String()
+	switch eventType {
+	case "response.output_item.done", "response.output_item.added":
+		item := gjson.Get(data, "item")
+		itemType := item.Get("type").String()
+		switch itemType {
+		case "mcp_call", "function_call_output", "custom_tool_call_output", "local_shell_call_output":
+			writeLiveTextValue(&sb, item.Get("output"))
+			writeLiveTextValue(&sb, item.Get("error"))
+		case "mcp_list_tools":
+			writeLiveTextValue(&sb, item.Get("tools"))
+		case "web_search_call", "file_search_call", "code_interpreter_call":
+			writeLiveTextValue(&sb, item.Get("results"))
+			writeLiveTextValue(&sb, item.Get("outputs"))
+		}
+	case "response.mcp_call.completed", "response.function_call_output.delta":
+		writeLiveTextValue(&sb, gjson.Get(data, "output"))
+		writeLiveTextValue(&sb, gjson.Get(data, "delta"))
+	case "content_block_start":
+		block := gjson.Get(data, "content_block")
+		blockType := block.Get("type").String()
+		switch blockType {
+		case "mcp_tool_result", "tool_result", "web_search_tool_result", "code_execution_tool_result":
+			writeLiveTextValue(&sb, block.Get("content"))
+			writeLiveTextValue(&sb, block.Get("output"))
+		}
+	case "content_block_delta":
+		delta := gjson.Get(data, "delta")
+		if delta.Get("type").String() == "tool_result_delta" {
+			writeLiveTextValue(&sb, delta.Get("content"))
+			writeLiveTextValue(&sb, delta.Get("text"))
+		}
+	}
+
+	if choices := gjson.Get(data, "choices"); choices.IsArray() {
+		for _, choice := range choices.Array() {
+			if choice.Get("delta.role").String() == "tool" {
+				writeLiveTextValue(&sb, choice.Get("delta.content"))
+			}
+			if choice.Get("message.role").String() == "tool" {
+				writeLiveTextValue(&sb, choice.Get("message.content"))
+			}
+			if tr := choice.Get("delta.tool_result"); tr.Exists() {
+				writeLiveTextValue(&sb, tr)
+			}
+		}
+	}
+
+	if candidates := gjson.Get(data, "candidates"); candidates.IsArray() {
+		for _, cand := range candidates.Array() {
+			if parts := cand.Get("content.parts"); parts.IsArray() {
+				for _, part := range parts.Array() {
+					if fr := part.Get("functionResponse.response"); fr.Exists() {
+						writeLiveTextValue(&sb, fr)
+					}
+				}
+			}
+		}
+	}
+
+	return sb.String()
+}
+
+func writeLiveTextValue(sb *strings.Builder, result gjson.Result) {
+	if !result.Exists() || result.Type == gjson.Null {
+		return
+	}
+	if result.Type == gjson.String {
+		if s := result.String(); s != "" {
+			sb.WriteString(s)
+		}
+		return
+	}
+	if raw := strings.TrimSpace(result.Raw); raw != "" && raw != "[]" && raw != "{}" {
+		sb.WriteString(raw)
+	}
 }
 
 func extractLivePromptTokens(data string) int {

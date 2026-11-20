@@ -744,19 +744,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
-          {showTiming &&
-            typeof other?.request_body_size === 'number' &&
-            Number.isFinite(other.request_body_size) &&
-            other.request_body_size >= 0 && (
-              <DetailRow
-                label={t('Request Body Size')}
-                value={t('{{bytes}} bytes', {
-                  bytes: formatNumber(other.request_body_size, locale),
-                })}
-                mono
-              />
-            )}
-
           {showTiming && props.log.use_time > 0 && (
             <DetailRow
               label={t('Response Time')}
@@ -792,6 +779,19 @@ export function DetailsDialog(props: DetailsDialogProps) {
               }
             />
           )}
+
+          {showTiming &&
+            typeof other?.request_body_size === 'number' &&
+            Number.isFinite(other.request_body_size) &&
+            other.request_body_size >= 0 && (
+              <DetailRow
+                label={t('Request Body Size')}
+                value={t('{{bytes}} bytes', {
+                  bytes: formatNumber(other.request_body_size, locale),
+                })}
+                mono
+              />
+            )}
         </div>
 
         {/* Request conversion (admin only, not for refund) */}

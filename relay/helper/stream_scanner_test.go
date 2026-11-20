@@ -772,3 +772,48 @@ func TestStreamScannerHandler_TracksActiveRelayProgressAndTPS(t *testing.T) {
 	afterLogs := service.GetActiveRelayLogs(model.LogFilter{RequestId: "req-live-stream-1"}, 77, false)
 	assert.Empty(t, afterLogs)
 }
+
+func TestStreamScannerHandler_TracksMCPAppendedInputAndRequestBodySize(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"mcp_call","output":"MCP database query returned 150 matching customer records with billing summaries and audit metadata."}}`,
+		`data: {"type":"content_block_start","content_block":{"type":"mcp_tool_result","content":[{"type":"text","text":"Additional MCP tool output payload appended during the same streaming request."}]}}`,
+		`data: {"candidates":[{"content":{"parts":[{"functionResponse":{"name":"search","response":{"result":"Gemini function response appended mid-stream"}}}]}}]}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+	info.RequestId = "req-live-mcp-1"
+	info.UserId = 88
+	info.OriginModelName = "gpt-4o"
+	info.UsingGroup = "default"
+	info.IsStream = true
+	info.StartTime = time.Now().Add(-500 * time.Millisecond)
+	info.SetEstimatePromptTokens(100)
+	info.RequestBodySize = 406062
+	c.Set("username", "bob")
+	c.Set("token_name", "mcp-key")
+
+	unregister := service.RegisterActiveRelayRequest(c, info)
+	defer unregister()
+
+	var chunksSeen int
+	var promptSnapshots []int
+	var activeLogs []*model.Log
+	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		chunksSeen++
+		logs := service.GetActiveRelayLogs(model.LogFilter{RequestId: "req-live-mcp-1"}, 88, false)
+		if len(logs) == 1 {
+			promptSnapshots = append(promptSnapshots, logs[0].PromptTokens)
+			activeLogs = logs
+		}
+	})
+
+	require.Equal(t, 3, chunksSeen)
+	require.Len(t, promptSnapshots, 3)
+	assert.Greater(t, promptSnapshots[0], 100)
+	assert.Greater(t, promptSnapshots[1], promptSnapshots[0])
+	assert.Greater(t, promptSnapshots[2], promptSnapshots[1])
+	require.Len(t, activeLogs, 1)
+	assert.Equal(t, int64(406062), gjson.Get(activeLogs[0].Other, "request_body_size").Int())
+}

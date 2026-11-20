@@ -65,6 +65,21 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 	}
 }
 
+func appendRequestBodySize(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
+	if other == nil {
+		return
+	}
+	var size int64
+	if relayInfo != nil && relayInfo.RequestBodySize > 0 {
+		size = relayInfo.RequestBodySize
+	} else if measured := relaycommon.MeasureRequestBodySize(ctx); measured > 0 {
+		size = measured
+	}
+	if size > 0 {
+		other.SetPublic("request_body_size", size)
+	}
+}
+
 // AppendRelayLogAdminInfo records relay routing and conversion diagnostics in
 // the admin-only scope shared by successful and failed request logs.
 func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
@@ -128,6 +143,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	AppendRelayLogAdminInfo(ctx, relayInfo, other)
 	AppendResponseModelLogInfo(relayInfo, other)
 	appendRequestPath(ctx, relayInfo, other)
+	appendRequestBodySize(ctx, relayInfo, other)
 	appendRequestConversionChain(relayInfo, other)
 	appendFinalRequestFormat(relayInfo, other)
 	appendBillingInfo(relayInfo, other)
