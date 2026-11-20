@@ -46,9 +46,13 @@ import {
 import { shouldShowBillingSource } from '../lib/billing-source'
 import { useColumnsByCategory } from '../lib/columns'
 import { parseLogOther } from '../lib/format'
-import { reconcileUsageLogSnapshot } from '../lib/log-snapshot'
+import {
+  extractAdminDeltaCursor,
+  mergeUsageLogDelta,
+  reconcileUsageLogSnapshot,
+} from '../lib/log-snapshot'
 import { fetchLogsByCategory } from '../lib/utils'
-import type { LogCategory } from '../types'
+import type { GetLogsResponse, LogCategory } from '../types'
 import { CommonLogsFilterBar } from './common-logs-filter-bar'
 import { TaskLogsFilterBar } from './task-logs-filter-bar'
 import { UsageLogsMobileList } from './usage-logs-mobile-card'
@@ -194,6 +198,17 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     refetchInterval: autoRefreshSeconds > 0 ? autoRefreshSeconds * 1000 : false,
     refetchIntervalInBackground: false,
     queryFn: async () => {
+      const cachedPage =
+        logCategory === 'common' &&
+        isAdmin &&
+        pagination.pageIndex === 0 &&
+        !searchParams.endTime
+          ? queryClient.getQueryData<
+              NonNullable<GetLogsResponse['data']> | undefined
+            >(queryKey)
+          : undefined
+      const deltaCursor = extractAdminDeltaCursor(cachedPage)
+
       const result = await fetchLogsByCategory({
         logCategory,
         isAdmin,
@@ -201,15 +216,26 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         pageSize: pagination.pageSize,
         searchParams,
         columnFilters,
+        after: deltaCursor,
       })
 
       if (!result?.success) {
         throw createServerError(result, t('Failed to load logs'))
       }
 
-      return result.data
-        ? reconcileUsageLogSnapshot(result.data)
-        : DEFAULT_LOGS_DATA
+      if (!result.data) {
+        return DEFAULT_LOGS_DATA
+      }
+
+      if (deltaCursor && cachedPage) {
+        return mergeUsageLogDelta(
+          cachedPage,
+          result.data,
+          pagination.pageSize
+        )
+      }
+
+      return reconcileUsageLogSnapshot(result.data)
     },
     placeholderData: (previousData, previousQuery) => {
       if (

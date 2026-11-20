@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strconv"
 
@@ -12,6 +14,27 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func writeLogPageResponse(c *gin.Context, pageInfo *common.PageInfo) {
+	payload, err := common.Marshal(gin.H{
+		"success": true,
+		"message": "",
+		"data":    pageInfo,
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	sum := sha256.Sum256(payload)
+	etag := `W/"` + hex.EncodeToString(sum[:16]) + `"`
+	c.Header("Cache-Control", "no-cache")
+	c.Header("ETag", etag)
+	if c.GetHeader("If-None-Match") == etag {
+		c.Status(http.StatusNotModified)
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
+}
 
 // logFilterFromQuery reads the log search shared by the log list and the log
 // export. Username and channel are read only for administrators.
@@ -105,7 +128,7 @@ func GetAllLogs(c *gin.Context) {
 		pageInfo.SetTotal(int(total))
 	}
 	pageInfo.SetItems(logs)
-	common.ApiSuccess(c, pageInfo)
+	writeLogPageResponse(c, pageInfo)
 	return
 }
 
@@ -155,7 +178,7 @@ func GetUserLogs(c *gin.Context) {
 		pageInfo.SetTotal(int(total))
 	}
 	pageInfo.SetItems(logs)
-	common.ApiSuccess(c, pageInfo)
+	writeLogPageResponse(c, pageInfo)
 	return
 }
 

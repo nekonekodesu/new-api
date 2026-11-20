@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'vitest'
 
 import type { UsageLog } from '../../data/schema'
-import { reconcileUsageLogSnapshot } from '../log-snapshot'
+import {
+  extractAdminDeltaCursor,
+  mergeUsageLogDelta,
+  reconcileUsageLogSnapshot,
+} from '../log-snapshot'
 
 const log = (id: number, request_id: string, quota: number): UsageLog => ({
   id,
@@ -73,5 +77,58 @@ describe('usage log snapshots', () => {
       reconcileUsageLogSnapshot({ items, total: 2, page: 1, page_size: 20 })
         .items
     ).toEqual(items)
+  })
+
+  test('extracts newest persisted cursor while skipping in-progress rows', () => {
+    const active = { ...log(-1, 'req-active', 0), other: '{"in_progress":true}' }
+    const persisted = { ...log(42, 'req-42', 10), created_at: 1700000100 }
+    expect(
+      extractAdminDeltaCursor({
+        items: [active, persisted],
+        total: 100,
+        page: 1,
+        page_size: 100,
+      })
+    ).toEqual({ createdAt: 1700000100, id: 42 })
+  })
+
+  test('merges lightweight delta updates without duplicating rows or inflating total', () => {
+    const activeOld = {
+      ...log(-1, 'req-live', 0),
+      completion_tokens: 10,
+      other: '{"in_progress":true}',
+    }
+    const persisted1 = log(10, 'req-10', 5)
+    const persisted2 = log(9, 'req-9', 5)
+    const previous = {
+      items: [activeOld, persisted1, persisted2],
+      total: 301,
+      page: 1,
+      page_size: 3,
+    }
+
+    // Empty delta with updated active row keeps persisted total exact
+    const activeUpdated = {
+      ...log(-1, 'req-live', 0),
+      completion_tokens: 55,
+      other: '{"in_progress":true}',
+    }
+    const mergedLive = mergeUsageLogDelta(
+      previous,
+      { items: [activeUpdated], total: 1, page: 1, page_size: 3 },
+      3
+    )
+    expect(mergedLive.items).toEqual([activeUpdated, persisted1, persisted2])
+    expect(mergedLive.total).toBe(301)
+
+    // Active row finishes and becomes persisted row id=11; trims to pageSize=3
+    const completed11 = log(11, 'req-live', 25)
+    const mergedDone = mergeUsageLogDelta(
+      mergedLive,
+      { items: [completed11], total: 1, page: 1, page_size: 3 },
+      3
+    )
+    expect(mergedDone.items).toEqual([completed11, persisted1, persisted2])
+    expect(mergedDone.total).toBe(301)
   })
 })
