@@ -19,18 +19,21 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Edit3,
   Layers,
   Play,
   Plus,
   RefreshCw,
+  Search,
   Server,
   Tag,
   Trash2,
   Wallet,
   XCircle,
 } from 'lucide-react'
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -45,6 +48,11 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -142,6 +150,24 @@ export function UpstreamAccountSyncPanel() {
   const [deletingAccount, setDeletingAccount] =
     useState<UpstreamAccountSource | null>(null)
   const [syncingAccountId, setSyncingAccountId] = useState<string | null>(null)
+  const [expandedAccountIds, setExpandedAccountIds] = useState<Set<string>>(
+    () => new Set()
+  )
+  const [channelFilters, setChannelFilters] = useState<Record<string, string>>(
+    {}
+  )
+
+  const toggleAccountExpanded = (id: string) => {
+    setExpandedAccountIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
 
   const accountsQuery = useQuery({
     queryKey: ['upstream-accounts'],
@@ -435,13 +461,58 @@ export function UpstreamAccountSyncPanel() {
                               acc.name.toLowerCase()
                         )
                         if (accChannels.length === 0) return null
+                        const isExpanded = expandedAccountIds.has(acc.id)
+                        const keyword = (channelFilters[acc.id] ?? '')
+                          .trim()
+                          .toLowerCase()
+                        const visibleChannels = keyword
+                          ? accChannels.filter(
+                              (ch) =>
+                                String(ch.channel_id).includes(keyword) ||
+                                (ch.channel_name || '')
+                                  .toLowerCase()
+                                  .includes(keyword) ||
+                                (ch.upstream_group || '')
+                                  .toLowerCase()
+                                  .includes(keyword)
+                            )
+                          : accChannels
                         return (
-                          <div className='border-border/50 bg-muted/15 flex flex-col gap-1.5 rounded-md border p-2'>
-                            <div className='flex items-center justify-between text-[11px]'>
-                              <span className='text-muted-foreground flex items-center gap-1 font-medium'>
-                                <Wallet aria-hidden='true' className='size-3' />
-                                {t('Channel Balances')} ({accChannels.length})
-                              </span>
+                          <Collapsible
+                            open={isExpanded}
+                            onOpenChange={() => toggleAccountExpanded(acc.id)}
+                            className='border-border/50 bg-muted/15 rounded-md border p-2'
+                          >
+                            <div className='flex items-center justify-between gap-2 text-[11px]'>
+                              <CollapsibleTrigger
+                                render={
+                                  <Button
+                                    type='button'
+                                    variant='ghost'
+                                    size='sm'
+                                    className='h-6 gap-1 px-1.5 text-[11px]'
+                                  />
+                                }
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown
+                                    aria-hidden='true'
+                                    className='size-3.5'
+                                  />
+                                ) : (
+                                  <ChevronRight
+                                    aria-hidden='true'
+                                    className='size-3.5'
+                                  />
+                                )}
+                                <Wallet
+                                  aria-hidden='true'
+                                  className='size-3'
+                                />
+                                <span>
+                                  {t('Synced Channels')} ({accChannels.length})
+                                </span>
+                              </CollapsibleTrigger>
                               {typeof acc.used_quota_usd === 'number' &&
                               acc.used_quota_usd > 0 ? (
                                 <span className='text-muted-foreground font-mono text-[10px]'>
@@ -450,27 +521,51 @@ export function UpstreamAccountSyncPanel() {
                                 </span>
                               ) : null}
                             </div>
-                            <div className='flex flex-wrap gap-1.5'>
-                              {accChannels.map((chMeta) => (
-                                <Badge
-                                  key={chMeta.channel_id}
-                                  variant='outline'
-                                  className='gap-1 px-1.5 py-0.5 font-mono text-[10px]'
-                                >
-                                  <span className='text-primary font-semibold'>
-                                    #{chMeta.channel_id}
-                                  </span>
-                                  <span>
-                                    {chMeta.channel_name ||
-                                      chMeta.upstream_group}
-                                  </span>
-                                  <span className='font-semibold text-emerald-600 dark:text-emerald-400'>
-                                    {formatBalanceUSD(chMeta.balance ?? 0)}
-                                  </span>
-                                </Badge>
-                              ))}
-                            </div>
-                          </div>
+                            <CollapsibleContent className='mt-2 flex flex-col gap-2'>
+                              {accChannels.length > 6 ? (
+                                <div className='relative'>
+                                  <Search
+                                    aria-hidden='true'
+                                    className='text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2'
+                                  />
+                                  <Input
+                                    value={channelFilters[acc.id] ?? ''}
+                                    onChange={(e) =>
+                                      setChannelFilters((prev) => ({
+                                        ...prev,
+                                        [acc.id]: e.target.value,
+                                      }))
+                                    }
+                                    placeholder={t(
+                                      'Filter synced channels by #ID, name, or group...'
+                                    )}
+                                    className='h-7 pl-7 text-xs'
+                                  />
+                                </div>
+                              ) : null}
+                              <div className='grid max-h-60 grid-cols-1 gap-1.5 overflow-y-auto pr-0.5'>
+                                {visibleChannels.map((chMeta) => (
+                                  <div
+                                    key={chMeta.channel_id}
+                                    className='border-border/50 bg-background/80 flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 font-mono text-[11px]'
+                                  >
+                                    <div className='flex min-w-0 items-center gap-1.5'>
+                                      <span className='text-primary shrink-0 font-semibold'>
+                                        #{chMeta.channel_id}
+                                      </span>
+                                      <span className='truncate'>
+                                        {chMeta.channel_name ||
+                                          chMeta.upstream_group}
+                                      </span>
+                                    </div>
+                                    <span className='shrink-0 font-semibold text-emerald-600 dark:text-emerald-400'>
+                                      {formatBalanceUSD(chMeta.balance ?? 0)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </CollapsibleContent>
+                          </Collapsible>
                         )
                       })()}
 
@@ -526,6 +621,7 @@ export function UpstreamAccountSyncPanel() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className='w-10' />
                     <TableHead className='w-16'>{t('Enabled')}</TableHead>
                     <TableHead>{t('Upstream Name & URL')}</TableHead>
                     <TableHead>{t('Token & Channel Naming Rules')}</TableHead>
@@ -539,7 +635,7 @@ export function UpstreamAccountSyncPanel() {
                   {accounts.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={7}
+                        colSpan={8}
                         className='text-muted-foreground h-24 text-center text-sm'
                       >
                         {t(
@@ -550,9 +646,57 @@ export function UpstreamAccountSyncPanel() {
                   ) : (
                     accounts.map((acc) => {
                       const isSyncing = syncingAccountId === acc.id
+                      const accChannels = autoChannelsList.filter(
+                        (m) =>
+                          m.source_id === acc.id ||
+                          m.source_name.toLowerCase() === acc.name.toLowerCase()
+                      )
+                      const isExpanded = expandedAccountIds.has(acc.id)
+                      const keyword = (channelFilters[acc.id] ?? '')
+                        .trim()
+                        .toLowerCase()
+                      const visibleChannels = keyword
+                        ? accChannels.filter(
+                            (ch) =>
+                              String(ch.channel_id).includes(keyword) ||
+                              (ch.channel_name || '')
+                                .toLowerCase()
+                                .includes(keyword) ||
+                              (ch.upstream_group || '')
+                                .toLowerCase()
+                                .includes(keyword)
+                          )
+                        : accChannels
+
                       return (
-                        <TableRow key={acc.id}>
-                          <TableCell>
+                        <Fragment key={acc.id}>
+                          <TableRow>
+                            <TableCell className='pr-0'>
+                              {accChannels.length > 0 ? (
+                                <Button
+                                  type='button'
+                                  variant='ghost'
+                                  size='sm'
+                                  aria-expanded={isExpanded}
+                                  aria-label={`${isExpanded ? t('Collapse details') : t('Expand details')} ${acc.name}`}
+                                  onClick={() => toggleAccountExpanded(acc.id)}
+                                  className='size-7 p-0'
+                                >
+                                  {isExpanded ? (
+                                    <ChevronDown
+                                      aria-hidden='true'
+                                      className='size-4'
+                                    />
+                                  ) : (
+                                    <ChevronRight
+                                      aria-hidden='true'
+                                      className='size-4'
+                                    />
+                                  )}
+                                </Button>
+                              ) : null}
+                            </TableCell>
+                            <TableCell>
                             <Switch
                               checked={acc.enabled}
                               onCheckedChange={(checked) =>
@@ -708,36 +852,33 @@ export function UpstreamAccountSyncPanel() {
                                     {acc.last_message}
                                   </span>
                                 ) : null}
-                                {(() => {
-                                  const accChannels = autoChannelsList.filter(
-                                    (m) =>
-                                      m.source_id === acc.id ||
-                                      m.source_name.toLowerCase() ===
-                                        acc.name.toLowerCase()
-                                  )
-                                  if (accChannels.length === 0) return null
-                                  return (
-                                    <div className='mt-0.5 flex max-w-md flex-wrap gap-1'>
-                                      {accChannels.map((chMeta) => (
-                                        <Badge
-                                          key={chMeta.channel_id}
-                                          variant='outline'
-                                          className='gap-1 px-1.5 py-0 font-mono text-[10px]'
-                                        >
-                                          <span className='text-primary font-semibold'>
-                                            #{chMeta.channel_id}
-                                          </span>
-                                          <span>{chMeta.upstream_group}</span>
-                                          <span className='font-semibold text-emerald-600 dark:text-emerald-400'>
-                                            {formatBalanceUSD(
-                                              chMeta.balance ?? 0
-                                            )}
-                                          </span>
-                                        </Badge>
-                                      ))}
-                                    </div>
-                                  )
-                                })()}
+                                {accChannels.length > 0 ? (
+                                  <Button
+                                    type='button'
+                                    variant='secondary'
+                                    size='sm'
+                                    onClick={() =>
+                                      toggleAccountExpanded(acc.id)
+                                    }
+                                    className='mt-0.5 h-6 w-fit gap-1.5 px-2 text-[11px]'
+                                  >
+                                    {isExpanded ? (
+                                      <ChevronDown
+                                        aria-hidden='true'
+                                        className='size-3'
+                                      />
+                                    ) : (
+                                      <ChevronRight
+                                        aria-hidden='true'
+                                        className='size-3'
+                                      />
+                                    )}
+                                    <span>
+                                      {t('Synced Channels')} (
+                                      {accChannels.length})
+                                    </span>
+                                  </Button>
+                                ) : null}
                               </div>
                             ) : (
                               <span className='text-muted-foreground'>
@@ -799,6 +940,76 @@ export function UpstreamAccountSyncPanel() {
                             </div>
                           </TableCell>
                         </TableRow>
+                        {isExpanded && accChannels.length > 0 ? (
+                          <TableRow className='bg-muted/20 hover:bg-muted/20'>
+                            <TableCell colSpan={8} className='px-6 py-4'>
+                              <div className='flex flex-col gap-3'>
+                                <div className='flex flex-wrap items-center justify-between gap-2'>
+                                  <div className='flex items-center gap-2 text-xs font-medium'>
+                                    <Wallet
+                                      aria-hidden='true'
+                                      className='text-primary size-3.5'
+                                    />
+                                    <span>
+                                      {t('Synced Channels')} (
+                                      {visibleChannels.length}/
+                                      {accChannels.length})
+                                    </span>
+                                  </div>
+                                  {accChannels.length > 6 ? (
+                                    <div className='relative w-full sm:w-72'>
+                                      <Search
+                                        aria-hidden='true'
+                                        className='text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2'
+                                      />
+                                      <Input
+                                        value={channelFilters[acc.id] ?? ''}
+                                        onChange={(e) =>
+                                          setChannelFilters((prev) => ({
+                                            ...prev,
+                                            [acc.id]: e.target.value,
+                                          }))
+                                        }
+                                        placeholder={t(
+                                          'Filter synced channels by #ID, name, or group...'
+                                        )}
+                                        className='h-8 pl-8 text-xs'
+                                      />
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <div className='grid max-h-80 grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'>
+                                  {visibleChannels.map((chMeta) => (
+                                    <div
+                                      key={chMeta.channel_id}
+                                      className='border-border/60 bg-background/80 flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 font-mono text-xs'
+                                    >
+                                      <div className='flex min-w-0 items-center gap-1.5'>
+                                        <span className='text-primary shrink-0 font-semibold'>
+                                          #{chMeta.channel_id}
+                                        </span>
+                                        <span
+                                          className='truncate'
+                                          title={
+                                            chMeta.channel_name ||
+                                            chMeta.upstream_group
+                                          }
+                                        >
+                                          {chMeta.channel_name ||
+                                            chMeta.upstream_group}
+                                        </span>
+                                      </div>
+                                      <span className='shrink-0 font-semibold text-emerald-600 dark:text-emerald-400'>
+                                        {formatBalanceUSD(chMeta.balance ?? 0)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                        </Fragment>
                       )
                     })
                   )}

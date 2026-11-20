@@ -35,6 +35,7 @@ import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Tooltip,
@@ -45,7 +46,7 @@ import { ROLE } from '@/lib/roles'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { getChannelOps } from './api'
+import { getChannelOps, getCronJobs } from './api'
 import { ChannelsDialogs } from './components/channels-dialogs'
 import { ChannelsPrimaryButtons } from './components/channels-primary-buttons'
 import { ChannelsProvider } from './components/channels-provider'
@@ -128,6 +129,16 @@ export function Channels() {
     staleTime: 5 * 60 * 1000,
     enabled: !isCronSection && !isCostSection,
   })
+  const cronJobsQuery = useQuery({
+    queryKey: ['channel-cron-jobs'],
+    queryFn: async () => requireServerSuccess(await getCronJobs()),
+    retry: false,
+    staleTime: 60 * 1000,
+    enabled: !isCronSection && !isCostSection,
+  })
+  const activeCronCount = (cronJobsQuery.data?.data?.jobs ?? []).filter(
+    (job) => job.enabled
+  ).length
   const retryTimes = channelOpsQuery.data?.data?.retry_times
   const retryLabel =
     typeof retryTimes === 'number' ? `${t('Max Retries')}: ${retryTimes}` : null
@@ -178,13 +189,47 @@ export function Channels() {
         stackActionsOnMobile={activeTab === 'all'}
       >
         <SectionPageLayout.Title>
-          <span className='flex min-w-0 items-center gap-2'>
+          <span className='flex min-w-0 flex-wrap items-center gap-2'>
             <span className='truncate'>{sectionTitle}</span>
             {retryBadge}
+            {!isCronSection && !isCostSection ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Badge
+                      variant={activeCronCount > 0 ? 'secondary' : 'outline'}
+                      className='shrink-0 cursor-pointer gap-1.5'
+                      onClick={() => handleTabChange('cron')}
+                    />
+                  }
+                >
+                  <Clock aria-hidden='true' className='size-3' />
+                  <span>
+                    {activeCronCount > 0
+                      ? t('{{count}} Active Tasks', { count: activeCronCount })
+                      : t('Scheduled Tasks')}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{t('Manage channel automation & scheduled tasks')}</p>
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
           </span>
         </SectionPageLayout.Title>
         <SectionPageLayout.Actions>
           {activeTab === 'all' ? <ChannelsPrimaryButtons /> : null}
+          {isCronSection ? (
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() => handleTabChange('all')}
+              className='gap-1.5'
+            >
+              <Radio aria-hidden='true' className='size-3.5' />
+              <span>{t('All Channels')}</span>
+            </Button>
+          ) : null}
         </SectionPageLayout.Actions>
         <SectionPageLayout.Content>
           <Tabs
@@ -200,7 +245,7 @@ export function Channels() {
                     className='shrink-0 gap-1.5 text-xs'
                   >
                     <Clock aria-hidden='true' className='size-3.5 shrink-0' />
-                    <span>{t('CRON Scheduled Tasks')}</span>
+                    <span>{t('Scheduled Tasks')}</span>
                   </TabsTrigger>
                   <TabsTrigger
                     value='upstream-accounts'
@@ -285,7 +330,9 @@ export function Channels() {
             {activeTab === 'groups' && <GroupChannelManagement />}
             {activeTab === 'price-table' && <ModelPriceTablePanel />}
             {activeTab === 'classifier' && <ChannelClassifierPanel />}
-            {activeTab === 'cron' && <CronJobsPanel />}
+            {activeTab === 'cron' && (
+              <CronJobsPanel onNavigateTab={handleTabChange} />
+            )}
             {activeTab === 'upstream-accounts' && <UpstreamAccountSyncPanel />}
             {activeTab === 'upstream-sync' && <CronUpstreamSyncPanel />}
             {activeTab === 'cost-models' && (

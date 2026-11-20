@@ -25,6 +25,7 @@ import {
   ChevronsUpDown,
   Clock,
   Edit3,
+  ExternalLink,
   FileTerminal,
   Globe,
   Play,
@@ -100,7 +101,11 @@ const EMPTY_JOB_DRAFT: Partial<CronJob> = {
   timeout_sec: 120,
 }
 
-export function CronJobsPanel() {
+interface CronJobsPanelProps {
+  onNavigateTab?: (tab: string) => void
+}
+
+export function CronJobsPanel(props: CronJobsPanelProps) {
   const { t, i18n } = useTranslation()
   const queryClient = useQueryClient()
   const isMobile = useMediaQuery('(max-width: 640px)')
@@ -379,13 +384,53 @@ export function CronJobsPanel() {
     )
   }
 
+  const getRelatedChannelLink = (
+    type: CronJobType
+  ): { tab: string; label: string } | null => {
+    switch (type) {
+      case 'upstream_group_sync':
+        return {
+          tab: 'upstream-accounts',
+          label: t('Configure Upstream Accounts'),
+        }
+      case 'upstream_sync':
+        return { tab: 'upstream-sync', label: t('Configure Sync Settings') }
+      case 'channel_test':
+      case 'channel_balance':
+        return { tab: 'all', label: t('View Channels') }
+      default:
+        return null
+    }
+  }
+
+  const enabledJobCount = jobs.filter((job) => job.enabled).length
+
   const renderJobDetailsContent = (job: CronJob) => {
     const description = getDisplayDescription(job)
+    const relatedLink = props.onNavigateTab
+      ? getRelatedChannelLink(job.job_type)
+      : null
     return (
       <div className='flex flex-col gap-3 text-xs'>
-        {description ? (
-          <p className='text-muted-foreground'>{description}</p>
-        ) : null}
+        <div className='flex flex-wrap items-center justify-between gap-2'>
+          {description ? (
+            <p className='text-muted-foreground'>{description}</p>
+          ) : (
+            <span />
+          )}
+          {relatedLink && props.onNavigateTab ? (
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={() => props.onNavigateTab?.(relatedLink.tab)}
+              className='h-7 gap-1.5 px-2.5 text-xs'
+            >
+              <ExternalLink aria-hidden='true' className='size-3' />
+              <span>{relatedLink.label}</span>
+            </Button>
+          ) : null}
+        </div>
 
         <div className='grid grid-cols-1 gap-2.5 sm:grid-cols-3'>
           <div className='bg-muted/30 flex flex-col gap-0.5 rounded-md px-2.5 py-2'>
@@ -501,7 +546,20 @@ export function CronJobsPanel() {
         <div className='flex items-center gap-2.5'>
           <Clock aria-hidden='true' className='text-primary size-5' />
           <div>
-            <h3 className='text-sm font-semibold'>{t('Scheduled Tasks')}</h3>
+            <div className='flex flex-wrap items-center gap-2'>
+              <h3 className='text-sm font-semibold'>{t('Scheduled Tasks')}</h3>
+              {jobs.length > 0 ? (
+                <Badge
+                  variant={enabledJobCount > 0 ? 'secondary' : 'outline'}
+                  className='px-1.5 py-0 text-[11px]'
+                >
+                  {t('{{enabled}}/{{total}} active', {
+                    enabled: enabledJobCount,
+                    total: jobs.length,
+                  })}
+                </Badge>
+              ) : null}
+            </div>
             <p className='text-muted-foreground text-xs'>
               {t(
                 'Schedule automated maintenance tasks, upstream synchronization, HTTP webhooks, or custom shell scripts with standard 5-field cron expressions'

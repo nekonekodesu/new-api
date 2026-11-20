@@ -181,4 +181,44 @@ describe('CronJobsPanel collapsible UI and trigger feedback', () => {
       ).toBe('true')
     })
   })
+
+  it('exposes contextual channel workspace links for built-in channel automation jobs', async () => {
+    const user = userEvent.setup()
+    const onNavigateTab = vi.fn()
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          jobs: [
+            {
+              ...sampleJobs[0],
+              id: 'builtin-channel-test',
+              name: 'Test All Enabled Channels',
+              job_type: 'channel_test',
+              built_in: true,
+            },
+          ],
+        },
+      },
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <I18nextProvider i18n={i18n}>
+          <CronJobsPanel onNavigateTab={onNavigateTab} />
+        </I18nextProvider>
+      </QueryClientProvider>
+    )
+
+    const expandButton = await screen.findByRole('button', {
+      name: 'Expand details Test All Enabled Channels',
+    })
+    await user.click(expandButton)
+    const linkButton = screen.getByRole('button', { name: 'View Channels' })
+    await user.click(linkButton)
+    expect(onNavigateTab).toHaveBeenCalledWith('all')
+  })
 })

@@ -29,6 +29,7 @@ import {
   ListChecks,
   RefreshCw,
   ArrowUpFromLine,
+  Clock,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -231,6 +232,19 @@ export function ChannelsPrimaryButtons() {
               {t('Update All Balances')}
               <DropdownMenuShortcut>
                 <DollarSign className='h-4 w-4' />
+              </DropdownMenuShortcut>
+            </DropdownMenuItem>
+
+            <DropdownMenuItem
+              onClick={() => {
+                void navigate({
+                  search: (previous) => ({ ...previous, tab: 'cron' }),
+                })
+              }}
+            >
+              {t('Channel Automation & Schedules')}
+              <DropdownMenuShortcut>
+                <Clock className='h-4 w-4' />
               </DropdownMenuShortcut>
             </DropdownMenuItem>
 

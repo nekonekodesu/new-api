@@ -53,10 +53,24 @@ const (
 
 	BuiltInUpstreamSyncCronJobID      = "builtin-upstream-sync"
 	BuiltInUpstreamGroupSyncCronJobID = "builtin-upstream-group-sync"
+	BuiltInChannelTestCronJobID       = "builtin-channel-test"
+	BuiltInChannelBalanceCronJobID    = "builtin-channel-balance"
 
 	UpstreamSyncModeStandard = "standard"
 	UpstreamSyncModeLumiya   = "lumiya"
 )
+
+func IsBuiltInCronJobID(id string) bool {
+	switch id {
+	case BuiltInUpstreamSyncCronJobID,
+		BuiltInUpstreamGroupSyncCronJobID,
+		BuiltInChannelTestCronJobID,
+		BuiltInChannelBalanceCronJobID:
+		return true
+	default:
+		return false
+	}
+}
 
 type UpstreamAccountSource struct {
 	ID                   string   `json:"id"`
@@ -676,6 +690,28 @@ func defaultCronJobs() []CronJob {
 			BuiltIn:     true,
 			LastStatus:  "idle",
 		},
+		{
+			ID:          BuiltInChannelTestCronJobID,
+			Name:        "Test All Enabled Channels",
+			Description: "Periodically test all enabled channels to detect latency and availability issues",
+			Enabled:     false,
+			CronExpr:    "0 */6 * * *",
+			JobType:     CronJobTypeChannelTest,
+			TimeoutSec:  300,
+			BuiltIn:     true,
+			LastStatus:  "idle",
+		},
+		{
+			ID:          BuiltInChannelBalanceCronJobID,
+			Name:        "Update All Channel Balances",
+			Description: "Periodically refresh remaining balances for all enabled channels",
+			Enabled:     false,
+			CronExpr:    "0 * * * *",
+			JobType:     CronJobTypeChannelBalance,
+			TimeoutSec:  180,
+			BuiltIn:     true,
+			LastStatus:  "idle",
+		},
 	}
 }
 
@@ -1038,9 +1074,11 @@ func normalizeUpstreamAccountSource(src *UpstreamAccountSource) {
 func normalizeCronJobsList(jobs []CronJob) []CronJob {
 	now := time.Now()
 	cfg := GetModelPriceSyncConfig()
-	out := make([]CronJob, 0, max(len(jobs), 2))
+	out := make([]CronJob, 0, max(len(jobs), 4))
 	hasBuiltInSync := false
 	hasBuiltInGroupSync := false
+	hasBuiltInChannelTest := false
+	hasBuiltInChannelBalance := false
 	seenIDs := make(map[string]struct{}, len(jobs))
 	for _, j := range jobs {
 		j.ID = strings.TrimSpace(j.ID)
@@ -1075,6 +1113,16 @@ func normalizeCronJobsList(jobs []CronJob) []CronJob {
 			j.BuiltIn = true
 			j.JobType = CronJobTypeUpstreamGroupSync
 			hasBuiltInGroupSync = true
+		}
+		if j.ID == BuiltInChannelTestCronJobID {
+			j.BuiltIn = true
+			j.JobType = CronJobTypeChannelTest
+			hasBuiltInChannelTest = true
+		}
+		if j.ID == BuiltInChannelBalanceCronJobID {
+			j.BuiltIn = true
+			j.JobType = CronJobTypeChannelBalance
+			hasBuiltInChannelBalance = true
 		}
 		if j.Enabled {
 			if j.NextRunAt <= 0 {
@@ -1135,6 +1183,32 @@ func normalizeCronJobsList(jobs []CronJob) []CronJob {
 			LastStatus:  "idle",
 		}
 		out = append([]CronJob{builtInGroup}, out...)
+	}
+	if !hasBuiltInChannelBalance {
+		out = append(out, CronJob{
+			ID:          BuiltInChannelBalanceCronJobID,
+			Name:        "Update All Channel Balances",
+			Description: "Periodically refresh remaining balances for all enabled channels",
+			Enabled:     false,
+			CronExpr:    "0 * * * *",
+			JobType:     CronJobTypeChannelBalance,
+			TimeoutSec:  180,
+			BuiltIn:     true,
+			LastStatus:  "idle",
+		})
+	}
+	if !hasBuiltInChannelTest {
+		out = append(out, CronJob{
+			ID:          BuiltInChannelTestCronJobID,
+			Name:        "Test All Enabled Channels",
+			Description: "Periodically test all enabled channels to detect latency and availability issues",
+			Enabled:     false,
+			CronExpr:    "0 */6 * * *",
+			JobType:     CronJobTypeChannelTest,
+			TimeoutSec:  300,
+			BuiltIn:     true,
+			LastStatus:  "idle",
+		})
 	}
 	return out
 }

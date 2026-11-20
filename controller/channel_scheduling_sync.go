@@ -1959,7 +1959,7 @@ func DeleteCronJob(c *gin.Context) {
 		common.ApiError(c, common.NewMessage("Invalid job ID"))
 		return
 	}
-	if id == model.BuiltInUpstreamSyncCronJobID || id == model.BuiltInUpstreamGroupSyncCronJobID {
+	if model.IsBuiltInCronJobID(id) {
 		common.ApiError(c, common.NewMessage("Built-in cron job cannot be deleted; disable it instead"))
 		return
 	}
