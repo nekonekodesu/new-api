@@ -58,11 +58,18 @@ func GetGeneralSetting() *GeneralSetting {
 // admin-configured multi-currency rates. USD is always anchored at 1.
 func GetEffectiveCurrencyRates() map[string]CurrencyRate {
 	cnyRate := USDExchangeRate
-	if cnyRate <= 0 {
+	ntdRate := NTDExchangeRate
+	// Guard against legacy TWD rates accidentally stored in USDExchangeRate
+	// (e.g. 5.0 TWD/CNY or 32.0~35.0 TWD/USD before NTDExchangeRate existed).
+	if cnyRate >= 15.0 {
+		if ntdRate <= 0 || ntdRate < 15.0 {
+			ntdRate = cnyRate
+		}
+		cnyRate = 7.3
+	} else if cnyRate <= 5.5 {
 		cnyRate = 7.3
 	}
-	ntdRate := NTDExchangeRate
-	if ntdRate <= 0 {
+	if ntdRate < 15.0 {
 		ntdRate = 32.0
 	}
 	rates := map[string]CurrencyRate{
@@ -91,6 +98,12 @@ func GetEffectiveCurrencyRates() map[string]CurrencyRate {
 		if entry.Rate <= 0 {
 			continue
 		}
+		rateVal := entry.Rate
+		if code == "CNY" && (rateVal <= 5.5 || rateVal >= 15.0) {
+			rateVal = cnyRate
+		} else if code == "TWD" && rateVal < 15.0 {
+			rateVal = ntdRate
+		}
 		symbol := strings.TrimSpace(entry.Symbol)
 		if symbol == "" {
 			if existing, ok := rates[code]; ok {
@@ -99,7 +112,7 @@ func GetEffectiveCurrencyRates() map[string]CurrencyRate {
 				symbol = code + " "
 			}
 		}
-		rates[code] = CurrencyRate{Symbol: symbol, Rate: entry.Rate}
+		rates[code] = CurrencyRate{Symbol: symbol, Rate: rateVal}
 	}
 	return rates
 }
@@ -157,21 +170,23 @@ func GetUsdToCurrencyRate(usdToCny float64) float64 {
 	case QuotaDisplayTypeUSD:
 		return 1
 	case QuotaDisplayTypeCNY:
-		if entry, ok := generalSetting.CurrencyRates["CNY"]; ok && entry.Rate > 0 {
+		if entry, ok := GetEffectiveCurrencyRates()["CNY"]; ok && entry.Rate > 0 {
+			if _, hasConfigured := generalSetting.CurrencyRates["CNY"]; hasConfigured {
+				return entry.Rate
+			}
+		}
+		if usdToCny > 5.5 && usdToCny < 15.0 {
+			return usdToCny
+		}
+		if entry, ok := GetEffectiveCurrencyRates()["CNY"]; ok && entry.Rate > 0 {
 			return entry.Rate
 		}
-		return usdToCny
+		return 7.3
 	case QuotaDisplayTypeNTD, "TWD":
-		if entry, ok := generalSetting.CurrencyRates["TWD"]; ok && entry.Rate > 0 {
+		if entry, ok := GetEffectiveCurrencyRates()["TWD"]; ok && entry.Rate > 0 {
 			return entry.Rate
 		}
-		if entry, ok := generalSetting.CurrencyRates["NTD"]; ok && entry.Rate > 0 {
-			return entry.Rate
-		}
-		if NTDExchangeRate > 0 {
-			return NTDExchangeRate
-		}
-		return 1
+		return 32.0
 	case QuotaDisplayTypeCustom:
 		if generalSetting.CustomCurrencyExchangeRate > 0 {
 			return generalSetting.CustomCurrencyExchangeRate

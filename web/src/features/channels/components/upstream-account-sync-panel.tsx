@@ -119,7 +119,7 @@ function createDefaultAccountForm(): Partial<UpstreamAccountSource> {
     channel_tag: '',
     local_group: 'default',
     currency: 'CNY',
-    exchange_rate: 5,
+    exchange_rate: 7.3,
     clean_removed_groups: true,
     adopt_existing_channel: true,
     enabled: true,
@@ -354,7 +354,7 @@ export function UpstreamAccountSyncPanel() {
                                 variant='outline'
                                 className='font-mono text-[10px]'
                               >
-                                {acc.currency || 'CNY'} (×{acc.exchange_rate || 5})
+                                {acc.currency || 'CNY'} (÷{acc.exchange_rate || 7.3})
                               </Badge>
                               {typeof acc.balance_usd === 'number' &&
                               (acc.balance_usd > 0 || acc.last_sync_at > 0) ? (
@@ -738,7 +738,7 @@ export function UpstreamAccountSyncPanel() {
                                   variant='outline'
                                   className='font-mono text-[10px]'
                                 >
-                                  {acc.currency || 'CNY'} (×{acc.exchange_rate || 5})
+                                  {acc.currency || 'CNY'} (÷{acc.exchange_rate || 7.3})
                                 </Badge>
                                 {typeof acc.balance_usd === 'number' &&
                                 (acc.balance_usd > 0 || acc.last_sync_at > 0) ? (
@@ -1277,10 +1277,10 @@ export function UpstreamAccountSyncPanel() {
                       value={editingAccount.currency ?? 'CNY'}
                       onValueChange={(val) => {
                         const c = String(val)
-                        let rate = editingAccount.exchange_rate ?? 5
-                        if (c === 'USD') rate = 35
-                        if (c === 'CNY') rate = 5
-                        if (c === 'TWD') rate = 1
+                        let rate = editingAccount.exchange_rate ?? 7.3
+                        if (c === 'USD') rate = 1
+                        if (c === 'CNY') rate = 7.3
+                        if (c === 'TWD') rate = 32
                         setEditingAccount({
                           ...editingAccount,
                           currency: c,
@@ -1300,7 +1300,7 @@ export function UpstreamAccountSyncPanel() {
                     <Input
                       type='number'
                       step='0.1'
-                      value={editingAccount.exchange_rate ?? 5}
+                      value={editingAccount.exchange_rate ?? 7.3}
                       onChange={(e) =>
                         setEditingAccount({
                           ...editingAccount,

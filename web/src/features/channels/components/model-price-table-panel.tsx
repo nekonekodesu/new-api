@@ -36,9 +36,14 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useMediaQuery } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
-import { formatBillingCurrencyFromUSD } from '@/lib/currency'
+import {
+  formatBillingCurrencyFromUSD,
+  getAvailableDisplayCurrencies,
+  setDisplayCurrency,
+} from '@/lib/currency'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
@@ -53,7 +58,21 @@ export function ModelPriceTablePanel() {
   const [searchModel, setSearchModel] = useState('')
   const isMobile = useMediaQuery('(max-width: 640px)')
   const intlLocale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
-  useSystemConfigStore((state) => state.config.currency)
+  const currencyConfig = useSystemConfigStore((state) => state.config.currency)
+  const currencyOptions = getAvailableDisplayCurrencies(currencyConfig).slice(
+    0,
+    3
+  )
+  const rawDisplayType = (currencyConfig.quotaDisplayType || 'USD')
+    .trim()
+    .toUpperCase()
+  const normalizedDisplayType =
+    rawDisplayType === 'NTD' ? 'TWD' : rawDisplayType
+  const activeCurrencyCode = currencyOptions.some(
+    (o) => o.code === normalizedDisplayType
+  )
+    ? normalizedDisplayType
+    : 'USD'
 
   const formatCost = (val: number) =>
     formatBillingCurrencyFromUSD(val, {
@@ -178,6 +197,29 @@ export function ModelPriceTablePanel() {
         </div>
 
         <div className='flex w-full flex-wrap items-center gap-2 sm:w-auto'>
+          {currencyOptions.length > 1 && (
+            <ToggleGroup
+              value={[activeCurrencyCode]}
+              onValueChange={(values) => {
+                if (values.length > 0 && values[0]) {
+                  setDisplayCurrency(values[0])
+                }
+              }}
+              variant='outline'
+              size='sm'
+              aria-label={t('Currency')}
+            >
+              {currencyOptions.map((opt) => (
+                <ToggleGroupItem
+                  key={opt.code}
+                  value={opt.code}
+                  title={`1 USD = ${opt.rate} ${opt.code}`}
+                >
+                  {opt.symbol} {opt.code}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          )}
           <Badge
             variant='outline'
             className='max-w-full text-xs whitespace-normal'

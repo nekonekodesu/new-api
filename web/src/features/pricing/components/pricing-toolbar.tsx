@@ -43,7 +43,12 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import {
+  getAvailableDisplayCurrencies,
+  setDisplayCurrency,
+} from '@/lib/currency'
 import { cn } from '@/lib/utils'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { getSortLabels, type SortOption, type ViewMode } from '../constants'
 import type { PricingModel, PricingVendor, TokenUnit } from '../types'
@@ -84,6 +89,21 @@ export function PricingToolbar(props: PricingToolbarProps) {
   const { t } = useTranslation()
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const sortLabels = getSortLabels(t)
+  const currencyConfig = useSystemConfigStore((s) => s.config.currency)
+  const currencyOptions = getAvailableDisplayCurrencies(currencyConfig).slice(
+    0,
+    3
+  )
+  const rawDisplayType = (currencyConfig.quotaDisplayType || 'USD')
+    .trim()
+    .toUpperCase()
+  const normalizedDisplayType =
+    rawDisplayType === 'NTD' ? 'TWD' : rawDisplayType
+  const activeCurrencyCode = currencyOptions.some(
+    (o) => o.code === normalizedDisplayType
+  )
+    ? normalizedDisplayType
+    : 'USD'
 
   return (
     <div className='bg-card rounded-xl border p-3'>
@@ -120,6 +140,29 @@ export function PricingToolbar(props: PricingToolbarProps) {
         </div>
 
         <div className='flex min-w-0 flex-wrap items-center gap-2'>
+          {currencyOptions.length > 1 && (
+            <ToggleGroup
+              value={[activeCurrencyCode]}
+              onValueChange={(values) => {
+                if (values.length > 0 && values[0]) {
+                  setDisplayCurrency(values[0])
+                }
+              }}
+              variant='outline'
+              size='sm'
+              aria-label={t('Currency')}
+            >
+              {currencyOptions.map((opt) => (
+                <ToggleGroupItem
+                  key={opt.code}
+                  value={opt.code}
+                  title={`1 USD = ${opt.rate} ${opt.code}`}
+                >
+                  {opt.symbol} {opt.code}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          )}
           <ToggleGroup
             value={[props.showRechargePrice ? 'recharge' : 'standard']}
             onValueChange={(values) => {

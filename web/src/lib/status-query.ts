@@ -59,15 +59,41 @@ function toNumber(value: unknown, fallback: number): number {
   return fallback
 }
 
+export const DISPLAY_CURRENCY_OVERRIDE_STORAGE_KEY =
+  'newapi_display_currency_override'
+
+function normalizeUsdToCnyRate(rate: number): number {
+  if (!Number.isFinite(rate) || rate <= 5.5 || rate >= 15) {
+    return DEFAULT_CURRENCY_CONFIG.usdExchangeRate
+  }
+  return rate
+}
+
+function normalizeUsdToTwdRate(rate: number, rawUsdRate?: number): number {
+  if (Number.isFinite(rate) && rate >= 15) {
+    return rate
+  }
+  if (
+    typeof rawUsdRate === 'number' &&
+    Number.isFinite(rawUsdRate) &&
+    rawUsdRate >= 15
+  ) {
+    return rawUsdRate
+  }
+  return DEFAULT_CURRENCY_CONFIG.ntdExchangeRate ?? 32
+}
+
 function parseCurrencyRates(
   raw: unknown,
   cnyRate: number,
   ntdRate: number
 ): Record<string, CurrencyRateConfig> {
+  const safeCny = normalizeUsdToCnyRate(cnyRate)
+  const safeTwd = normalizeUsdToTwdRate(ntdRate, cnyRate)
   const merged: Record<string, CurrencyRateConfig> = {
     ...DEFAULT_CURRENCY_RATES,
-    CNY: { symbol: '¥', rate: cnyRate > 0 ? cnyRate : 7.3 },
-    TWD: { symbol: 'NT$', rate: ntdRate > 0 ? ntdRate : 32 },
+    CNY: { symbol: '¥', rate: safeCny },
+    TWD: { symbol: 'NT$', rate: safeTwd },
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return merged
@@ -80,7 +106,12 @@ function parseCurrencyRates(
     const normalizedCode = code === 'NTD' ? 'TWD' : code
     if (!entry || typeof entry !== 'object') continue
     const record = entry as Record<string, unknown>
-    const rate = toNumber(record.rate, 0)
+    let rate = toNumber(record.rate, 0)
+    if (normalizedCode === 'CNY' && (rate <= 5.5 || rate >= 15)) {
+      rate = safeCny
+    } else if (normalizedCode === 'TWD' && rate > 0 && rate < 15) {
+      rate = safeTwd
+    }
     const symbol =
       typeof record.symbol === 'string' && record.symbol.trim()
         ? record.symbol.trim()
@@ -102,18 +133,34 @@ export function mapStatusDataToConfig(
 ): Partial<SystemConfig> {
   if (!data) return {}
 
-  const quotaDisplayType =
+  let quotaDisplayType =
     (data.quota_display_type as CurrencyDisplayType | undefined) ??
     DEFAULT_CURRENCY_CONFIG.quotaDisplayType
 
-  const usdExchangeRate = toNumber(
+  try {
+    if (typeof window !== 'undefined') {
+      const override = window.localStorage
+        .getItem(DISPLAY_CURRENCY_OVERRIDE_STORAGE_KEY)
+        ?.trim()
+        .toUpperCase()
+      if (override && /^[A-Z]{2,8}$/.test(override)) {
+        quotaDisplayType = override
+      }
+    }
+  } catch {
+    /* ignore storage errors */
+  }
+
+  const rawUsdRate = toNumber(
     data.usd_exchange_rate,
     DEFAULT_CURRENCY_CONFIG.usdExchangeRate
   )
-  const ntdExchangeRate = toNumber(
+  const rawNtdRate = toNumber(
     data.ntd_exchange_rate,
     DEFAULT_CURRENCY_CONFIG.ntdExchangeRate ?? 32
   )
+  const usdExchangeRate = normalizeUsdToCnyRate(rawUsdRate)
+  const ntdExchangeRate = normalizeUsdToTwdRate(rawNtdRate, rawUsdRate)
 
   const currency: CurrencyConfig = {
     displayInCurrency:

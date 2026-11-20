@@ -285,9 +285,11 @@ func TestApplyAuthoritativeModelPricesConvertsUpstreamCurrencyToUSD(t *testing.T
 
 	const cnyModel = "test-deepseek-cny-sync"
 	const compareModel = "test-cny-vs-usd-priority"
+	const discountedModel = "test-glm-5.3-discounted"
+	const unconfiguredModel = "antigravity-preview-05-2026"
 
-	// Channel 901: CNY upstream priced at ¥2/1M input, ¥8/1M output (1x).
-	// Expected system USD ModelRatio = 2.0 / (2.0 * 7.3) ≈ 0.136986 (NOT 1.0!).
+	// Channel 901: CNY upstream priced at ¥2/1M input, ¥8/1M output (1x), plus a 0.2x discounted glm-5.3 (¥1.6 / ¥5.6)
+	// and an unconfigured 37.5 model.
 	model.SetChannelUpstreamModelCosts(901, map[string]model.ChannelModelCostEntry{
 		cnyModel: {
 			ChannelID:       901,
@@ -321,9 +323,38 @@ func TestApplyAuthoritativeModelPricesConvertsUpstreamCurrencyToUSD(t *testing.T
 			ExchangeRate:    7.3,
 			FromUpstream:    true,
 		},
+		discountedModel: {
+			ChannelID:       901,
+			ChannelName:     "moyuu-go-0.2",
+			Model:           discountedModel,
+			QuotaType:       0,
+			RawInputCost:    1.6, // 0.2x of ¥8
+			RawOutputCost:   5.6, // 0.2x of ¥28
+			InputCost:       1.6 / 7.3,
+			OutputCost:      5.6 / 7.3,
+			ModelRatio:      4.0,
+			CompletionRatio: 3.5,
+			BaseMultiplier:  0.2,
+			Currency:        "CNY",
+			ExchangeRate:    5.0,
+			FromUpstream:    true,
+		},
+		unconfiguredModel: {
+			ChannelID:       901,
+			ChannelName:     "moyuu-go-0.2",
+			Model:           unconfiguredModel,
+			QuotaType:       0,
+			ModelRatio:      37.5,
+			CompletionRatio: 1.0,
+			BaseMultiplier:  0.2,
+			Currency:        "CNY",
+			ExchangeRate:    7.3,
+			FromUpstream:    true,
+		},
 	}, false)
 
-	// Channel 902: USD upstream priced at $1/1M input, $2/1M output (higher USD price than ¥2 CNY).
+	// Channel 902: USD upstream priced at $1/1M input, $2/1M output (higher USD price than ¥2 CNY),
+	// plus a 0.4x discounted glm-5.3 (¥3.2 / ¥11.2 CNY).
 	model.SetChannelUpstreamModelCosts(902, map[string]model.ChannelModelCostEntry{
 		compareModel: {
 			ChannelID:       902,
@@ -341,13 +372,29 @@ func TestApplyAuthoritativeModelPricesConvertsUpstreamCurrencyToUSD(t *testing.T
 			ExchangeRate:    1.0,
 			FromUpstream:    true,
 		},
+		discountedModel: {
+			ChannelID:       902,
+			ChannelName:     "lumiya-0.4",
+			Model:           discountedModel,
+			QuotaType:       0,
+			RawInputCost:    3.2, // 0.4x of ¥8 (> 0.2x ¥1.6)
+			RawOutputCost:   11.2,
+			InputCost:       3.2 / 7.3,
+			OutputCost:      11.2 / 7.3,
+			ModelRatio:      4.0,
+			CompletionRatio: 3.5,
+			BaseMultiplier:  0.4,
+			Currency:        "CNY",
+			ExchangeRate:    5.0,
+			FromUpstream:    true,
+		},
 	}, false)
 
 	updated, err := applyAuthoritativeModelPricesToSystem(model.ModelPriceSyncConfig{
 		HighestPricePriority: true,
 	})
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, updated, 2)
+	assert.GreaterOrEqual(t, updated, 4)
 
 	cnyRatio, ok, _ := ratio_setting.GetModelRatio(cnyModel)
 	require.True(t, ok)
@@ -357,4 +404,12 @@ func TestApplyAuthoritativeModelPricesConvertsUpstreamCurrencyToUSD(t *testing.T
 	compareRatio, ok, _ := ratio_setting.GetModelRatio(compareModel)
 	require.True(t, ok)
 	assert.InDelta(t, 0.5, compareRatio, 1e-5, "USD $1/1M channel must win HighestPricePriority over CNY ¥2/1M ($0.274/1M)")
+
+	discountedRatio, ok, _ := ratio_setting.GetModelRatio(discountedModel)
+	require.True(t, ok)
+	assert.InDelta(t, (3.2/7.3)/2.0, discountedRatio, 1e-5, "0.4x channel (¥3.2/1M) must win over 0.2x channel (¥1.6/1M) and sync its actual displayed USD ratio")
+
+	unconfRatio, ok, _ := ratio_setting.GetModelRatio(unconfiguredModel)
+	require.True(t, ok)
+	assert.InDelta(t, 0.625, unconfRatio, 1e-5, "unconfigured 37.5 model must get sensible family fallback instead of 37.5 ($2,400/1M in TWD)")
 }

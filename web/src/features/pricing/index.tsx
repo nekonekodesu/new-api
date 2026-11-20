@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 
 import { PublicLayout } from '@/components/layout'
 import { PageTransition } from '@/components/page-transition'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
   LoadingSkeleton,
@@ -41,6 +42,7 @@ export function Pricing() {
   const [selectedModelName, setSelectedModelName] = useState<string | null>(
     null
   )
+  useSystemConfigStore((s) => s.config.currency)
 
   const {
     models,

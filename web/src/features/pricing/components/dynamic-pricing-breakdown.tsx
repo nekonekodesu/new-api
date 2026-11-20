@@ -296,13 +296,30 @@ export function DynamicPricingBreakdown({
   const currency = useSystemConfigStore((s) => s.config.currency)
 
   const { symbol, rate } = useMemo(() => {
-    if (currency.quotaDisplayType === 'CNY') {
-      return { symbol: '¥', rate: currency.usdExchangeRate || 7 }
+    const type = (currency.quotaDisplayType || 'USD').trim().toUpperCase()
+    const rates = currency.currencyRates
+    if (type === 'CNY') {
+      return {
+        symbol: rates?.CNY?.symbol || '¥',
+        rate: rates?.CNY?.rate || currency.usdExchangeRate || 7.3,
+      }
     }
-    if (currency.quotaDisplayType === 'CUSTOM') {
+    if (type === 'NTD' || type === 'TWD') {
+      return {
+        symbol: rates?.TWD?.symbol || 'NT$',
+        rate: rates?.TWD?.rate || currency.ntdExchangeRate || 32,
+      }
+    }
+    if (type === 'CUSTOM') {
       return {
         symbol: currency.customCurrencySymbol || '¤',
         rate: currency.customCurrencyExchangeRate || 1,
+      }
+    }
+    if (type !== 'USD' && type !== 'TOKENS' && rates?.[type]?.rate) {
+      return {
+        symbol: rates[type].symbol || `${type} `,
+        rate: rates[type].rate,
       }
     }
     return { symbol: '$', rate: 1 }

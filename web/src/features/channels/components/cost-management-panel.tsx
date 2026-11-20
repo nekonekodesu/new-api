@@ -598,7 +598,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                                   cu.currency
                                                 )
                                               : `${formatRawUpstreamAmount(cu.raw_input_cost, cu.currency)}/${formatRawUpstreamAmount(cu.raw_output_cost, cu.currency)}`}{' '}
-                                            {cu.currency} × {cu.exchange_rate})
+                                            {cu.currency} ÷ {cu.exchange_rate})
                                           </span>
                                         ) : null}
                                       </span>
@@ -957,7 +957,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                                             cu.currency
                                                           )
                                                         : `${formatRawUpstreamAmount(cu.raw_input_cost, cu.currency)} / ${formatRawUpstreamAmount(cu.raw_output_cost, cu.currency)}`}{' '}
-                                                      ({cu.currency} ×{' '}
+                                                      ({cu.currency} ÷{' '}
                                                       {cu.exchange_rate})
                                                     </span>
                                                   ) : null}

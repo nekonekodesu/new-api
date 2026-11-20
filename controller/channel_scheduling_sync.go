@@ -134,6 +134,10 @@ func InitChannelCronSync() {
 	}
 	cronSyncOnce.Do(func() {
 		go func() {
+			if model.DB != nil {
+				model.RecalculateAllChannelModelCosts(true)
+				_, _ = applyAuthoritativeModelPricesToSystem(model.GetModelPriceSyncConfig())
+			}
 			ticker := time.NewTicker(1 * time.Minute)
 			defer ticker.Stop()
 			for range ticker.C {
@@ -485,26 +489,23 @@ func buildModelPriceTableRows(keyword string) ([]ModelPriceTableRow, model.Model
 			}
 			telemetry := model.GetChannelModelTelemetry(ch.Id, m)
 
+			inCostUSD, outCostUSD, rawInCost, rawOutCost, effCurr, effRate := effectiveEntryCostsUSD(costEntry, cfg)
+
 			// Only synced upstream prices compete first for the selected price,
 			// since local fallback entries mirror the site's current price.
-			// If no channel has synced upstream prices for a model yet, highlight
-			// the first local channel so the UI still shows an active baseline.
-			basePriceScore := costEntry.ModelRatio * 2.0 * (1.0 + costEntry.CompletionRatio)
-			if costEntry.QuotaType == 1 && costEntry.ModelPrice > 0 {
-				basePriceScore = costEntry.ModelPrice
-			}
+			// Compare by effective USD price (inCostUSD + outCostUSD) so Highest Price Priority
+			// always highlights the row with the highest displayed price.
+			basePriceScore := inCostUSD + outCostUSD
 			if prevBest, exists := highestAnyScoreByModel[m]; !exists || basePriceScore > prevBest {
 				highestAnyScoreByModel[m] = basePriceScore
 				highestAnyChByModel[m] = ch.Id
 			}
-			if costEntry.FromUpstream {
+			if costEntry.FromUpstream && !isUnconfiguredDefaultModelRatio(m, costEntry.QuotaType, costEntry.ModelRatio, costEntry.CompletionRatio) {
 				if prevBest, exists := highestUpstreamScoreByModel[m]; !exists || basePriceScore > prevBest {
 					highestUpstreamScoreByModel[m] = basePriceScore
 					highestUpstreamChByModel[m] = ch.Id
 				}
 			}
-
-			inCostUSD, outCostUSD, rawInCost, rawOutCost, effCurr, effRate := effectiveEntryCostsUSD(costEntry, cfg)
 			rows = append(rows, ModelPriceTableRow{
 				ChannelID:        ch.Id,
 				ChannelName:      ch.Name,
@@ -591,10 +592,12 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 	// the site's current price (or the 37.5 default ratio for an unpriced
 	// model), so letting them compete would ratchet prices up and write the
 	// default ratio as an explicit price for unpriced models.
+	allSeenModels := make(map[string]bool)
 	byModel := make(map[string][]model.ChannelModelCostEntry)
 	manualLocal := make(map[string]bool)
 	for chID, chMap := range costMap {
 		for m, entry := range chMap {
+			allSeenModels[m] = true
 			if entry.FromUpstream {
 				if isUnconfiguredDefaultModelRatio(m, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
 					continue
@@ -615,11 +618,28 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 	updatedCount := 0
 	cacheUpdated := false
 
-	// Clean any previously persisted 37.5 default fallback ratios on non-gpt-4.5 models.
+	// Replace any previously persisted 37.5 default fallback ratios on non-gpt-4.5 models
+	// with sensible family fallbacks so GetModelRatio does not fall back to 37.5 ($75/1M).
 	defaultRatios := ratio_setting.GetDefaultModelRatioMap()
 	for m, r := range modelRatioCopy {
 		if _, inDefault := defaultRatios[m]; !inDefault && isUnconfiguredDefaultModelRatio(m, 0, r, compRatioCopy[m]) {
-			delete(modelRatioCopy, m)
+			mr, cr := model.InferSensibleFallbackModelPricing(m)
+			modelRatioCopy[m] = roundRatioValue(mr)
+			compRatioCopy[m] = roundRatioValue(cr)
+			updatedCount++
+		}
+	}
+	for m := range allSeenModels {
+		if len(byModel[m]) > 0 || manualLocal[m] {
+			continue
+		}
+		if modelPriceCopy[m] > 0 {
+			continue
+		}
+		if r, hasR := modelRatioCopy[m]; !hasR || r <= 0 || isUnconfiguredDefaultModelRatio(m, 0, r, compRatioCopy[m]) {
+			mr, cr := model.InferSensibleFallbackModelPricing(m)
+			modelRatioCopy[m] = roundRatioValue(mr)
+			compRatioCopy[m] = roundRatioValue(cr)
 			updatedCount++
 		}
 	}
@@ -639,23 +659,12 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 			}
 		}
 		if chosen == nil {
-			// Highest price priority (or default fallback) comparing USD-normalized 1x base prices
+			// Highest price priority (or default fallback) comparing effective USD row prices
 			bestIdx := 0
 			bestScore := -1.0
 			for i := range entries {
-				unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(entries[i].Currency, entries[i].ExchangeRate)
-				mr := entries[i].ModelRatio
-				if entries[i].RawInputCost > 0 && entries[i].BaseMultiplier > 0 {
-					mr = entries[i].RawInputCost / (2.0 * entries[i].BaseMultiplier)
-				}
-				score := mr * unitMult * 2.0 * (1.0 + entries[i].CompletionRatio)
-				if entries[i].QuotaType == 1 && (entries[i].RawModelPrice > 0 || entries[i].ModelPrice > 0) {
-					if entries[i].RawModelPrice > 0 {
-						score = entries[i].RawModelPrice * unitMult
-					} else {
-						score = entries[i].ModelPrice * unitMult
-					}
-				}
+				inUSD, outUSD, _, _, _, _ := effectiveEntryCostsUSD(entries[i], cfg)
+				score := inUSD + outUSD
 				if score > bestScore {
 					bestScore = score
 					bestIdx = i
@@ -666,18 +675,15 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 		if chosen == nil {
 			continue
 		}
-		// Convert unscaled 1x upstream price into system USD before writing to ratio_setting.
-		unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(chosen.Currency, chosen.ExchangeRate)
-		basePrice := chosen.RawModelPrice
-		if basePrice <= 0 {
-			basePrice = chosen.ModelPrice
+		// Sync the chosen row's effective USD price into ratio_setting so system 1x pricing,
+		// Model Plaza (/pricing), and Usage Logs match the Active Price row in the Price Table.
+		inCostUSD, outCostUSD, _, _, _, _ := effectiveEntryCostsUSD(*chosen, cfg)
+		usdBasePrice := roundRatioValue(inCostUSD)
+		usdBaseModelRatio := roundRatioValue(inCostUSD / 2.0)
+		compRatio := chosen.CompletionRatio
+		if compRatio <= 0 && inCostUSD > 0 && outCostUSD > 0 {
+			compRatio = outCostUSD / inCostUSD
 		}
-		baseModelRatio := chosen.ModelRatio
-		if chosen.RawInputCost > 0 && chosen.BaseMultiplier > 0 {
-			baseModelRatio = chosen.RawInputCost / (2.0 * chosen.BaseMultiplier)
-		}
-		usdBasePrice := roundRatioValue(basePrice * unitMult)
-		usdBaseModelRatio := roundRatioValue(baseModelRatio * unitMult)
 		if chosen.QuotaType == 1 && usdBasePrice > 0 {
 			modelPriceCopy[m] = usdBasePrice
 			if isUnconfiguredDefaultModelRatio(m, 0, modelRatioCopy[m], compRatioCopy[m]) {
@@ -686,8 +692,8 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 			updatedCount++
 		} else if chosen.QuotaType == 0 && usdBaseModelRatio > 0 {
 			modelRatioCopy[m] = usdBaseModelRatio
-			if chosen.CompletionRatio > 0 {
-				compRatioCopy[m] = roundRatioValue(chosen.CompletionRatio)
+			if compRatio > 0 {
+				compRatioCopy[m] = roundRatioValue(compRatio)
 			}
 			delete(modelPriceCopy, m)
 			updatedCount++
@@ -796,6 +802,7 @@ func ApplyModelPriceTable(c *gin.Context) {
 		return
 	}
 
+	model.RecalculateAllChannelModelCosts(true)
 	updatedCount, err := applyAuthoritativeModelPricesToSystem(cfg)
 	if err != nil {
 		common.ApiError(c, err)

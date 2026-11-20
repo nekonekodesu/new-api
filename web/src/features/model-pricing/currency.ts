@@ -35,10 +35,21 @@ export function getSitePricingCurrency(
   config: CurrencyConfig
 ): PricingCurrency | null {
   if (config.quotaDisplayType === 'CNY') {
-    return { label: 'CNY', symbol: '¥', exchangeRate: config.usdExchangeRate }
+    return {
+      label: 'CNY',
+      symbol: config.currencyRates?.CNY?.symbol || '¥',
+      exchangeRate: config.currencyRates?.CNY?.rate || config.usdExchangeRate,
+    }
   }
-  if (config.quotaDisplayType === 'NTD') {
-    return { label: 'NTD', symbol: 'NT$', exchangeRate: config.usdExchangeRate }
+  if (config.quotaDisplayType === 'NTD' || config.quotaDisplayType === 'TWD') {
+    return {
+      label: config.quotaDisplayType,
+      symbol: config.currencyRates?.TWD?.symbol || 'NT$',
+      exchangeRate:
+        config.currencyRates?.TWD?.rate ||
+        config.ntdExchangeRate ||
+        config.usdExchangeRate,
+    }
   }
   if (config.quotaDisplayType === 'CUSTOM') {
     const symbol = config.customCurrencySymbol?.trim() || '¤'

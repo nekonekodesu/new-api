@@ -639,12 +639,88 @@ export function getCurrencyLabel(): string {
       return 'CNY'
     case 'NTD':
       return 'NTD'
+    case 'TWD':
+      return 'TWD'
     case 'CUSTOM':
       return meta.kind === 'custom' ? meta.symbol : 'Custom'
     case 'USD':
-    default:
       return 'USD'
+    default:
+      return meta.kind === 'currency' ? meta.currencyCode : 'USD'
   }
+}
+
+export interface DisplayCurrencyOption {
+  code: CurrencyDisplayType
+  symbol: string
+  rate: number
+}
+
+/**
+ * Return available display currency options for currency switchers
+ * (Model Plaza / Model Price Table), ordered with USD, TWD, CNY first.
+ */
+export function getAvailableDisplayCurrencies(
+  currencyConfig?: CurrencyConfig
+): DisplayCurrencyOption[] {
+  const cfg = currencyConfig ?? getConfig()
+  const rates = {
+    ...DEFAULT_CURRENCY_RATES,
+    ...cfg.currencyRates,
+  }
+  const preferredOrder = ['USD', 'TWD', 'CNY']
+  const seen = new Set<string>()
+  const out: DisplayCurrencyOption[] = []
+
+  const pushCode = (rawCode: string) => {
+    const code = rawCode.trim().toUpperCase()
+    if (!code || code === 'TOKENS' || code === 'CUSTOM' || seen.has(code)) {
+      return
+    }
+    const normalized = code === 'NTD' ? 'TWD' : code
+    if (seen.has(normalized)) return
+    const entry = rates[normalized] ?? rates[code]
+    if (!entry || !(entry.rate > 0)) return
+    seen.add(normalized)
+    out.push({
+      code: normalized,
+      symbol: entry.symbol || '$',
+      rate: normalized === 'USD' ? 1 : entry.rate,
+    })
+  }
+
+  for (const code of preferredOrder) {
+    pushCode(code)
+  }
+  for (const code of Object.keys(rates)) {
+    pushCode(code)
+  }
+  return out
+}
+
+/**
+ * Switch the active display currency in the store and persist the user's choice.
+ */
+export function setDisplayCurrency(code: CurrencyDisplayType): void {
+  const normalized = code.trim().toUpperCase()
+  if (!normalized) return
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        'newapi_display_currency_override',
+        normalized
+      )
+    }
+  } catch {
+    /* ignore storage errors */
+  }
+  const state = useSystemConfigStore.getState()
+  state.setConfig({
+    currency: {
+      ...state.config.currency,
+      quotaDisplayType: normalized,
+    },
+  })
 }
 
 /**

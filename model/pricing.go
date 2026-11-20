@@ -383,10 +383,31 @@ func updatePricing() {
 			pricing.ModelPrice = modelPrice
 			pricing.QuotaType = 1
 		} else {
-			modelRatio, _, _ := ratio_setting.GetModelRatio(model)
-			pricing.ModelRatio = modelRatio
-			pricing.CompletionRatio = ratio_setting.GetCompletionRatio(model)
-			pricing.QuotaType = 0
+			modelRatio, hasRatio, _ := ratio_setting.GetModelRatio(model)
+			completionRatio := ratio_setting.GetCompletionRatio(model)
+			if !hasRatio || isDefaultUnconfiguredModelRatio(model, 0, modelRatio, completionRatio) {
+				qt, mp, mr, cr, cacheR, createCacheR := ResolveAuthoritativeModelPricingUSD(model)
+				if qt == 1 && mp > 0 {
+					pricing.ModelPrice = mp
+					pricing.QuotaType = 1
+				} else {
+					pricing.ModelRatio = mr
+					pricing.CompletionRatio = cr
+					pricing.QuotaType = 0
+				}
+				if cacheR > 0 && pricing.CacheRatio == nil {
+					c := cacheR
+					pricing.CacheRatio = &c
+				}
+				if createCacheR > 0 && pricing.CreateCacheRatio == nil {
+					cc := createCacheR
+					pricing.CreateCacheRatio = &cc
+				}
+			} else {
+				pricing.ModelRatio = modelRatio
+				pricing.CompletionRatio = completionRatio
+				pricing.QuotaType = 0
+			}
 		}
 		if cacheRatio, ok := ratio_setting.GetCacheRatio(model); ok {
 			pricing.CacheRatio = &cacheRatio

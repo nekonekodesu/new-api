@@ -69,9 +69,9 @@ const DEFAULT_SYNC_CFG: ModelPriceSyncConfig = {
   preferred_channels: {},
   default_currency: 'AUTO',
   custom_exchange_rate: 0,
-  usd_exchange_rate: 35,
-  cny_exchange_rate: 5,
-  twd_exchange_rate: 1,
+  usd_exchange_rate: 1,
+  cny_exchange_rate: 7.3,
+  twd_exchange_rate: 32,
   channel_currencies: {},
   channel_exchange_rates: {},
   channel_upstream_groups: {},
@@ -112,9 +112,17 @@ export function CronUpstreamSyncPanel() {
       setFormCfg({
         ...DEFAULT_SYNC_CFG,
         ...serverCfg,
-        usd_exchange_rate: serverCfg.usd_exchange_rate || 35,
-        cny_exchange_rate: serverCfg.cny_exchange_rate || 5,
-        twd_exchange_rate: serverCfg.twd_exchange_rate || 1,
+        usd_exchange_rate: 1,
+        cny_exchange_rate:
+          serverCfg.cny_exchange_rate &&
+          serverCfg.cny_exchange_rate > 5.5 &&
+          serverCfg.cny_exchange_rate < 15
+            ? serverCfg.cny_exchange_rate
+            : 7.3,
+        twd_exchange_rate:
+          serverCfg.twd_exchange_rate && serverCfg.twd_exchange_rate >= 15
+            ? serverCfg.twd_exchange_rate
+            : 32,
         channel_currencies: serverCfg.channel_currencies ?? {},
         channel_exchange_rates: serverCfg.channel_exchange_rates ?? {},
         channel_upstream_groups: serverCfg.channel_upstream_groups ?? {},
@@ -188,11 +196,11 @@ export function CronUpstreamSyncPanel() {
     setFormCfg((prev) => {
       let nextRate = 0
       if (currency === 'USD') {
-        nextRate = prev.usd_exchange_rate || 35
+        nextRate = 1
       } else if (currency === 'CNY') {
-        nextRate = prev.cny_exchange_rate || 5
+        nextRate = prev.cny_exchange_rate || 7.3
       } else if (currency === 'TWD') {
-        nextRate = prev.twd_exchange_rate || 1
+        nextRate = prev.twd_exchange_rate || 32
       }
       return {
         ...prev,
@@ -371,8 +379,8 @@ export function CronUpstreamSyncPanel() {
                 </Label>
               </div>
               <Badge variant='outline' className='font-mono text-[10px]'>
-                1 CNY = {formCfg.cny_exchange_rate || 5} | 1 USD ={' '}
-                {formCfg.usd_exchange_rate || 35}
+                1 USD = {formCfg.cny_exchange_rate || 7.3} CNY | 1 USD ={' '}
+                {formCfg.twd_exchange_rate || 32} TWD
               </Badge>
             </div>
             <div className='grid grid-cols-2 gap-2'>
@@ -384,9 +392,9 @@ export function CronUpstreamSyncPanel() {
                   type='number'
                   step='0.1'
                   min={0}
-                  value={formCfg.cny_exchange_rate ?? 5}
+                  value={formCfg.cny_exchange_rate ?? 7.3}
                   onChange={(e) => {
-                    const nextCny = Number(e.target.value) || 5
+                    const nextCny = Number(e.target.value) || 7.3
                     setFormCfg((p) => ({
                       ...p,
                       cny_exchange_rate: nextCny,
@@ -397,18 +405,18 @@ export function CronUpstreamSyncPanel() {
               </div>
               <div className='flex items-center gap-1.5'>
                 <span className='text-muted-foreground shrink-0 font-mono text-[11px]'>
-                  USD ($):
+                  TWD (NT$):
                 </span>
                 <Input
                   type='number'
                   step='0.1'
                   min={0}
-                  value={formCfg.usd_exchange_rate ?? 35}
+                  value={formCfg.twd_exchange_rate ?? 32}
                   onChange={(e) => {
-                    const nextUsd = Number(e.target.value) || 35
+                    const nextTwd = Number(e.target.value) || 32
                     setFormCfg((p) => ({
                       ...p,
-                      usd_exchange_rate: nextUsd,
+                      twd_exchange_rate: nextTwd,
                     }))
                   }}
                   className='h-7 w-full font-mono text-xs'

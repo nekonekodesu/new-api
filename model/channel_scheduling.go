@@ -648,9 +648,9 @@ func defaultModelPriceSyncConfig() ModelPriceSyncConfig {
 		PreferredChannels:       make(map[string]int),
 		DefaultCurrency:         "AUTO",
 		CustomExchangeRate:      0,
-		USDExchangeRate:         35.0,
-		CNYExchangeRate:         5.0,
-		TWDExchangeRate:         1.0,
+		USDExchangeRate:         1.0,
+		CNYExchangeRate:         7.3,
+		TWDExchangeRate:         32.0,
 		ChannelCurrencies:       make(map[int]string),
 		ChannelExchangeRates:    make(map[int]float64),
 		ChannelUpstreamGroups:   make(map[int]string),
@@ -920,19 +920,44 @@ func GetModelPriceSyncConfig() ModelPriceSyncConfig {
 	if cfg.DefaultCurrency == "" {
 		cfg.DefaultCurrency = "AUTO"
 	}
-	if cfg.USDExchangeRate <= 0 {
-		cfg.USDExchangeRate = 35.0
+	cfg.USDExchangeRate = 1.0
+	if cfg.CNYExchangeRate <= 5.5 || cfg.CNYExchangeRate >= 15.0 {
+		cfg.CNYExchangeRate = ResolveEffectiveChannelExchangeRate("CNY", 0)
 	}
-	if cfg.CNYExchangeRate <= 0 {
-		cfg.CNYExchangeRate = 5.0
+	if cfg.TWDExchangeRate < 15.0 {
+		cfg.TWDExchangeRate = ResolveEffectiveChannelExchangeRate("TWD", 0)
 	}
-	if cfg.TWDExchangeRate <= 0 {
-		cfg.TWDExchangeRate = 1.0
+	for chID, rate := range cfg.ChannelExchangeRates {
+		curr := cfg.ChannelCurrencies[chID]
+		if curr == "" || strings.EqualFold(curr, "AUTO") {
+			curr = "CNY"
+		}
+		cfg.ChannelExchangeRates[chID] = ResolveEffectiveChannelExchangeRate(curr, rate)
 	}
 	if cfg.CronIntervalMinutes <= 0 {
 		cfg.CronIntervalMinutes = 60
 	}
 	return cfg
+}
+
+func sanitizeModelPriceSyncConfigRates(cfg *ModelPriceSyncConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.USDExchangeRate = 1.0
+	if cfg.CNYExchangeRate <= 5.5 || cfg.CNYExchangeRate >= 15.0 {
+		cfg.CNYExchangeRate = ResolveEffectiveChannelExchangeRate("CNY", 0)
+	}
+	if cfg.TWDExchangeRate < 15.0 {
+		cfg.TWDExchangeRate = ResolveEffectiveChannelExchangeRate("TWD", 0)
+	}
+	for chID, rate := range cfg.ChannelExchangeRates {
+		curr := cfg.ChannelCurrencies[chID]
+		if curr == "" || strings.EqualFold(curr, "AUTO") {
+			curr = "CNY"
+		}
+		cfg.ChannelExchangeRates[chID] = ResolveEffectiveChannelExchangeRate(curr, rate)
+	}
 }
 
 func LoadModelPriceSyncConfigFromJSON(raw string) error {
@@ -969,15 +994,7 @@ func LoadModelPriceSyncConfigFromJSON(raw string) error {
 	if cfg.DefaultCurrency == "" {
 		cfg.DefaultCurrency = "AUTO"
 	}
-	if cfg.USDExchangeRate <= 0 {
-		cfg.USDExchangeRate = 35.0
-	}
-	if cfg.CNYExchangeRate <= 0 {
-		cfg.CNYExchangeRate = 5.0
-	}
-	if cfg.TWDExchangeRate <= 0 {
-		cfg.TWDExchangeRate = 1.0
-	}
+	sanitizeModelPriceSyncConfigRates(&cfg)
 	if cfg.CronIntervalMinutes <= 0 {
 		cfg.CronIntervalMinutes = 60
 	}
@@ -1014,15 +1031,7 @@ func SaveModelPriceSyncConfig(cfg ModelPriceSyncConfig) error {
 	if cfg.DefaultCurrency == "" {
 		cfg.DefaultCurrency = "AUTO"
 	}
-	if cfg.USDExchangeRate <= 0 {
-		cfg.USDExchangeRate = 35.0
-	}
-	if cfg.CNYExchangeRate <= 0 {
-		cfg.CNYExchangeRate = 5.0
-	}
-	if cfg.TWDExchangeRate <= 0 {
-		cfg.TWDExchangeRate = 1.0
-	}
+	sanitizeModelPriceSyncConfigRates(&cfg)
 	if cfg.CronIntervalMinutes <= 0 {
 		cfg.CronIntervalMinutes = 60
 	}
@@ -1069,6 +1078,12 @@ func normalizeUpstreamAccountSource(src *UpstreamAccountSource) {
 	if isLumiyaLike && strings.TrimSpace(src.UserID) == "" {
 		src.UserID = "502"
 	}
+	curr := strings.ToUpper(strings.TrimSpace(src.Currency))
+	if curr == "" || curr == "AUTO" {
+		curr = "CNY"
+		src.Currency = "CNY"
+	}
+	src.ExchangeRate = ResolveEffectiveChannelExchangeRate(curr, src.ExchangeRate)
 }
 
 func normalizeCronJobsList(jobs []CronJob) []CronJob {
@@ -1401,6 +1416,38 @@ func LoadChannelModelCostsFromJSON(raw string) error {
 	if err := common.Unmarshal([]byte(raw), &parsed); err != nil {
 		return err
 	}
+	for chID, chMap := range parsed {
+		for mName, entry := range chMap {
+			if entry.BaseMultiplier <= 0 {
+				entry.BaseMultiplier = 1.0
+			}
+			entry.ExchangeRate = ResolveEffectiveChannelExchangeRate(entry.Currency, entry.ExchangeRate)
+			unitMult := ResolveUpstreamToQuotaUnitMultiplier(entry.Currency, entry.ExchangeRate)
+			if entry.QuotaType == 1 && (entry.RawModelPrice > 0 || entry.ModelPrice > 0) {
+				rawP := entry.RawModelPrice
+				if rawP <= 0 {
+					rawP = entry.ModelPrice
+				}
+				entry.RawModelPrice = rawP
+				if entry.RawInputCost <= 0 {
+					entry.RawInputCost = roundCost(rawP * entry.BaseMultiplier)
+					entry.RawOutputCost = entry.RawInputCost
+				}
+				entry.InputCost = roundCost(entry.RawInputCost * unitMult)
+				entry.OutputCost = entry.InputCost
+			} else if entry.RawInputCost > 0 {
+				comp := entry.CompletionRatio
+				if comp <= 0 {
+					comp = 1.0
+				}
+				entry.RawOutputCost = roundCost(entry.RawInputCost * comp)
+				entry.InputCost = roundCost(entry.RawInputCost * unitMult)
+				entry.OutputCost = roundCost(entry.InputCost * comp)
+			}
+			chMap[mName] = entry
+		}
+		parsed[chID] = chMap
+	}
 	channelModelCostMu.Lock()
 	channelModelCostMap = parsed
 	channelModelCostMu.Unlock()
@@ -1687,10 +1734,13 @@ func computeDefaultModelCostEntry(ch *Channel, modelName string, now int64, exis
 			}
 		}
 	}
-	modelRatio, _, _ := ratio_setting.GetModelRatio(lookupModel)
+	modelRatio, hasR, _ := ratio_setting.GetModelRatio(lookupModel)
 	compRatio := ratio_setting.GetCompletionRatio(lookupModel)
 	if compRatio <= 0 {
 		compRatio = 1.0
+	}
+	if !hasR || isDefaultUnconfiguredModelRatio(lookupModel, 0, modelRatio, compRatio) {
+		modelRatio, compRatio = InferSensibleFallbackModelPricing(lookupModel)
 	}
 	entry.QuotaType = 0
 	entry.ModelRatio = modelRatio
@@ -1707,6 +1757,141 @@ func computeDefaultModelCostEntry(ch *Channel, modelName string, now int64, exis
 	entry.InputCost = roundCost(baseIn * costScale)
 	entry.OutputCost = roundCost(entry.InputCost * compRatio)
 	return entry
+}
+
+// InferSensibleFallbackModelPricing returns a realistic USD-based (ModelRatio, CompletionRatio)
+// for models that are not explicitly configured in ratio_setting and do not have a non-37.5
+// upstream price, preventing the legacy 37.5 ($75/1M = NT$2,400/1M) fallback from inflating prices.
+func InferSensibleFallbackModelPricing(modelName string) (modelRatio float64, completionRatio float64) {
+	lower := strings.ToLower(strings.TrimSpace(modelName))
+	switch {
+	case strings.HasPrefix(lower, "gpt-4.5"):
+		return 37.5, 2.0
+	case strings.Contains(lower, "claude") && strings.Contains(lower, "opus"):
+		return 2.5, 5.0 // $5 / $25 per 1M
+	case strings.Contains(lower, "claude") && strings.Contains(lower, "haiku"):
+		return 0.4, 5.0 // $0.8 / $4 per 1M
+	case strings.Contains(lower, "claude"):
+		return 1.5, 5.0 // $3 / $15 per 1M
+	case strings.HasPrefix(lower, "antigravity") || (strings.Contains(lower, "gemini") && (strings.Contains(lower, "pro") || strings.Contains(lower, "ultra"))):
+		return 0.625, 8.0 // $1.25 / $10 per 1M
+	case strings.Contains(lower, "gemini") && strings.Contains(lower, "lite"):
+		return 0.05, 4.0 // $0.10 / $0.40 per 1M
+	case strings.Contains(lower, "gemini") || lower == "aqa" || strings.HasPrefix(lower, "gemma"):
+		return 0.15, 4.0 // $0.30 / $1.20 per 1M
+	case strings.Contains(lower, "gpt-image") || strings.Contains(lower, "chatgpt-image"):
+		return 2.5, 4.0 // $5 / $20 per 1M
+	case lower == "chat-latest" || strings.HasPrefix(lower, "chatgpt-4o") || lower == "gpt-4o":
+		return 1.25, 4.0 // $2.5 / $10 per 1M
+	case strings.Contains(lower, "gpt-") && strings.Contains(lower, "nano"):
+		return 0.05, 4.0 // $0.10 / $0.40 per 1M
+	case strings.Contains(lower, "gpt-") && strings.Contains(lower, "mini"):
+		return 0.15, 4.0 // $0.30 / $1.20 per 1M
+	case strings.HasPrefix(lower, "gpt-5") || strings.HasPrefix(lower, "o3") || strings.HasPrefix(lower, "o4") || strings.Contains(lower, "codex"):
+		return 1.0, 4.0 // $2 / $8 per 1M
+	case strings.Contains(lower, "deepseek") && (strings.Contains(lower, "r1") || strings.Contains(lower, "reasoner") || strings.Contains(lower, "pro")):
+		return 0.275, 4.0 // $0.55 / $2.20 per 1M
+	case strings.Contains(lower, "deepseek"):
+		return 0.14, 4.0 // ~$0.28 / $1.12 per 1M (¥2 / ¥8 CNY)
+	case strings.Contains(lower, "glm") && strings.Contains(lower, "flash"):
+		return 0.05, 3.5 // ~$0.10 / $0.35 per 1M
+	case strings.Contains(lower, "glm"):
+		return 0.25, 3.5 // ~$0.50 / $1.75 per 1M
+	case strings.Contains(lower, "qwen") && strings.Contains(lower, "max"):
+		return 0.4, 4.0 // $0.80 / $3.20 per 1M
+	case strings.Contains(lower, "qwen"):
+		return 0.15, 3.0 // $0.30 / $0.90 per 1M
+	case strings.Contains(lower, "grok"):
+		return 1.5, 5.0 // $3 / $15 per 1M
+	case strings.Contains(lower, "doubao") || strings.Contains(lower, "seed") || strings.Contains(lower, "kimi") || strings.Contains(lower, "moonshot") || strings.Contains(lower, "minimax"):
+		return 0.3, 3.0 // $0.60 / $1.80 per 1M
+	default:
+		return 0.5, 2.0 // $1.00 / $2.00 per 1M
+	}
+}
+
+// ResolveAuthoritativeModelPricingUSD resolves the best synced USD pricing for modelName
+// from channelModelCostMap (or sensible family fallback if unconfigured), used by /api/pricing
+// when ratio_setting does not have an explicit non-37.5 entry for modelName.
+func ResolveAuthoritativeModelPricingUSD(modelName string) (quotaType int, modelPrice float64, modelRatio float64, completionRatio float64, cacheRatio float64, createCacheRatio float64) {
+	cfg := GetModelPriceSyncConfig()
+	prefChID := cfg.PreferredChannels[modelName]
+
+	channelModelCostMu.RLock()
+	var bestEntry *ChannelModelCostEntry
+	bestScore := -1.0
+	for chID, chMap := range channelModelCostMap {
+		entry, exists := chMap[modelName]
+		if !exists {
+			normalized := ratio_setting.RoutingMatchModelName(modelName)
+			if normalized != "" && normalized != modelName {
+				entry, exists = chMap[normalized]
+			}
+		}
+		if !exists || !entry.FromUpstream {
+			continue
+		}
+		if isDefaultUnconfiguredModelRatio(modelName, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
+			continue
+		}
+		effRate := ResolveEffectiveChannelExchangeRate(entry.Currency, entry.ExchangeRate)
+		unitMult := ResolveUpstreamToQuotaUnitMultiplier(entry.Currency, effRate)
+		rawIn := entry.RawInputCost
+		rawOut := entry.RawOutputCost
+		if rawIn <= 0 {
+			mult := entry.BaseMultiplier
+			if mult <= 0 {
+				mult = 1.0
+			}
+			if entry.QuotaType == 1 && entry.ModelPrice > 0 {
+				rawIn = roundCost(entry.ModelPrice * mult)
+				rawOut = rawIn
+			} else if entry.ModelRatio > 0 {
+				rawIn = roundCost(entry.ModelRatio * 2.0 * mult)
+				rawOut = roundCost(rawIn * max(entry.CompletionRatio, 1.0))
+			}
+		}
+		inUSD := roundCost(rawIn * unitMult)
+		outUSD := roundCost(rawOut * unitMult)
+		if inUSD <= 0 && outUSD <= 0 {
+			continue
+		}
+		if prefChID > 0 && chID == prefChID {
+			copied := entry
+			copied.InputCost = inUSD
+			copied.OutputCost = outUSD
+			bestEntry = &copied
+			break
+		}
+		score := inUSD + outUSD
+		if score > bestScore {
+			bestScore = score
+			copied := entry
+			copied.InputCost = inUSD
+			copied.OutputCost = outUSD
+			bestEntry = &copied
+		}
+	}
+	channelModelCostMu.RUnlock()
+
+	if bestEntry != nil {
+		if bestEntry.QuotaType == 1 && bestEntry.InputCost > 0 {
+			return 1, bestEntry.InputCost, 0, 1.0, bestEntry.CacheRatio, bestEntry.CreateCacheRatio
+		}
+		mr := roundCost(bestEntry.InputCost / 2.0)
+		cr := bestEntry.CompletionRatio
+		if cr <= 0 {
+			if bestEntry.InputCost > 0 && bestEntry.OutputCost > 0 {
+				cr = roundCost(bestEntry.OutputCost / bestEntry.InputCost)
+			} else {
+				cr = 1.0
+			}
+		}
+		return 0, 0, mr, cr, bestEntry.CacheRatio, bestEntry.CreateCacheRatio
+	}
+
+	mr, cr := InferSensibleFallbackModelPricing(modelName)
+	return 0, 0, mr, cr, 0, 0
 }
 
 func roundCost(v float64) float64 {
@@ -1759,14 +1944,14 @@ func ResolveEffectiveChannelExchangeRate(currency string, exchangeRate float64) 
 
 	switch curr {
 	case "CNY":
-		// Ignore legacy TWD-per-CNY default (5.0) so existing configs seamlessly use USD-based CNY rate.
-		if exchangeRate > 0 && math.Abs(exchangeRate-5.0) > 1e-4 {
+		// Ignore legacy TWD-per-CNY default (<= 5.5) or TWD-per-USD (>= 15) so existing configs seamlessly use USD-based CNY rate.
+		if exchangeRate > 5.5 && exchangeRate < 15.0 {
 			return exchangeRate
 		}
 		return defaultRate
 	case "TWD":
-		// Ignore legacy TWD-per-TWD default (1.0) so existing configs seamlessly use USD-based TWD rate.
-		if exchangeRate > 1.01 {
+		// Ignore legacy TWD-per-TWD default (1.0) or CNY rate (< 15) so existing configs seamlessly use USD-based TWD rate.
+		if exchangeRate >= 15.0 {
 			return exchangeRate
 		}
 		return defaultRate
