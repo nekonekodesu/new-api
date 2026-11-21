@@ -82,6 +82,17 @@ func GetClusterLogActivityVersion() uint64 {
 	return logActivitySeq.Load()
 }
 
+// GetLatestPersistedLogID returns the highest log ID in LOG_DB as a lightweight
+// fallback change detector for multi-node deployments without Redis.
+func GetLatestPersistedLogID() int {
+	if LOG_DB == nil || common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		return 0
+	}
+	var maxID int
+	_ = LOG_DB.Model(&Log{}).Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error
+	return maxID
+}
+
 func cloneLogSlice(src []*Log) []*Log {
 	if len(src) == 0 {
 		return []*Log{}

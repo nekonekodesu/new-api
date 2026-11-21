@@ -83,7 +83,101 @@ func limitLogTimeRange(startTimestamp int64, endTimestamp int64) (int64, error) 
 	return startTimestamp, nil
 }
 
-const maxLogLongPollWaitMs = 15000
+const (
+	maxLogLongPollWaitMs      = 15000
+	maxLogWatchStreamDuration = 55 * time.Second
+)
+
+func WatchAllLogs(c *gin.Context) {
+	watchLogActivity(c)
+}
+
+func WatchUserLogs(c *gin.Context) {
+	watchLogActivity(c)
+}
+
+func watchLogActivity(c *gin.Context) {
+	c.Header("Content-Type", "application/x-ndjson; charset=utf-8")
+	c.Header("Cache-Control", "no-store")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+
+	readState := func() (uint64, int) {
+		ver := model.GetClusterLogActivityVersion()
+		if !common.RedisEnabled || common.RDB == nil {
+			if maxID := model.GetLatestPersistedLogID(); maxID > 0 {
+				ver = (ver << 32) | uint64(maxID)
+			}
+		}
+		return ver, service.GetClusterActiveRelayCount()
+	}
+
+	writeEvent := func(ver uint64, activeCount int) bool {
+		line, err := common.Marshal(gin.H{
+			"version":      ver,
+			"active_count": activeCount,
+		})
+		if err != nil {
+			return false
+		}
+		if _, err := c.Writer.Write(append(line, '\n')); err != nil {
+			return false
+		}
+		c.Writer.Flush()
+		return true
+	}
+
+	localCh, _ := model.SubscribeLogActivity()
+	lastVer, lastActive := readState()
+	if !writeEvent(lastVer, lastActive) {
+		return
+	}
+
+	ctx := c.Request.Context()
+	lifetime := time.NewTimer(maxLogWatchStreamDuration)
+	defer lifetime.Stop()
+
+	heartbeat := time.NewTicker(20 * time.Second)
+	defer heartbeat.Stop()
+
+	crossNodeInterval := time.Second
+	if common.RedisEnabled && common.RDB != nil {
+		crossNodeInterval = 200 * time.Millisecond
+	}
+	ticker := time.NewTicker(crossNodeInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-lifetime.C:
+			return
+		case <-heartbeat.C:
+			if _, err := c.Writer.Write([]byte("\n")); err != nil {
+				return
+			}
+			c.Writer.Flush()
+		case <-localCh:
+			localCh, _ = model.SubscribeLogActivity()
+			nextVer, nextActive := readState()
+			if nextVer != lastVer || nextActive != lastActive {
+				lastVer, lastActive = nextVer, nextActive
+				if !writeEvent(lastVer, lastActive) {
+					return
+				}
+			}
+		case <-ticker.C:
+			nextVer, nextActive := readState()
+			if nextVer != lastVer || nextActive != lastActive {
+				lastVer, lastActive = nextVer, nextActive
+				if !writeEvent(lastVer, lastActive) {
+					return
+				}
+			}
+		}
+	}
+}
 
 func parseLogWaitDuration(c *gin.Context) time.Duration {
 	waitMs, _ := strconv.Atoi(c.Query("wait_ms"))

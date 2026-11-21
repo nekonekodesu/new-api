@@ -198,6 +198,35 @@ func HasActiveRelayRequests() bool {
 	return activeRelayCount.Load() > 0
 }
 
+// GetClusterActiveRelayCount returns the number of in-flight relay requests
+// across the local node and any remote Redis-connected nodes.
+func GetClusterActiveRelayCount() int {
+	total := int(activeRelayCount.Load())
+	if !common.RedisEnabled || common.RDB == nil {
+		return max(total, 0)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	rawEntries, err := common.RDB.HGetAll(ctx, redisActiveRelayHashKey).Result()
+	cancel()
+	if err != nil || len(rawEntries) == 0 {
+		return max(total, 0)
+	}
+	nowMs := time.Now().UnixMilli()
+	for _, rawJSON := range rawEntries {
+		var snap clusterActiveRelaySnapshot
+		if err := common.UnmarshalJsonStr(rawJSON, &snap); err != nil {
+			continue
+		}
+		if snap.NodeID == localActiveNodeID {
+			continue
+		}
+		if nowMs-snap.UpdatedAtMs <= clusterActiveStaleMs {
+			total++
+		}
+	}
+	return max(total, 0)
+}
+
 // RegisterActiveRelayRequest registers an in-flight relay request so Usage Logs
 // can display it while it is still executing, and returns an idempotent cleanup
 // function to call via defer when the request finishes.

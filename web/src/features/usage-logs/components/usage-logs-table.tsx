@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -38,6 +38,7 @@ import { createServerError } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { watchLogActivityStream } from '../api'
 import {
   DEFAULT_LOGS_DATA,
   LOG_TYPE_ALL_VALUE,
@@ -194,16 +195,133 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     ]
   )
   const queryClient = useQueryClient()
+  const [watchConnected, setWatchConnected] = useState(false)
+  const [clusterActiveCount, setClusterActiveCount] = useState(0)
+  const lastWatchVersionRef = useRef<number | null>(null)
+  const statsDecayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const scheduleStatsWindowDecay = useCallback(() => {
+    if (statsDecayTimerRef.current) {
+      clearTimeout(statsDecayTimerRef.current)
+    }
+    statsDecayTimerRef.current = setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: ['usage-logs-stats'] })
+    }, 61_000)
+  }, [queryClient])
+
+  useEffect(() => {
+    return () => {
+      if (statsDecayTimerRef.current) {
+        clearTimeout(statsDecayTimerRef.current)
+      }
+    }
+  }, [])
+
+  const isLiveFirstPage =
+    logCategory === 'common' &&
+    pagination.pageIndex === 0 &&
+    (!searchParams.endTime ||
+      Number(searchParams.endTime) >= Date.now() - 60_000)
+
+  useEffect(() => {
+    if (!isLiveFirstPage || autoRefreshSeconds <= 0) {
+      setWatchConnected(false)
+      setClusterActiveCount(0)
+      lastWatchVersionRef.current = null
+      return
+    }
+
+    let cancelled = false
+    let currentAbort: AbortController | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+    const connectLoop = async () => {
+      while (!cancelled) {
+        if (typeof document !== 'undefined' && document.hidden) {
+          await new Promise<void>((resolve) => {
+            reconnectTimer = setTimeout(resolve, 1000)
+          })
+          continue
+        }
+        const controller = new AbortController()
+        currentAbort = controller
+        try {
+          await watchLogActivityStream(isAdmin, {
+            signal: controller.signal,
+            onConnected: () => {
+              if (!cancelled) {
+                setWatchConnected(true)
+              }
+            },
+            onEvent: ({ version, active_count }) => {
+              if (cancelled) return
+              setClusterActiveCount(active_count)
+              const prevVersion = lastWatchVersionRef.current
+              lastWatchVersionRef.current = version
+              if (prevVersion === null) {
+                if (active_count > 0) {
+                  void queryClient.invalidateQueries({ queryKey })
+                }
+                return
+              }
+              if (version !== prevVersion || active_count > 0) {
+                void queryClient.invalidateQueries({ queryKey })
+              }
+              if (version !== prevVersion) {
+                void queryClient.invalidateQueries({
+                  queryKey: ['usage-logs-stats'],
+                })
+                scheduleStatsWindowDecay()
+              }
+            },
+          })
+        } catch {
+          if (cancelled) break
+          setWatchConnected(false)
+          await new Promise<void>((resolve) => {
+            reconnectTimer = setTimeout(resolve, 1500)
+          })
+        }
+      }
+    }
+
+    void connectLoop()
+
+    return () => {
+      cancelled = true
+      setWatchConnected(false)
+      currentAbort?.abort()
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+      }
+    }
+  }, [
+    autoRefreshSeconds,
+    isAdmin,
+    isLiveFirstPage,
+    queryClient,
+    queryKey,
+    scheduleStatsWindowDecay,
+  ])
+
   const { data, isLoading, isFetching } = useQuery({
     queryKey,
-    refetchInterval: autoRefreshSeconds > 0 ? autoRefreshSeconds * 1000 : false,
+    refetchInterval: (query) => {
+      if (autoRefreshSeconds <= 0) return false
+      const currentData = query.state.data as
+        | NonNullable<GetLogsResponse['data']>
+        | undefined
+      const hasActive =
+        clusterActiveCount > 0 || hasInProgressUsageLogs(currentData)
+      if (watchConnected && !hasActive) {
+        return false
+      }
+      return autoRefreshSeconds * 1000
+    },
     refetchIntervalInBackground: false,
     queryFn: async ({ signal }) => {
       const cachedPage =
-        logCategory === 'common' &&
-        isAdmin &&
-        pagination.pageIndex === 0 &&
-        !searchParams.endTime
+        isAdmin && isLiveFirstPage
           ? queryClient.getQueryData<
               NonNullable<GetLogsResponse['data']> | undefined
             >(queryKey)
@@ -211,6 +329,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       const deltaCursor = extractAdminDeltaCursor(cachedPage)
       const hadActiveRows = hasInProgressUsageLogs(cachedPage)
       const waitMs =
+        !watchConnected &&
         deltaCursor &&
         !hadActiveRows &&
         autoRefreshSeconds > 0 &&
@@ -254,6 +373,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
           void queryClient.invalidateQueries({
             queryKey: ['usage-logs-stats'],
           })
+          scheduleStatsWindowDecay()
         }
         return merged
       }

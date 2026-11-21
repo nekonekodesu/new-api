@@ -95,6 +95,60 @@ export const getUserLogStats = (
   params: Omit<GetLogStatsParams, 'username' | 'channel'> = {}
 ) => fetchLogStats('/api/log', params, false)
 
+export async function watchLogActivityStream(
+  isAdmin: boolean,
+  options: {
+    signal: AbortSignal
+    onConnected?: () => void
+    onEvent: (event: { version: number; active_count: number }) => void
+  }
+): Promise<void> {
+  const response = await fetch(
+    `${buildApiPath('/api/log', isAdmin)}/watch`,
+    {
+      credentials: 'include',
+      headers: await getFreshAuthHeaders(),
+      signal: options.signal,
+    }
+  )
+  if (!response.ok || !response.body) {
+    throw createServerError({ status: response.status })
+  }
+  options.onConnected?.()
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    buffer += done ? decoder.decode() : decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = done ? '' : (lines.pop() ?? '')
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const parsed = JSON.parse(trimmed) as {
+          version?: unknown
+          active_count?: unknown
+        }
+        if (typeof parsed.version === 'number') {
+          options.onEvent({
+            version: parsed.version,
+            active_count:
+              typeof parsed.active_count === 'number'
+                ? parsed.active_count
+                : 0,
+          })
+        }
+      } catch {
+        // Ignore heartbeat or partial line
+      }
+    }
+    if (done) break
+  }
+}
+
 /**
  * Stream the logs matching params, newest first. The server sends one JSON
  * log per line and ends with an API response object; a stream that ends
