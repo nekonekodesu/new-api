@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -70,4 +71,51 @@ func TestSystemTaskInvalidFiltersAreRejected(t *testing.T) {
 			assert.JSONEq(t, `{"success":false,"message":"invalid system task filters"}`, recorder.Body.String())
 		})
 	}
+}
+
+func TestUnifiedCronAndSystemTaskDeduplication(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	previousDB := model.DB
+	model.DB = db
+	common.OptionMapRWMutex.Lock()
+	previousOptionMap := common.OptionMap
+	common.OptionMap = make(map[string]string)
+	common.OptionMapRWMutex.Unlock()
+	origAutoTest := operation_setting.GetMonitorSetting().AutoTestChannelEnabled
+	origJobs := model.GetCronJobs()
+	t.Cleanup(func() {
+		operation_setting.GetMonitorSetting().AutoTestChannelEnabled = origAutoTest
+		_ = model.SaveCronJobs(origJobs)
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousOptionMap
+		common.OptionMapRWMutex.Unlock()
+		model.DB = previousDB
+		require.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, db.AutoMigrate(&model.Option{}, &model.SystemTask{}, &model.SystemTaskLock{}))
+
+	operation_setting.GetMonitorSetting().AutoTestChannelEnabled = true
+	assert.True(t, channelTestHandler{}.Enabled())
+
+	// Enabling builtin-channel-test and builtin-upstream-sync in CronJobs makes the fixed-interval
+	// SystemTaskRunner handlers yield so the same job is never scheduled twice.
+	jobs := model.GetCronJobs()
+	for i := range jobs {
+		if jobs[i].ID == model.BuiltInChannelTestCronJobID || jobs[i].ID == model.BuiltInUpstreamSyncCronJobID {
+			jobs[i].Enabled = true
+		}
+	}
+	require.NoError(t, model.SaveCronJobs(jobs))
+	assert.False(t, channelTestHandler{}.Enabled(), "channelTestHandler must yield when builtin-channel-test is enabled in CronJobs")
+	assert.False(t, modelUpdateHandler{}.Enabled(), "modelUpdateHandler must yield when builtin-upstream-sync is enabled in CronJobs")
+
+	// SyncChannelCurrencyCode keeps Channel.CurrencyCode and ModelPriceSyncConfig.ChannelCurrencies aligned.
+	cny := "cny"
+	model.SyncChannelCurrencyCode(42, &cny)
+	assert.Equal(t, "CNY", model.GetModelPriceSyncConfig().ChannelCurrencies[42])
+	model.SyncChannelCurrencyCode(42, nil)
+	assert.Empty(t, model.GetModelPriceSyncConfig().ChannelCurrencies[42])
 }

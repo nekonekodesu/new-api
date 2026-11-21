@@ -1225,7 +1225,80 @@ func normalizeCronJobsList(jobs []CronJob) []CronJob {
 			LastStatus:  "idle",
 		})
 	}
+	for i := range out {
+		if out[i].Enabled && out[i].NextRunAt <= 0 {
+			baseTime := now
+			if out[i].LastRunAt > 0 {
+				baseTime = time.Unix(out[i].LastRunAt, 0)
+			}
+			if next, err := NextCronTime(out[i].CronExpr, baseTime); err == nil {
+				out[i].NextRunAt = next.Unix()
+			}
+		}
+	}
 	return out
+}
+
+func IsBuiltInCronJobEnabled(jobID string) bool {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return false
+	}
+	for _, j := range GetCronJobs() {
+		if j.ID == jobID {
+			return j.Enabled
+		}
+	}
+	return false
+}
+
+func RecordBuiltInCronJobRun(jobID string, status string, durationMs int64, output string) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return
+	}
+	finish := time.Now()
+	jobs := GetCronJobs()
+	changed := false
+	for i := range jobs {
+		if jobs[i].ID == jobID {
+			jobs[i].LastRunAt = finish.Unix()
+			jobs[i].LastDurationMs = max(durationMs, 1)
+			jobs[i].RunCount++
+			jobs[i].LastStatus = status
+			jobs[i].LastOutput = output
+			if jobs[i].Enabled {
+				if next, err := NextCronTime(jobs[i].CronExpr, finish); err == nil {
+					jobs[i].NextRunAt = next.Unix()
+				}
+			}
+			changed = true
+			break
+		}
+	}
+	if changed {
+		_ = SaveCronJobs(jobs)
+	}
+}
+
+func SyncChannelCurrencyCode(channelID int, currencyCode *string) {
+	if channelID <= 0 {
+		return
+	}
+	cfg := GetModelPriceSyncConfig()
+	if cfg.ChannelCurrencies == nil {
+		cfg.ChannelCurrencies = make(map[int]string)
+	}
+	code := ""
+	if currencyCode != nil {
+		code = strings.ToUpper(strings.TrimSpace(*currencyCode))
+	}
+	if code == "" || code == "AUTO" {
+		delete(cfg.ChannelCurrencies, channelID)
+	} else {
+		cfg.ChannelCurrencies[channelID] = code
+	}
+	_ = SaveModelPriceSyncConfig(cfg)
 }
 
 func GetCronJobs() []CronJob {

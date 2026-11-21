@@ -1442,6 +1442,10 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	if !equalStringPtr(channel.CurrencyCode, originChannel.CurrencyCode) {
+		model.SyncChannelCurrencyCode(channel.Id, channel.CurrencyCode)
+		model.RecalculateAllChannelModelCosts(true)
+	}
 	if proxyChanged {
 		service.InvalidateProxyClient(originProxy)
 	}

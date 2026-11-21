@@ -143,27 +143,15 @@ func InitChannelCronSync() {
 			for range ticker.C {
 				now := time.Now().Unix()
 				jobs := model.GetCronJobs()
-				hasEnabledBuiltInSyncJob := false
 				for _, job := range jobs {
 					if !job.Enabled {
 						continue
-					}
-					if job.ID == model.BuiltInUpstreamSyncCronJobID {
-						hasEnabledBuiltInSyncJob = true
 					}
 					if job.NextRunAt > 0 && now >= job.NextRunAt {
 						jobID := job.ID
 						go func() {
 							_, _ = ExecuteCronJob(context.Background(), jobID)
 						}()
-					}
-				}
-
-				cfg := model.GetModelPriceSyncConfig()
-				if !hasEnabledBuiltInSyncJob && cfg.CronEnabled {
-					intervalSec := int64(max(cfg.CronIntervalMinutes, 5)) * 60
-					if now-cfg.LastSyncTime >= intervalSec {
-						_, _ = ExecuteChannelUpstreamSync(context.Background(), nil, cfg.AutoSyncModels, cfg.AutoSyncPrices, cfg.DefaultCurrency, cfg.CustomExchangeRate, nil)
 					}
 				}
 			}
@@ -874,10 +862,19 @@ func GetCronSyncConfig(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	cfg := model.GetModelPriceSyncConfig()
+	if cfg.ChannelCurrencies == nil {
+		cfg.ChannelCurrencies = make(map[int]string)
+	}
 	briefs := make([]ChannelBrief, 0, len(channels))
 	for _, ch := range channels {
 		if ch == nil {
 			continue
+		}
+		if cfg.ChannelCurrencies[ch.Id] == "" && ch.CurrencyCode != nil {
+			if c := strings.ToUpper(strings.TrimSpace(*ch.CurrencyCode)); c != "" && c != "AUTO" {
+				cfg.ChannelCurrencies[ch.Id] = c
+			}
 		}
 		briefs = append(briefs, ChannelBrief{
 			ID:                 ch.Id,
@@ -895,7 +892,7 @@ func GetCronSyncConfig(c *gin.Context) {
 		})
 	}
 	common.ApiSuccess(c, gin.H{
-		"config":   model.GetModelPriceSyncConfig(),
+		"config":   cfg,
 		"channels": briefs,
 	})
 }
@@ -946,6 +943,20 @@ func UpdateCronSyncConfig(c *gin.Context) {
 	if err := model.SaveModelPriceSyncConfig(req); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if model.DB != nil && len(req.ChannelCurrencies) > 0 {
+		for chID, rawCurr := range req.ChannelCurrencies {
+			if chID <= 0 {
+				continue
+			}
+			curr := strings.ToUpper(strings.TrimSpace(rawCurr))
+			if curr == "" || curr == "AUTO" {
+				_ = model.DB.Model(&model.Channel{}).Where("id = ?", chID).Update("currency_code", nil).Error
+			} else {
+				_ = model.DB.Model(&model.Channel{}).Where("id = ?", chID).Update("currency_code", curr).Error
+			}
+		}
+		model.RecalculateAllChannelModelCosts(true)
 	}
 	common.ApiSuccess(c, gin.H{
 		"config": model.GetModelPriceSyncConfig(),
@@ -2054,6 +2065,21 @@ func RunCronJobNow(c *gin.Context) {
 	})
 }
 
+func resolveSystemTaskTypeForCronJob(job model.CronJob) string {
+	switch job.JobType {
+	case model.CronJobTypeUpstreamGroupSync:
+		return model.SystemTaskTypeUpstreamGroupSync
+	case model.CronJobTypeUpstreamSync:
+		return model.SystemTaskTypeUpstreamSync
+	case model.CronJobTypeChannelTest:
+		return model.SystemTaskTypeChannelTest
+	case model.CronJobTypeChannelBalance:
+		return model.SystemTaskTypeChannelBalance
+	default:
+		return model.SystemTaskTypeCustomCronJob
+	}
+}
+
 func ExecuteCronJob(ctx context.Context, jobID string) (*model.CronJob, error) {
 	jobID = strings.TrimSpace(jobID)
 	if jobID == "" {
@@ -2076,6 +2102,25 @@ func ExecuteCronJob(ctx context.Context, jobID string) (*model.CronJob, error) {
 		return nil, fmt.Errorf("cron job %q not found", jobID)
 	}
 	job := jobs[idx]
+
+	sysTaskType := resolveSystemTaskTypeForCronJob(job)
+	var sysTask *model.SystemTask
+	runnerID := fmt.Sprintf("cron-%s-%s", common.NodeName, common.GetRandomString(6))
+	if model.DB != nil {
+		if active, err := model.GetActiveSystemTask(sysTaskType); err == nil && active != nil {
+			return nil, fmt.Errorf("system task %q is already running", sysTaskType)
+		}
+		if created, err := model.CreateSystemTask(sysTaskType, map[string]any{
+			"job_id":   job.ID,
+			"job_name": job.Name,
+			"job_type": job.JobType,
+		}, nil); err == nil && created != nil {
+			lockUntil := common.GetTimestamp() + int64(max(job.TimeoutSec, 60)) + 60
+			if claimed, ok, claimErr := model.ClaimSystemTask(created.ID, sysTaskType, runnerID, lockUntil); claimErr == nil && ok && claimed != nil {
+				sysTask = claimed
+			}
+		}
+	}
 
 	timeout := time.Duration(max(job.TimeoutSec, 5)) * time.Second
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -2210,12 +2255,28 @@ func ExecuteCronJob(ctx context.Context, jobID string) (*model.CronJob, error) {
 	}
 
 	finish := time.Now()
+	durMs := max(finish.Sub(start).Milliseconds(), 1)
+	if sysTask != nil {
+		sysStatus := model.SystemTaskStatusSucceeded
+		errMsg := ""
+		if runErr != nil {
+			sysStatus = model.SystemTaskStatusFailed
+			errMsg = runErr.Error()
+		}
+		_ = model.FinishSystemTask(sysTask.TaskID, runnerID, sysStatus, map[string]any{
+			"job_id":      job.ID,
+			"job_name":    job.Name,
+			"duration_ms": durMs,
+			"output":      output,
+		}, errMsg)
+	}
+
 	jobs = model.GetCronJobs()
 	var updatedJob *model.CronJob
 	for i := range jobs {
 		if jobs[i].ID == jobID {
 			jobs[i].LastRunAt = finish.Unix()
-			jobs[i].LastDurationMs = max(finish.Sub(start).Milliseconds(), 1)
+			jobs[i].LastDurationMs = durMs
 			jobs[i].RunCount++
 			if runErr != nil {
 				jobs[i].LastStatus = "failed"

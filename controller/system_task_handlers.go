@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -12,7 +13,7 @@ import (
 )
 
 // RegisterScheduledSystemTasks wires the periodic channel test, balance update,
-// upstream model update, async task polling (Midjourney / Suno / video) and
+// upstream model/price sync, async task polling (Midjourney / Suno / video) and
 // task history cleanup jobs into the system task framework so a DB lease
 // dedups execution across multiple master instances and each run is recorded
 // as one task row. Call this before service.StartSystemTaskRunner.
@@ -20,6 +21,8 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(channelTestHandler{})
 	service.RegisterSystemTaskHandler(channelBalanceHandler{})
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
+	service.RegisterSystemTaskHandler(upstreamSyncHandler{})
+	service.RegisterSystemTaskHandler(upstreamGroupSyncHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
 	service.RegisterSystemTaskHandler(systemTaskCleanupHandler{})
@@ -55,6 +58,9 @@ type channelTestHandler struct{}
 func (channelTestHandler) Type() string { return model.SystemTaskTypeChannelTest }
 
 func (channelTestHandler) Enabled() bool {
+	if model.IsBuiltInCronJobEnabled(model.BuiltInChannelTestCronJobID) {
+		return false
+	}
 	return operation_setting.GetMonitorSetting().AutoTestChannelEnabled
 }
 
@@ -79,16 +85,25 @@ type channelTestTaskPayload struct {
 }
 
 func (channelTestHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	start := time.Now()
 	payload := channelTestTaskPayload{}
 	if err := task.DecodePayload(&payload); err != nil {
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return
 	}
 	summary, err := runChannelTestTask(ctx, payload.Mode, payload.Notify, service.NewSystemTaskProgressReporter(task, runnerID))
+	durMs := time.Since(start).Milliseconds()
 	if err != nil {
+		model.RecordBuiltInCronJobRun(model.BuiltInChannelTestCronJobID, "failed", durMs, fmt.Sprintf("Channel test failed: %v", err))
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return
 	}
+	model.RecordBuiltInCronJobRun(
+		model.BuiltInChannelTestCronJobID,
+		"success",
+		durMs,
+		fmt.Sprintf("Channel test completed: tested %d, succeeded %d, failed %d", summary.Tested, summary.Succeeded, summary.Failed),
+	)
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
@@ -100,6 +115,9 @@ type channelBalanceHandler struct{}
 func (channelBalanceHandler) Type() string { return model.SystemTaskTypeChannelBalance }
 
 func (channelBalanceHandler) Enabled() bool {
+	if model.IsBuiltInCronJobEnabled(model.BuiltInChannelBalanceCronJobID) {
+		return false
+	}
 	return common.GetEnvOrDefault("CHANNEL_UPDATE_FREQUENCY", 0) > 0
 }
 
@@ -110,11 +128,15 @@ func (channelBalanceHandler) Interval() time.Duration {
 func (channelBalanceHandler) NewPayload() any { return nil }
 
 func (channelBalanceHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	start := time.Now()
 	summary, err := updateAllChannelsBalance(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
+	durMs := time.Since(start).Milliseconds()
 	if err != nil {
+		model.RecordBuiltInCronJobRun(model.BuiltInChannelBalanceCronJobID, "failed", durMs, fmt.Sprintf("Balance update failed: %v", err))
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, err)
 		return
 	}
+	model.RecordBuiltInCronJobRun(model.BuiltInChannelBalanceCronJobID, "success", durMs, "Updated balances for all enabled channels")
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
@@ -124,6 +146,10 @@ type modelUpdateHandler struct{}
 func (modelUpdateHandler) Type() string { return model.SystemTaskTypeModelUpdate }
 
 func (modelUpdateHandler) Enabled() bool {
+	if model.IsBuiltInCronJobEnabled(model.BuiltInUpstreamSyncCronJobID) ||
+		model.IsBuiltInCronJobEnabled(model.BuiltInUpstreamGroupSyncCronJobID) {
+		return false
+	}
 	return common.GetEnvOrDefaultBool("CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_ENABLED", true)
 }
 
@@ -199,6 +225,62 @@ func (asyncTaskPollHandler) NewPayload() any { return nil }
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+// upstreamSyncHandler runs the channel upstream model & 1x price sync task.
+type upstreamSyncHandler struct{}
+
+func (upstreamSyncHandler) Type() string { return model.SystemTaskTypeUpstreamSync }
+
+func (upstreamSyncHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	start := time.Now()
+	cfg := model.GetModelPriceSyncConfig()
+	res, err := ExecuteChannelUpstreamSync(ctx, nil, cfg.AutoSyncModels, cfg.AutoSyncPrices, cfg.DefaultCurrency, cfg.CustomExchangeRate, nil)
+	durMs := time.Since(start).Milliseconds()
+	if err != nil {
+		model.RecordBuiltInCronJobRun(model.BuiltInUpstreamSyncCronJobID, "failed", durMs, fmt.Sprintf("Upstream sync failed: %v", err))
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	okCount, totalAdded, totalRemoved, totalPrices := 0, 0, 0, 0
+	for _, r := range res {
+		if r.Success {
+			okCount++
+			totalAdded += len(r.AddedModels)
+			totalRemoved += len(r.RemovedModels)
+			totalPrices += r.SyncedPriceCount
+		}
+	}
+	output := fmt.Sprintf("Synced %d/%d channels (models +%d / -%d, prices %d)", okCount, len(res), totalAdded, totalRemoved, totalPrices)
+	model.RecordBuiltInCronJobRun(model.BuiltInUpstreamSyncCronJobID, "success", durMs, output)
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, map[string]any{
+		"total_channels":    len(res),
+		"succeeded_count":   okCount,
+		"added_models":      totalAdded,
+		"removed_models":    totalRemoved,
+		"synced_price_rows": totalPrices,
+		"summary":           output,
+	}, nil)
+}
+
+// upstreamGroupSyncHandler runs the upstream account & group channel provision/sync task.
+type upstreamGroupSyncHandler struct{}
+
+func (upstreamGroupSyncHandler) Type() string { return model.SystemTaskTypeUpstreamGroupSync }
+
+func (upstreamGroupSyncHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	start := time.Now()
+	summary, err := ExecuteUpstreamAccountsProvisionSync(ctx, nil)
+	durMs := time.Since(start).Milliseconds()
+	if err != nil {
+		model.RecordBuiltInCronJobRun(model.BuiltInUpstreamGroupSyncCronJobID, "failed", durMs, fmt.Sprintf("Upstream account group sync failed: %v", err))
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	model.RecordBuiltInCronJobRun(model.BuiltInUpstreamGroupSyncCronJobID, "success", durMs, summary)
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, map[string]any{
+		"summary": summary,
+	}, nil)
 }
 
 func finishSystemTaskHandler(task *model.SystemTask, runnerID string, status model.SystemTaskStatus, result any, runErr error) {
