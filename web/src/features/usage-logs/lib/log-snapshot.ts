@@ -11,10 +11,27 @@ function isInProgressRow(row: LogPageData['items'][number]): boolean {
   )
 }
 
+function comparePersistedLogsDesc(
+  a: LogPageData['items'][number],
+  b: LogPageData['items'][number]
+): number {
+  const aCreated =
+    'created_at' in a && typeof a.created_at === 'number' ? a.created_at : 0
+  const bCreated =
+    'created_at' in b && typeof b.created_at === 'number' ? b.created_at : 0
+  if (bCreated !== aCreated) {
+    return bCreated - aCreated
+  }
+  const aId = typeof a.id === 'number' ? a.id : 0
+  const bId = typeof b.id === 'number' ? b.id : 0
+  return bId - aId
+}
+
 export function extractAdminDeltaCursor(
   page: LogPageData | undefined
 ): { createdAt: number; id: number } | undefined {
   if (!page || page.items.length === 0) return undefined
+  let newest: { createdAt: number; id: number } | undefined
   for (const row of page.items) {
     if (
       !isInProgressRow(row) &&
@@ -24,10 +41,16 @@ export function extractAdminDeltaCursor(
       typeof row.id === 'number' &&
       row.id > 0
     ) {
-      return { createdAt: row.created_at, id: row.id }
+      if (
+        !newest ||
+        row.created_at > newest.createdAt ||
+        (row.created_at === newest.createdAt && row.id > newest.id)
+      ) {
+        newest = { createdAt: row.created_at, id: row.id }
+      }
     }
   }
-  return undefined
+  return newest
 }
 
 export function reconcileUsageLogSnapshot(page: LogPageData): LogPageData {
@@ -83,11 +106,14 @@ export function mergeUsageLogDelta(
     return true
   })
 
-  const combined = [
-    ...deltaActive,
-    ...newlyAddedPersisted,
-    ...prevPersisted,
-  ].slice(0, Math.max(pageSize, deltaActive.length)) as LogPageData['items']
+  const mergedPersisted = [...newlyAddedPersisted, ...prevPersisted].sort(
+    comparePersistedLogsDesc
+  )
+
+  const combined = [...deltaActive, ...mergedPersisted].slice(
+    0,
+    Math.max(pageSize, deltaActive.length)
+  ) as LogPageData['items']
 
   return reconcileUsageLogSnapshot({
     ...previous,

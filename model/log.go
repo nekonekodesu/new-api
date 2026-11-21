@@ -616,9 +616,6 @@ func GetAllLogs(filter LogFilter, startIdx int, num int) (logs []*Log, total int
 		return nil, 0, err
 	}
 	order := "logs.created_at desc, logs.id desc"
-	if filter.AfterCreatedAt > 0 {
-		order = "logs.created_at asc, logs.id asc"
-	}
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("logs.")
 	}
@@ -687,7 +684,7 @@ func GetUserLogs(userId int, filter LogFilter, startIdx int, num int) (logs []*L
 	}
 	order := "logs.id desc"
 	if filter.AfterCreatedAt > 0 {
-		order = "logs.created_at asc, logs.id asc"
+		order = "logs.created_at desc, logs.id desc"
 	}
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("logs.")

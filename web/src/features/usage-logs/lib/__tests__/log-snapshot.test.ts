@@ -130,5 +130,26 @@ describe('usage log snapshots', () => {
     )
     expect(mergedDone.items).toEqual([completed11, persisted1, persisted2])
     expect(mergedDone.total).toBe(301)
+
+    // Multiple new rows arriving in one batch (e.g. after minimizing/restoring window),
+    // even if ordered oldest-to-newest, must be sorted newest-first and advance cursor to the newest row.
+    const batch12 = { ...log(12, 'req-12', 10), created_at: 1700000200 }
+    const batch13 = { ...log(13, 'req-13', 15), created_at: 1700000300 }
+    const batch14 = { ...log(14, 'req-14', 20), created_at: 1700000400 }
+    const mergedBatch = mergeUsageLogDelta(
+      mergedDone,
+      {
+        items: [batch12, batch13, batch14],
+        total: 3,
+        page: 1,
+        page_size: 4,
+      },
+      4
+    )
+    expect(mergedBatch.items).toEqual([batch14, batch13, batch12, completed11])
+    expect(extractAdminDeltaCursor(mergedBatch)).toEqual({
+      createdAt: 1700000400,
+      id: 14,
+    })
   })
 })
