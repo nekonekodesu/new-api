@@ -537,6 +537,7 @@ export interface GetLogsParams {
   upstream_request_id?: string
   after_created_at?: number
   after_id?: number
+  wait_ms?: number
 }
 
 export interface GetLogsResponse {
@@ -610,6 +611,8 @@ export interface FetchLogsConfig {
   searchParams: Record<string, unknown>
   columnFilters: Array<{ id: string; value: unknown }>
   after?: { createdAt: number; id: number }
+  waitMs?: number
+  signal?: AbortSignal
 }
 
 // ============================================================================

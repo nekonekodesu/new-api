@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
@@ -81,6 +83,74 @@ func limitLogTimeRange(startTimestamp int64, endTimestamp int64) (int64, error) 
 	return startTimestamp, nil
 }
 
+const maxLogLongPollWaitMs = 15000
+
+func parseLogWaitDuration(c *gin.Context) time.Duration {
+	waitMs, _ := strconv.Atoi(c.Query("wait_ms"))
+	if waitMs <= 0 {
+		return 0
+	}
+	if waitMs > maxLogLongPollWaitMs {
+		waitMs = maxLogLongPollWaitMs
+	}
+	return time.Duration(waitMs) * time.Millisecond
+}
+
+func queryDeltaLogsWithBoundedWait(
+	ctx context.Context,
+	waitDuration time.Duration,
+	fetch func() ([]*model.Log, int64, error),
+) ([]*model.Log, int64, error) {
+	if waitDuration <= 0 {
+		return fetch()
+	}
+	localCh, _ := model.SubscribeLogActivity()
+	clusterVer := model.GetClusterLogActivityVersion()
+
+	logs, total, err := fetch()
+	if err != nil || len(logs) > 0 {
+		return logs, total, err
+	}
+
+	deadline := time.NewTimer(waitDuration)
+	defer deadline.Stop()
+
+	crossNodeInterval := time.Second
+	if common.RedisEnabled && common.RDB != nil {
+		crossNodeInterval = 250 * time.Millisecond
+	}
+	ticker := time.NewTicker(crossNodeInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return logs, total, nil
+		case <-deadline.C:
+			return logs, total, nil
+		case <-localCh:
+			localCh, _ = model.SubscribeLogActivity()
+			clusterVer = model.GetClusterLogActivityVersion()
+			logs, total, err = fetch()
+			if err != nil || len(logs) > 0 {
+				return logs, total, err
+			}
+		case <-ticker.C:
+			if common.RedisEnabled && common.RDB != nil {
+				nextVer := model.GetClusterLogActivityVersion()
+				if nextVer == clusterVer {
+					continue
+				}
+				clusterVer = nextVer
+			}
+			logs, total, err = fetch()
+			if err != nil || len(logs) > 0 {
+				return logs, total, err
+			}
+		}
+	}
+}
+
 func GetAllLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	filter := logFilterFromQuery(c, true)
@@ -93,34 +163,47 @@ func GetAllLogs(c *gin.Context) {
 	if role >= common.RoleRootUser {
 		roleBucket = common.RoleRootUser
 	}
-	cacheKey := model.BuildLogQueryCacheKey("all", 0, roleBucket, filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
-	logs, total, cached := model.GetCachedLogPage(cacheKey)
-	if filter.AfterCreatedAt > 0 {
-		logs, total, cached = nil, 0, false
+
+	fetchOnce := func() ([]*model.Log, int64, error) {
+		cacheKey := model.BuildLogQueryCacheKey("all", 0, roleBucket, filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+		logs, total, cached := model.GetCachedLogPage(cacheKey)
+		if filter.AfterCreatedAt > 0 {
+			logs, total, cached = nil, 0, false
+		}
+		if !cached {
+			verBefore := model.GetLogWriteVersion()
+			var err error
+			logs, total, err = model.GetAllLogs(filter, pageInfo.GetStartIdx(), limit)
+			if err != nil {
+				return nil, 0, err
+			}
+			if role < common.RoleRootUser {
+				model.FormatAdminLogs(logs)
+			} else {
+				model.FormatRootLogs(logs)
+			}
+			if filter.AfterCreatedAt == 0 {
+				model.SetCachedLogPage(cacheKey, verBefore, logs, total)
+			}
+		}
+		if pageInfo.GetStartIdx() == 0 {
+			activeLogs := service.GetActiveRelayLogs(filter, 0, true)
+			if len(activeLogs) > 0 {
+				logs = append(activeLogs, logs...)
+				total += int64(len(activeLogs))
+			}
+		}
+		return logs, total, nil
 	}
-	if !cached {
-		verBefore := model.GetLogWriteVersion()
-		var err error
-		logs, total, err = model.GetAllLogs(filter, pageInfo.GetStartIdx(), limit)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		if role < common.RoleRootUser {
-			model.FormatAdminLogs(logs)
-		} else {
-			model.FormatRootLogs(logs)
-		}
-		if filter.AfterCreatedAt == 0 {
-			model.SetCachedLogPage(cacheKey, verBefore, logs, total)
-		}
+
+	waitDuration := time.Duration(0)
+	if filter.AfterCreatedAt > 0 && pageInfo.GetStartIdx() == 0 {
+		waitDuration = parseLogWaitDuration(c)
 	}
-	if pageInfo.GetStartIdx() == 0 {
-		activeLogs := service.GetActiveRelayLogs(filter, 0, true)
-		if len(activeLogs) > 0 {
-			logs = append(activeLogs, logs...)
-			total += int64(len(activeLogs))
-		}
+	logs, total, err := queryDeltaLogsWithBoundedWait(c.Request.Context(), waitDuration, fetchOnce)
+	if err != nil {
+		common.ApiError(c, err)
+		return
 	}
 	if filter.AfterCreatedAt > 0 {
 		pageInfo.SetTotal(int(total) + pageInfo.GetStartIdx())
@@ -148,29 +231,42 @@ func GetUserLogs(c *gin.Context) {
 		filter.StartTimestamp = startTimestamp
 	}
 	userId := c.GetInt("id")
-	cacheKey := model.BuildLogQueryCacheKey("user", userId, common.RoleCommonUser, filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
-	logs, total, cached := model.GetCachedLogPage(cacheKey)
-	if filter.AfterCreatedAt > 0 {
-		logs, total, cached = nil, 0, false
+
+	fetchOnce := func() ([]*model.Log, int64, error) {
+		cacheKey := model.BuildLogQueryCacheKey("user", userId, common.RoleCommonUser, filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+		logs, total, cached := model.GetCachedLogPage(cacheKey)
+		if filter.AfterCreatedAt > 0 {
+			logs, total, cached = nil, 0, false
+		}
+		if !cached {
+			verBefore := model.GetLogWriteVersion()
+			var err error
+			logs, total, err = model.GetUserLogs(userId, filter, pageInfo.GetStartIdx(), limit)
+			if err != nil {
+				return nil, 0, err
+			}
+			if filter.AfterCreatedAt == 0 {
+				model.SetCachedLogPage(cacheKey, verBefore, logs, total)
+			}
+		}
+		if pageInfo.GetStartIdx() == 0 {
+			activeLogs := service.GetActiveRelayLogs(filter, userId, false)
+			if len(activeLogs) > 0 {
+				logs = append(activeLogs, logs...)
+				total += int64(len(activeLogs))
+			}
+		}
+		return logs, total, nil
 	}
-	if !cached {
-		verBefore := model.GetLogWriteVersion()
-		var err error
-		logs, total, err = model.GetUserLogs(userId, filter, pageInfo.GetStartIdx(), limit)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		if filter.AfterCreatedAt == 0 {
-			model.SetCachedLogPage(cacheKey, verBefore, logs, total)
-		}
+
+	waitDuration := time.Duration(0)
+	if filter.AfterCreatedAt > 0 && pageInfo.GetStartIdx() == 0 {
+		waitDuration = parseLogWaitDuration(c)
 	}
-	if pageInfo.GetStartIdx() == 0 {
-		activeLogs := service.GetActiveRelayLogs(filter, userId, false)
-		if len(activeLogs) > 0 {
-			logs = append(activeLogs, logs...)
-			total += int64(len(activeLogs))
-		}
+	logs, total, err := queryDeltaLogsWithBoundedWait(c.Request.Context(), waitDuration, fetchOnce)
+	if err != nil {
+		common.ApiError(c, err)
+		return
 	}
 	if filter.AfterCreatedAt > 0 {
 		pageInfo.SetTotal(int(total) + pageInfo.GetStartIdx())

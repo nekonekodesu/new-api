@@ -56,7 +56,7 @@ export function CommonLogsStats() {
   const { sensitiveVisible, autoRefreshSeconds } = useUsageLogsContext()
 
   const statsRefetchMs =
-    autoRefreshSeconds > 0 ? Math.max(autoRefreshSeconds * 1000, 2000) : false
+    autoRefreshSeconds > 0 ? Math.max(autoRefreshSeconds * 1000, 15000) : false
   const queryClient = useQueryClient()
   const queryKey = ['usage-logs-stats', isAdmin, searchParams]
   const refetchOnVisible = () => {

@@ -224,6 +224,7 @@ export function CommonLogsFilterBar<TData>(
           page: 1,
         },
       })
+      void queryClient.cancelQueries({ queryKey: ['logs'] })
       queryClient.invalidateQueries({ queryKey: ['logs'] })
       queryClient.invalidateQueries({ queryKey: ['usage-logs-stats'] })
     },
@@ -252,6 +253,7 @@ export function CommonLogsFilterBar<TData>(
         ...resetSearch,
       },
     })
+    void queryClient.cancelQueries({ queryKey: ['logs'] })
     queryClient.invalidateQueries({ queryKey: ['logs'] })
     queryClient.invalidateQueries({ queryKey: ['usage-logs-stats'] })
   }, [navigate, queryClient])

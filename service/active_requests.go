@@ -2,6 +2,9 @@ package service
 
 import (
 	"cmp"
+	"context"
+	"fmt"
+	"hash/fnv"
 	"math"
 	"slices"
 	"strings"
@@ -16,6 +19,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const (
+	redisActiveRelayHashKey = "newapi:active_relay_requests"
+	clusterActiveStaleMs    = 60000
+)
+
 type activeRelayEntry struct {
 	seq         int64
 	requestId   string
@@ -28,11 +36,162 @@ type activeRelayEntry struct {
 	info        *relaycommon.RelayInfo
 }
 
+type clusterActiveRelaySnapshot struct {
+	NodeID            string  `json:"node_id"`
+	Seq               int64   `json:"seq"`
+	UpdatedAtMs       int64   `json:"updated_at_ms"`
+	StartTimeMs       int64   `json:"start_time_ms"`
+	FirstResponseMs   int64   `json:"first_response_ms,omitempty"`
+	HasFirstResponse  bool    `json:"has_first_response,omitempty"`
+	RequestId         string  `json:"request_id"`
+	UserId            int     `json:"user_id"`
+	Username          string  `json:"username"`
+	TokenId           int     `json:"token_id"`
+	TokenName         string  `json:"token_name"`
+	ModelName         string  `json:"model_name"`
+	ChannelId         int     `json:"channel_id"`
+	Group             string  `json:"group"`
+	Ip                string  `json:"ip,omitempty"`
+	RequestPath       string  `json:"request_path,omitempty"`
+	RequestBodySize   int64   `json:"request_body_size,omitempty"`
+	PromptTokens      int     `json:"prompt_tokens"`
+	CompletionTokens  int     `json:"completion_tokens"`
+	IsStream          bool    `json:"is_stream"`
+	ReasoningEffort   string  `json:"reasoning_effort,omitempty"`
+	ModelRatio        float64 `json:"model_ratio,omitempty"`
+	GroupRatio        float64 `json:"group_ratio,omitempty"`
+	CompletionRatio   float64 `json:"completion_ratio,omitempty"`
+	ModelPrice        float64 `json:"model_price,omitempty"`
+}
+
 var (
-	activeRelayRequests sync.Map
-	activeRelaySeq      atomic.Int64
-	activeRelayCount    atomic.Int64
+	activeRelayRequests   sync.Map
+	activeRelaySeq        atomic.Int64
+	activeRelayCount      atomic.Int64
+	clusterSyncLoopActive atomic.Bool
+	localActiveNodeID     = common.NewRequestId()
 )
+
+func clusterFieldKey(nodeID string, seq int64) string {
+	return fmt.Sprintf("%s:%d", nodeID, seq)
+}
+
+func stableNegativeDisplayID(nodeID string, seq int64) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(nodeID))
+	val := int((int64(h.Sum32()&0x3fffffff) ^ (seq & 0x3fffffff)) & 0x3fffffff)
+	if val <= 0 {
+		val = int(seq & 0x3fffffff)
+		if val <= 0 {
+			val = 1
+		}
+	}
+	return -val
+}
+
+func buildClusterSnapshot(entry *activeRelayEntry, now time.Time) clusterActiveRelaySnapshot {
+	info := entry.info
+	group := info.UsingGroup
+	if group == "" {
+		group = info.TokenGroup
+	}
+	if group == "" {
+		group = info.UserGroup
+	}
+	startMs := info.StartTime.UnixMilli()
+	if startMs <= 0 {
+		startMs = now.UnixMilli()
+	}
+	var firstRespMs int64
+	hasFirst := info.HasSendResponse()
+	if hasFirst {
+		firstRespMs = info.FirstResponseTime.UnixMilli()
+	}
+	return clusterActiveRelaySnapshot{
+		NodeID:           localActiveNodeID,
+		Seq:              entry.seq,
+		UpdatedAtMs:      now.UnixMilli(),
+		StartTimeMs:      startMs,
+		FirstResponseMs:  firstRespMs,
+		HasFirstResponse: hasFirst,
+		RequestId:        entry.requestId,
+		UserId:           entry.userId,
+		Username:         entry.username,
+		TokenId:          entry.tokenId,
+		TokenName:        entry.tokenName,
+		ModelName:        info.OriginModelName,
+		ChannelId:        info.GetChannelID(),
+		Group:            group,
+		Ip:               entry.ip,
+		RequestPath:      entry.requestPath,
+		RequestBodySize:  info.RequestBodySize,
+		PromptTokens:     info.GetLivePromptTokens(),
+		CompletionTokens: info.GetLiveCompletionTokens(),
+		IsStream:         info.GetIsStream(),
+		ReasoningEffort:  info.ReasoningEffort,
+		ModelRatio:       info.PriceData.ModelRatio,
+		GroupRatio:       info.PriceData.GroupRatioInfo.GroupRatio,
+		CompletionRatio:  info.PriceData.CompletionRatio,
+		ModelPrice:       info.PriceData.ModelPrice,
+	}
+}
+
+func syncLocalActiveEntriesToRedis() {
+	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+	now := time.Now()
+	fields := make(map[string]any)
+	activeRelayRequests.Range(func(_, value any) bool {
+		entry, ok := value.(*activeRelayEntry)
+		if !ok || entry == nil || entry.info == nil {
+			return true
+		}
+		snap := buildClusterSnapshot(entry, now)
+		if raw, err := common.Marshal(snap); err == nil {
+			fields[clusterFieldKey(localActiveNodeID, entry.seq)] = string(raw)
+		}
+		return true
+	})
+	if len(fields) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	pipe := common.RDB.Pipeline()
+	pipe.HSet(ctx, redisActiveRelayHashKey, fields)
+	pipe.Expire(ctx, redisActiveRelayHashKey, 90*time.Second)
+	_, _ = pipe.Exec(ctx)
+}
+
+func removeLocalActiveEntryFromRedis(seq int64) {
+	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_ = common.RDB.HDel(ctx, redisActiveRelayHashKey, clusterFieldKey(localActiveNodeID, seq)).Err()
+}
+
+func ensureClusterActiveSyncLoop() {
+	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+	if !clusterSyncLoopActive.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer clusterSyncLoopActive.Store(false)
+		ticker := time.NewTicker(150 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			if activeRelayCount.Load() <= 0 || !common.RedisEnabled || common.RDB == nil {
+				return
+			}
+			syncLocalActiveEntriesToRedis()
+		}
+	}()
+}
 
 // HasActiveRelayRequests reports whether any relay request is currently in flight.
 func HasActiveRelayRequests() bool {
@@ -95,12 +254,17 @@ func RegisterActiveRelayRequest(c *gin.Context, info *relaycommon.RelayInfo) fun
 		info:        info,
 	}
 	activeRelayRequests.Store(seq, entry)
+	syncLocalActiveEntriesToRedis()
+	ensureClusterActiveSyncLoop()
+	model.NotifyLogActivity()
 
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			activeRelayRequests.Delete(seq)
 			activeRelayCount.Add(-1)
+			removeLocalActiveEntryFromRedis(seq)
+			model.NotifyLogActivity()
 		})
 	}
 }
@@ -119,8 +283,135 @@ func matchesActiveLogTextFilter(actual string, pattern string) bool {
 	return strings.Contains(strings.ToLower(actual), strings.ToLower(trimmed))
 }
 
+func formatClusterActiveSnapshot(
+	snap clusterActiveRelaySnapshot,
+	now time.Time,
+	filter model.LogFilter,
+	userId int,
+	isAdmin bool,
+) *model.Log {
+	if userId > 0 && snap.UserId != userId {
+		return nil
+	}
+
+	createdAt := snap.StartTimeMs / 1000
+	if createdAt <= 0 {
+		createdAt = now.Unix()
+	}
+	if filter.StartTimestamp != 0 && createdAt < filter.StartTimestamp {
+		return nil
+	}
+	if filter.EndTimestamp != 0 && createdAt > filter.EndTimestamp {
+		return nil
+	}
+
+	if !matchesActiveLogTextFilter(snap.ModelName, filter.ModelName) {
+		return nil
+	}
+	if !matchesActiveLogTextFilter(snap.Username, filter.Username) {
+		return nil
+	}
+	if filter.TokenName != "" && snap.TokenName != filter.TokenName {
+		return nil
+	}
+	if filter.RequestId != "" && snap.RequestId != filter.RequestId {
+		return nil
+	}
+	if filter.Channel != 0 && snap.ChannelId != filter.Channel {
+		return nil
+	}
+	if filter.Group != "" && snap.Group != filter.Group {
+		return nil
+	}
+
+	elapsedMs := max(now.UnixMilli()-snap.StartTimeMs, 0)
+	useTimeSec := int(elapsedMs / 1000)
+
+	otherMap := map[string]any{
+		"in_progress": true,
+		"elapsed_ms":  elapsedMs,
+	}
+	if snap.RequestPath != "" {
+		otherMap["request_path"] = snap.RequestPath
+	}
+	if snap.RequestBodySize > 0 {
+		otherMap["request_body_size"] = snap.RequestBodySize
+	}
+	if snap.HasFirstResponse {
+		otherMap["frt"] = float64(max(snap.FirstResponseMs-snap.StartTimeMs, 0))
+	}
+	if snap.IsStream && snap.CompletionTokens > 0 && elapsedMs > 0 {
+		genMs := elapsedMs
+		if snap.HasFirstResponse {
+			if sinceFirst := now.UnixMilli() - snap.FirstResponseMs; sinceFirst >= 100 {
+				genMs = sinceFirst
+			}
+		}
+		elapsedSec := max(float64(genMs)/1000.0, 0.1)
+		liveTps := math.Round((float64(snap.CompletionTokens)/elapsedSec)*10) / 10
+		otherMap["live_tps"] = liveTps
+	}
+	if snap.ReasoningEffort != "" {
+		otherMap["reasoning_effort"] = snap.ReasoningEffort
+	}
+	if snap.ModelRatio > 0 {
+		otherMap["model_ratio"] = snap.ModelRatio
+	}
+	if snap.GroupRatio > 0 {
+		otherMap["group_ratio"] = snap.GroupRatio
+	}
+	if snap.CompletionRatio > 0 {
+		otherMap["completion_ratio"] = snap.CompletionRatio
+	}
+	if snap.ModelPrice > 0 {
+		otherMap["model_price"] = snap.ModelPrice
+	}
+
+	otherBytes, _ := common.Marshal(otherMap)
+
+	channelName := ""
+	if isAdmin && snap.ChannelId > 0 && model.DB != nil {
+		if ch, err := model.CacheGetChannel(snap.ChannelId); err == nil && ch != nil {
+			channelName = ch.Name
+		}
+	}
+
+	displayID := -int(snap.Seq)
+	if snap.NodeID != "" && snap.NodeID != localActiveNodeID {
+		displayID = stableNegativeDisplayID(snap.NodeID, snap.Seq)
+	}
+
+	logRow := &model.Log{
+		Id:               displayID,
+		UserId:           snap.UserId,
+		CreatedAt:        createdAt,
+		Type:             model.LogTypeConsume,
+		Content:          "",
+		Username:         snap.Username,
+		TokenName:        snap.TokenName,
+		ModelName:        snap.ModelName,
+		Quota:            0,
+		PromptTokens:     snap.PromptTokens,
+		CompletionTokens: snap.CompletionTokens,
+		UseTime:          useTimeSec,
+		IsStream:         snap.IsStream,
+		ChannelId:        snap.ChannelId,
+		ChannelName:      channelName,
+		TokenId:          snap.TokenId,
+		Group:            snap.Group,
+		Ip:               snap.Ip,
+		RequestId:        snap.RequestId,
+		Other:            string(otherBytes),
+	}
+	if !isAdmin {
+		logRow.ChannelId = 0
+	}
+	return logRow
+}
+
 // GetActiveRelayLogs returns currently running relay requests formatted as Log
-// entries matching the given filter and viewer scope.
+// entries matching the given filter and viewer scope, merging local in-flight
+// requests with remote nodes' active snapshots when Redis is enabled.
 func GetActiveRelayLogs(filter model.LogFilter, userId int, isAdmin bool) []*model.Log {
 	if filter.Type != model.LogTypeUnknown && filter.Type != model.LogTypeConsume {
 		return nil
@@ -132,144 +423,60 @@ func GetActiveRelayLogs(filter model.LogFilter, userId int, isAdmin bool) []*mod
 		log *model.Log
 	}
 	var matched []matchedItem
+	seenRequests := make(map[string]struct{})
 
 	activeRelayRequests.Range(func(_, value any) bool {
 		entry, ok := value.(*activeRelayEntry)
 		if !ok || entry == nil || entry.info == nil {
 			return true
 		}
-		info := entry.info
-		if userId > 0 && entry.userId != userId {
-			return true
+		snap := buildClusterSnapshot(entry, now)
+		if snap.RequestId != "" {
+			seenRequests[fmt.Sprintf("%d:%s", snap.UserId, snap.RequestId)] = struct{}{}
 		}
-
-		createdAt := info.StartTime.Unix()
-		if createdAt <= 0 {
-			createdAt = now.Unix()
+		if logRow := formatClusterActiveSnapshot(snap, now, filter, userId, isAdmin); logRow != nil {
+			matched = append(matched, matchedItem{seq: entry.seq, log: logRow})
 		}
-		if filter.StartTimestamp != 0 && createdAt < filter.StartTimestamp {
-			return true
-		}
-		if filter.EndTimestamp != 0 && createdAt > filter.EndTimestamp {
-			return true
-		}
-
-		modelName := info.OriginModelName
-		if !matchesActiveLogTextFilter(modelName, filter.ModelName) {
-			return true
-		}
-		if !matchesActiveLogTextFilter(entry.username, filter.Username) {
-			return true
-		}
-		if filter.TokenName != "" && entry.tokenName != filter.TokenName {
-			return true
-		}
-		if filter.RequestId != "" && entry.requestId != filter.RequestId {
-			return true
-		}
-
-		channelId := info.GetChannelID()
-		if filter.Channel != 0 && channelId != filter.Channel {
-			return true
-		}
-
-		group := info.UsingGroup
-		if group == "" {
-			group = info.TokenGroup
-		}
-		if group == "" {
-			group = info.UserGroup
-		}
-		if filter.Group != "" && group != filter.Group {
-			return true
-		}
-
-		promptTokens := info.GetLivePromptTokens()
-		completionTokens := info.GetLiveCompletionTokens()
-		isStream := info.GetIsStream()
-
-		elapsedMs := max(now.Sub(info.StartTime).Milliseconds(), 0)
-		useTimeSec := int(elapsedMs / 1000)
-
-		otherMap := map[string]any{
-			"in_progress": true,
-			"elapsed_ms":  elapsedMs,
-		}
-		if entry.requestPath != "" {
-			otherMap["request_path"] = entry.requestPath
-		}
-		if info.RequestBodySize > 0 {
-			otherMap["request_body_size"] = info.RequestBodySize
-		}
-		if info.HasSendResponse() {
-			otherMap["frt"] = float64(max(info.FirstResponseTime.Sub(info.StartTime).Milliseconds(), 0))
-		}
-		if isStream && completionTokens > 0 && elapsedMs > 0 {
-			// Compute real-time average TPS. If first token time is available,
-			// prefer streaming generation duration if >= 100ms, otherwise total elapsed.
-			genMs := elapsedMs
-			if info.HasSendResponse() {
-				if sinceFirst := now.Sub(info.FirstResponseTime).Milliseconds(); sinceFirst >= 100 {
-					genMs = sinceFirst
-				}
-			}
-			elapsedSec := max(float64(genMs)/1000.0, 0.1)
-			liveTps := math.Round((float64(completionTokens)/elapsedSec)*10) / 10
-			otherMap["live_tps"] = liveTps
-		}
-		if info.ReasoningEffort != "" {
-			otherMap["reasoning_effort"] = info.ReasoningEffort
-		}
-		if info.PriceData.ModelRatio > 0 {
-			otherMap["model_ratio"] = info.PriceData.ModelRatio
-		}
-		if info.PriceData.GroupRatioInfo.GroupRatio > 0 {
-			otherMap["group_ratio"] = info.PriceData.GroupRatioInfo.GroupRatio
-		}
-		if info.PriceData.CompletionRatio > 0 {
-			otherMap["completion_ratio"] = info.PriceData.CompletionRatio
-		}
-		if info.PriceData.ModelPrice > 0 {
-			otherMap["model_price"] = info.PriceData.ModelPrice
-		}
-
-		otherBytes, _ := common.Marshal(otherMap)
-
-		channelName := ""
-		if isAdmin && channelId > 0 && model.DB != nil {
-			if ch, err := model.CacheGetChannel(channelId); err == nil && ch != nil {
-				channelName = ch.Name
-			}
-		}
-
-		logRow := &model.Log{
-			Id:               -int(entry.seq),
-			UserId:           entry.userId,
-			CreatedAt:        createdAt,
-			Type:             model.LogTypeConsume,
-			Content:          "",
-			Username:         entry.username,
-			TokenName:        entry.tokenName,
-			ModelName:        modelName,
-			Quota:            0,
-			PromptTokens:     promptTokens,
-			CompletionTokens: completionTokens,
-			UseTime:          useTimeSec,
-			IsStream:         isStream,
-			ChannelId:        channelId,
-			ChannelName:      channelName,
-			TokenId:          entry.tokenId,
-			Group:            group,
-			Ip:               entry.ip,
-			RequestId:        entry.requestId,
-			Other:            string(otherBytes),
-		}
-		if !isAdmin {
-			logRow.ChannelId = 0
-		}
-		matched = append(matched, matchedItem{seq: entry.seq, log: logRow})
 		return true
 	})
+
+	if common.RedisEnabled && common.RDB != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		rawEntries, err := common.RDB.HGetAll(ctx, redisActiveRelayHashKey).Result()
+		cancel()
+		if err == nil && len(rawEntries) > 0 {
+			nowMs := now.UnixMilli()
+			var staleFields []string
+			for field, rawJSON := range rawEntries {
+				var snap clusterActiveRelaySnapshot
+				if err := common.UnmarshalJsonStr(rawJSON, &snap); err != nil {
+					continue
+				}
+				if nowMs-snap.UpdatedAtMs > clusterActiveStaleMs {
+					staleFields = append(staleFields, field)
+					continue
+				}
+				if snap.NodeID == localActiveNodeID {
+					continue
+				}
+				if snap.RequestId != "" {
+					reqKey := fmt.Sprintf("%d:%s", snap.UserId, snap.RequestId)
+					if _, exists := seenRequests[reqKey]; exists {
+						continue
+					}
+					seenRequests[reqKey] = struct{}{}
+				}
+				if logRow := formatClusterActiveSnapshot(snap, now, filter, userId, isAdmin); logRow != nil {
+					matched = append(matched, matchedItem{seq: snap.Seq, log: logRow})
+				}
+			}
+			if len(staleFields) > 0 {
+				cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+				_ = common.RDB.HDel(cleanCtx, redisActiveRelayHashKey, staleFields...).Err()
+				cleanCancel()
+			}
+		}
+	}
 
 	slices.SortFunc(matched, func(a, b matchedItem) int {
 		if c := cmp.Compare(b.log.CreatedAt, a.log.CreatedAt); c != 0 {

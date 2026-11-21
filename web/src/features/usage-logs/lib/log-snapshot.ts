@@ -11,6 +11,13 @@ function isInProgressRow(row: LogPageData['items'][number]): boolean {
   )
 }
 
+export function hasInProgressUsageLogs(
+  page: LogPageData | undefined
+): boolean {
+  if (!page || page.items.length === 0) return false
+  return page.items.some(isInProgressRow)
+}
+
 function comparePersistedLogsDesc(
   a: LogPageData['items'][number],
   b: LogPageData['items'][number]

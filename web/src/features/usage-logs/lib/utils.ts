@@ -161,8 +161,17 @@ export function buildApiParams(config: {
   columnFilters?: Array<{ id: string; value: unknown }>
   isAdmin: boolean
   after?: { createdAt: number; id: number }
+  waitMs?: number
 }): GetLogsParams {
-  const { page, pageSize, searchParams, columnFilters = [], isAdmin, after } = config
+  const {
+    page,
+    pageSize,
+    searchParams,
+    columnFilters = [],
+    isAdmin,
+    after,
+    waitMs,
+  } = config
 
   // Helper to process type parameter (single value from array)
   const processType = (value: unknown): number | undefined => {
@@ -204,6 +213,7 @@ export function buildApiParams(config: {
     ...(after
       ? { after_created_at: after.createdAt, after_id: after.id }
       : {}),
+    ...(after && waitMs && waitMs > 0 ? { wait_ms: waitMs } : {}),
   }
 
   // Override with column filters if present
@@ -247,8 +257,17 @@ export function buildApiParams(config: {
 export async function fetchLogsByCategory(
   config: FetchLogsConfig
 ): Promise<GetLogsResponse> {
-  const { logCategory, isAdmin, page, pageSize, searchParams, columnFilters, after } =
-    config
+  const {
+    logCategory,
+    isAdmin,
+    page,
+    pageSize,
+    searchParams,
+    columnFilters,
+    after,
+    waitMs,
+    signal,
+  } = config
 
   if (logCategory === 'common') {
     const params = buildApiParams({
@@ -258,8 +277,11 @@ export async function fetchLogsByCategory(
       columnFilters,
       isAdmin,
       after,
+      waitMs,
     })
-    return isAdmin ? await getAllLogs(params) : await getUserLogs(params)
+    return isAdmin
+      ? await getAllLogs(params, { signal })
+      : await getUserLogs(params, { signal })
   }
 
   // For drawing and task logs

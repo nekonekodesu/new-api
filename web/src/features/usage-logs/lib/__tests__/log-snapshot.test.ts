@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import type { UsageLog } from '../../data/schema'
 import {
   extractAdminDeltaCursor,
+  hasInProgressUsageLogs,
   mergeUsageLogDelta,
   reconcileUsageLogSnapshot,
 } from '../log-snapshot'
@@ -120,6 +121,7 @@ describe('usage log snapshots', () => {
     )
     expect(mergedLive.items).toEqual([activeUpdated, persisted1, persisted2])
     expect(mergedLive.total).toBe(301)
+    expect(hasInProgressUsageLogs(mergedLive)).toBe(true)
 
     // Active row finishes and becomes persisted row id=11; trims to pageSize=3
     const completed11 = log(11, 'req-live', 25)
@@ -130,6 +132,7 @@ describe('usage log snapshots', () => {
     )
     expect(mergedDone.items).toEqual([completed11, persisted1, persisted2])
     expect(mergedDone.total).toBe(301)
+    expect(hasInProgressUsageLogs(mergedDone)).toBe(false)
 
     // Multiple new rows arriving in one batch (e.g. after minimizing/restoring window),
     // even if ordered oldest-to-newest, must be sorted newest-first and advance cursor to the newest row.

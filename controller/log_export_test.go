@@ -244,3 +244,59 @@ func TestAcquireLogExportLock(t *testing.T) {
 		})
 	}
 }
+
+func TestLogDeltaBoundedWaitAndClusterActiveSync(t *testing.T) {
+	server := miniredis.RunT(t)
+	previousRedis, previousClient := common.RedisEnabled, common.RDB
+	common.RedisEnabled = true
+	common.RDB = redis.NewClient(&redis.Options{Addr: server.Addr()})
+	require.NoError(t, common.RDB.Ping(context.Background()).Err())
+	t.Cleanup(func() {
+		_ = common.RDB.Close()
+		common.RedisEnabled, common.RDB = previousRedis, previousClient
+	})
+
+	nowMs := time.Now().UnixMilli()
+	remoteSnap := map[string]any{
+		"node_id":           "remote-node-b",
+		"seq":               99,
+		"updated_at_ms":     nowMs,
+		"start_time_ms":     nowMs - 1500,
+		"request_id":        "req-cluster-remote-1",
+		"user_id":           7,
+		"username":          "alice",
+		"token_id":          3,
+		"token_name":        "tok",
+		"model_name":        "deepseek-flash",
+		"channel_id":        164,
+		"group":             "default",
+		"prompt_tokens":     120,
+		"completion_tokens": 45,
+		"is_stream":         true,
+	}
+	rawSnap, err := common.Marshal(remoteSnap)
+	require.NoError(t, err)
+
+	// Start a bounded 5-second wait that initially finds 0 rows, then simulate
+	// remote node B registering an active request and bumping the cluster version.
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		_ = common.RDB.HSet(context.Background(), "newapi:active_relay_requests", "remote-node-b:99", string(rawSnap)).Err()
+		model.NotifyLogActivity()
+	}()
+
+	start := time.Now()
+	logs, total, err := queryDeltaLogsWithBoundedWait(context.Background(), 5*time.Second, func() ([]*model.Log, int64, error) {
+		active := service.GetActiveRelayLogs(model.LogFilter{}, 0, true)
+		return active, int64(len(active)), nil
+	})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, "req-cluster-remote-1", logs[0].RequestId)
+	assert.Equal(t, 120, logs[0].PromptTokens)
+	assert.Equal(t, 45, logs[0].CompletionTokens)
+	assert.Less(t, elapsed, time.Second, "long-poll must wake up immediately on activity instead of waiting full 5s")
+}

@@ -48,6 +48,7 @@ import { useColumnsByCategory } from '../lib/columns'
 import { parseLogOther } from '../lib/format'
 import {
   extractAdminDeltaCursor,
+  hasInProgressUsageLogs,
   mergeUsageLogDelta,
   reconcileUsageLogSnapshot,
 } from '../lib/log-snapshot'
@@ -197,7 +198,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     queryKey,
     refetchInterval: autoRefreshSeconds > 0 ? autoRefreshSeconds * 1000 : false,
     refetchIntervalInBackground: false,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const cachedPage =
         logCategory === 'common' &&
         isAdmin &&
@@ -208,6 +209,14 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
             >(queryKey)
           : undefined
       const deltaCursor = extractAdminDeltaCursor(cachedPage)
+      const hadActiveRows = hasInProgressUsageLogs(cachedPage)
+      const waitMs =
+        deltaCursor &&
+        !hadActiveRows &&
+        autoRefreshSeconds > 0 &&
+        autoRefreshSeconds <= 2
+          ? 10000
+          : undefined
 
       const result = await fetchLogsByCategory({
         logCategory,
@@ -217,6 +226,8 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         searchParams,
         columnFilters,
         after: deltaCursor,
+        waitMs,
+        signal,
       })
 
       if (!result?.success) {
@@ -228,11 +239,23 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       }
 
       if (deltaCursor && cachedPage) {
-        return mergeUsageLogDelta(
+        const merged = mergeUsageLogDelta(
           cachedPage,
           result.data,
           pagination.pageSize
         )
+        const nextCursor = extractAdminDeltaCursor(merged)
+        const hasNewPersisted =
+          nextCursor?.id !== deltaCursor.id ||
+          nextCursor?.createdAt !== deltaCursor.createdAt
+        const activeFinished =
+          hadActiveRows && !hasInProgressUsageLogs(merged)
+        if (hasNewPersisted || activeFinished) {
+          void queryClient.invalidateQueries({
+            queryKey: ['usage-logs-stats'],
+          })
+        }
+        return merged
       }
 
       return reconcileUsageLogSnapshot(result.data)
@@ -249,6 +272,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     },
   })
   const refetchOnVisible = useCallback(() => {
+    void queryClient.cancelQueries({ queryKey })
     void queryClient.invalidateQueries({ queryKey })
   }, [queryClient, queryKey])
   usePageVisibilityRefetch(refetchOnVisible)

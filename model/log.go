@@ -18,7 +18,16 @@ import (
 	"gorm.io/gorm"
 )
 
-var logWriteVersion atomic.Uint64
+var (
+	logWriteVersion   atomic.Uint64
+	logActivitySeq    atomic.Uint64
+	logActivityMu     sync.Mutex
+	logActivityCh     = make(chan struct{})
+	logQueryCacheMu   sync.RWMutex
+	logQueryCache     = make(map[string]cachedLogQueryResult)
+)
+
+const redisLogActivityVersionKey = "newapi:log_activity_version"
 
 type cachedLogQueryResult struct {
 	version uint64
@@ -26,14 +35,51 @@ type cachedLogQueryResult struct {
 	total   int64
 }
 
-var (
-	logQueryCacheMu sync.RWMutex
-	logQueryCache   = make(map[string]cachedLogQueryResult)
-)
-
 // GetLogWriteVersion returns a monotonically increasing counter bumped when a log row is inserted.
 func GetLogWriteVersion() uint64 {
 	return logWriteVersion.Load()
+}
+
+// NotifyLogActivity wakes all local long-polling log watchers immediately and
+// increments the cluster-wide Redis activity counter when Redis is enabled.
+func NotifyLogActivity() {
+	logActivitySeq.Add(1)
+	logActivityMu.Lock()
+	ch := logActivityCh
+	logActivityCh = make(chan struct{})
+	logActivityMu.Unlock()
+	close(ch)
+
+	if common.RedisEnabled && common.RDB != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+		pipe := common.RDB.Pipeline()
+		pipe.Incr(ctx, redisLogActivityVersionKey)
+		pipe.Expire(ctx, redisLogActivityVersionKey, 10*time.Minute)
+		_, _ = pipe.Exec(ctx)
+	}
+}
+
+// SubscribeLogActivity returns a channel closed on the next local log/request
+// activity event and the current local activity sequence number.
+func SubscribeLogActivity() (<-chan struct{}, uint64) {
+	logActivityMu.Lock()
+	ch := logActivityCh
+	logActivityMu.Unlock()
+	return ch, logActivitySeq.Load()
+}
+
+// GetClusterLogActivityVersion returns the shared Redis activity version across
+// all nodes when Redis is enabled, or the local activity sequence otherwise.
+func GetClusterLogActivityVersion() uint64 {
+	if common.RedisEnabled && common.RDB != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+		if val, err := common.RDB.Get(ctx, redisLogActivityVersionKey).Uint64(); err == nil {
+			return val
+		}
+	}
+	return logActivitySeq.Load()
 }
 
 func cloneLogSlice(src []*Log) []*Log {
@@ -138,6 +184,7 @@ func createLog(log *Log) error {
 	err := LOG_DB.Create(log).Error
 	if err == nil {
 		logWriteVersion.Add(1)
+		NotifyLogActivity()
 	}
 	return err
 }
