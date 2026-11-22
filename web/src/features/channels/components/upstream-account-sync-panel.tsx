@@ -120,6 +120,7 @@ function createDefaultAccountForm(): Partial<UpstreamAccountSource> {
     local_group: 'default',
     currency: 'CNY',
     exchange_rate: 7.3,
+    topup_multiplier: 1,
     clean_removed_groups: true,
     adopt_existing_channel: true,
     enabled: true,
@@ -356,6 +357,17 @@ export function UpstreamAccountSyncPanel() {
                               >
                                 {acc.currency || 'CNY'}
                               </Badge>
+                              {typeof acc.topup_multiplier === 'number' &&
+                              acc.topup_multiplier > 0 &&
+                              acc.topup_multiplier !== 1 ? (
+                                <Badge
+                                  variant='outline'
+                                  className='font-mono text-[10px] text-amber-600 dark:text-amber-400'
+                                >
+                                  {t('Top-up Multiplier')}:{' '}
+                                  {acc.topup_multiplier}x
+                                </Badge>
+                              ) : null}
                               {typeof acc.balance_usd === 'number' &&
                               (acc.balance_usd > 0 || acc.last_sync_at > 0) ? (
                                 <Badge
@@ -740,6 +752,17 @@ export function UpstreamAccountSyncPanel() {
                                 >
                                   {acc.currency || 'CNY'}
                                 </Badge>
+                                {typeof acc.topup_multiplier === 'number' &&
+                                acc.topup_multiplier > 0 &&
+                                acc.topup_multiplier !== 1 ? (
+                                  <Badge
+                                    variant='outline'
+                                    className='font-mono text-[10px] text-amber-600 dark:text-amber-400'
+                                  >
+                                    {t('Top-up Multiplier')}:{' '}
+                                    {acc.topup_multiplier}x
+                                  </Badge>
+                                ) : null}
                                 {typeof acc.balance_usd === 'number' &&
                                 (acc.balance_usd > 0 || acc.last_sync_at > 0) ? (
                                   <Badge
@@ -1241,7 +1264,7 @@ export function UpstreamAccountSyncPanel() {
                 </div>
               </div>
 
-              <div className='grid gap-4 sm:grid-cols-3'>
+              <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
                 <div className='space-y-1.5'>
                   <Label>{t('Auto-Created Channel Tag')}</Label>
                   <Input
@@ -1293,6 +1316,30 @@ export function UpstreamAccountSyncPanel() {
                       </SelectContent>
                     </Select>
                   </div>
+                </div>
+                <div className='space-y-1.5'>
+                  <Label>{t('Upstream Top-up Multiplier (Cost Only)')}</Label>
+                  <Input
+                    type='number'
+                    min='0.01'
+                    step='0.1'
+                    value={editingAccount.topup_multiplier ?? 1}
+                    onChange={(e) => {
+                      const parsed = Number.parseFloat(e.target.value)
+                      setEditingAccount({
+                        ...editingAccount,
+                        topup_multiplier:
+                          Number.isFinite(parsed) && parsed > 0 ? parsed : 1,
+                      })
+                    }}
+                    placeholder='1'
+                    className='font-mono text-xs'
+                  />
+                  <p className='text-muted-foreground text-[11px]'>
+                    {t(
+                      'e.g. 2 means 2x top-up bonus: selling at 100 has an actual cost of 50'
+                    )}
+                  </p>
                 </div>
               </div>
 

@@ -74,6 +74,7 @@ const DEFAULT_SYNC_CFG: ModelPriceSyncConfig = {
   twd_exchange_rate: 32,
   channel_currencies: {},
   channel_exchange_rates: {},
+  channel_topup_multipliers: {},
   channel_upstream_groups: {},
   cron_enabled: false,
   cron_interval_minutes: 60,
@@ -125,6 +126,7 @@ export function CronUpstreamSyncPanel() {
             : 32,
         channel_currencies: serverCfg.channel_currencies ?? {},
         channel_exchange_rates: serverCfg.channel_exchange_rates ?? {},
+        channel_topup_multipliers: serverCfg.channel_topup_multipliers ?? {},
         channel_upstream_groups: serverCfg.channel_upstream_groups ?? {},
         preferred_channels: serverCfg.preferred_channels ?? {},
         replace_models: serverCfg.replace_models ?? true,
@@ -208,6 +210,16 @@ export function CronUpstreamSyncPanel() {
       channel_upstream_groups: {
         ...prev.channel_upstream_groups,
         [channelId]: group,
+      },
+    }))
+  }
+
+  const updateChannelTopupMultiplier = (channelId: number, mult: number) => {
+    setFormCfg((prev) => ({
+      ...prev,
+      channel_topup_multipliers: {
+        ...prev.channel_topup_multipliers,
+        [channelId]: Number.isFinite(mult) && mult > 0 ? mult : 1,
       },
     }))
   }
@@ -499,6 +511,25 @@ export function CronUpstreamSyncPanel() {
                       </div>
                     </div>
 
+                    <div className='flex items-center justify-between gap-2'>
+                      <span className='text-muted-foreground shrink-0 text-[11px]'>
+                        {t('Top-up Multiplier')}
+                      </span>
+                      <Input
+                        type='number'
+                        min='0.01'
+                        step='0.1'
+                        className='h-7 w-24 font-mono text-xs'
+                        value={formCfg.channel_topup_multipliers?.[ch.id] ?? 1}
+                        onChange={(e) =>
+                          updateChannelTopupMultiplier(
+                            ch.id,
+                            Number.parseFloat(e.target.value)
+                          )
+                        }
+                      />
+                    </div>
+
                     {ch.type === CHANNEL_TYPE_NEW_API ? (
                       <div className='flex items-center justify-between gap-2'>
                         <span className='text-muted-foreground shrink-0 text-[11px]'>
@@ -597,6 +628,7 @@ export function CronUpstreamSyncPanel() {
                   <TableHead>{t('Upstream Type')}</TableHead>
                   <TableHead>{t('Base URL')}</TableHead>
                   <TableHead>{t('Currency Override')}</TableHead>
+                  <TableHead>{t('Top-up Multiplier')}</TableHead>
                   <TableHead>{t('Upstream Group')}</TableHead>
                   <TableHead>{t('Last Sync Result')}</TableHead>
                 </TableRow>
@@ -605,7 +637,7 @@ export function CronUpstreamSyncPanel() {
                 {channels.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={8}
+                      colSpan={9}
                       className='text-muted-foreground h-24 text-center text-sm'
                     >
                       {t('No matching channels found')}
@@ -689,6 +721,23 @@ export function CronUpstreamSyncPanel() {
                             </NativeSelectOption>
                           </NativeSelect>
                         </div>
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          type='number'
+                          min='0.01'
+                          step='0.1'
+                          className='h-7 w-20 font-mono text-xs'
+                          value={
+                            formCfg.channel_topup_multipliers?.[ch.id] ?? 1
+                          }
+                          onChange={(e) =>
+                            updateChannelTopupMultiplier(
+                              ch.id,
+                              Number.parseFloat(e.target.value)
+                            )
+                          }
+                        />
                       </TableCell>
                       <TableCell>
                         {ch.type === CHANNEL_TYPE_NEW_API ? (

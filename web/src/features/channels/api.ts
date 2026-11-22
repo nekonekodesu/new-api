@@ -1007,6 +1007,7 @@ export interface ModelPriceSyncConfig {
   twd_exchange_rate?: number
   channel_currencies: Record<number, string>
   channel_exchange_rates: Record<number, number>
+  channel_topup_multipliers?: Record<number, number>
   channel_upstream_groups: Record<number, string>
   cron_enabled: boolean
   cron_interval_minutes: number
@@ -1262,6 +1263,7 @@ export interface UpstreamAccountSource {
   local_group: string
   currency: string
   exchange_rate: number
+  topup_multiplier?: number
   clean_removed_groups: boolean
   adopt_existing_channel: boolean
   enabled: boolean
@@ -1454,6 +1456,7 @@ export interface ModelChannelUsageDetail {
   channel_type: number
   upstream_group?: string
   base_multiplier: number
+  topup_multiplier?: number
   currency: string
   exchange_rate: number
   from_upstream?: boolean

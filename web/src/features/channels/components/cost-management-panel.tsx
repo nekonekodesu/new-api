@@ -598,7 +598,12 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                                   cu.currency
                                                 )
                                               : `${formatRawUpstreamAmount(cu.raw_input_cost, cu.currency)}/${formatRawUpstreamAmount(cu.raw_output_cost, cu.currency)}`}{' '}
-                                            {cu.currency} ÷ {cu.exchange_rate})
+                                            {cu.currency} ÷ {cu.exchange_rate}
+                                            {cu.topup_multiplier &&
+                                            cu.topup_multiplier !== 1
+                                              ? ` ÷ ${cu.topup_multiplier}x`
+                                              : ''}
+                                            )
                                           </span>
                                         ) : null}
                                       </span>
@@ -936,6 +941,13 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                                         {cu.base_multiplier}x
                                                       </span>
                                                     )}
+                                                  {cu.topup_multiplier &&
+                                                    cu.topup_multiplier !== 1 && (
+                                                      <span className='font-mono text-[10px] text-amber-600 dark:text-amber-400'>
+                                                        {t('Top-up Multiplier')}:{' '}
+                                                        {cu.topup_multiplier}x
+                                                      </span>
+                                                    )}
                                                 </div>
                                               </TableCell>
                                               <TableCell className='py-1.5 font-mono text-xs'>
@@ -958,7 +970,12 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                                           )
                                                         : `${formatRawUpstreamAmount(cu.raw_input_cost, cu.currency)} / ${formatRawUpstreamAmount(cu.raw_output_cost, cu.currency)}`}{' '}
                                                       ({cu.currency} ÷{' '}
-                                                      {cu.exchange_rate})
+                                                      {cu.exchange_rate}
+                                                      {cu.topup_multiplier &&
+                                                      cu.topup_multiplier !== 1
+                                                        ? ` ÷ ${cu.topup_multiplier}x`
+                                                        : ''}
+                                                      )
                                                     </span>
                                                   ) : null}
                                                 </div>

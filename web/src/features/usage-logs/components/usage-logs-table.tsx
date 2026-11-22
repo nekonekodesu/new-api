@@ -306,19 +306,6 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey,
-    refetchInterval: (query) => {
-      if (autoRefreshSeconds <= 0) return false
-      const currentData = query.state.data as
-        | NonNullable<GetLogsResponse['data']>
-        | undefined
-      const hasActive =
-        clusterActiveCount > 0 || hasInProgressUsageLogs(currentData)
-      if (watchConnected && !hasActive) {
-        return false
-      }
-      return autoRefreshSeconds * 1000
-    },
-    refetchIntervalInBackground: false,
     queryFn: async ({ signal }) => {
       const cachedPage =
         isAdmin && isLiveFirstPage
@@ -380,6 +367,19 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
 
       return reconcileUsageLogSnapshot(result.data)
     },
+    refetchInterval: (query) => {
+      if (autoRefreshSeconds <= 0) return false
+      const currentData = query.state.data as
+        | NonNullable<GetLogsResponse['data']>
+        | undefined
+      const hasActive =
+        clusterActiveCount > 0 || hasInProgressUsageLogs(currentData)
+      if (watchConnected && !hasActive) {
+        return false
+      }
+      return autoRefreshSeconds * 1000
+    },
+    refetchIntervalInBackground: false,
     placeholderData: (previousData, previousQuery) => {
       if (
         previousQuery?.queryKey[1] === logCategory &&

@@ -86,6 +86,7 @@ type UpstreamAccountSource struct {
 	LocalGroup           string   `json:"local_group"`
 	Currency             string   `json:"currency"`
 	ExchangeRate         float64  `json:"exchange_rate"`
+	TopupMultiplier      float64  `json:"topup_multiplier"`
 	CleanRemovedGroups   bool     `json:"clean_removed_groups"`
 	AdoptExistingChannel bool     `json:"adopt_existing_channel"`
 	Enabled              bool     `json:"enabled"`
@@ -197,6 +198,7 @@ type ModelPriceSyncConfig struct {
 	TWDExchangeRate         float64                            `json:"twd_exchange_rate"`
 	ChannelCurrencies       map[int]string                     `json:"channel_currencies"`
 	ChannelExchangeRates    map[int]float64                    `json:"channel_exchange_rates"`
+	ChannelTopupMultipliers map[int]float64                    `json:"channel_topup_multipliers"`
 	ChannelUpstreamGroups   map[int]string                     `json:"channel_upstream_groups"`
 	UpstreamAccounts        []UpstreamAccountSource            `json:"upstream_accounts,omitempty"`
 	AutoProvisionedChannels map[int]AutoProvisionedChannelMeta `json:"auto_provisioned_channels,omitempty"`
@@ -653,6 +655,7 @@ func defaultModelPriceSyncConfig() ModelPriceSyncConfig {
 		TWDExchangeRate:         32.0,
 		ChannelCurrencies:       make(map[int]string),
 		ChannelExchangeRates:    make(map[int]float64),
+		ChannelTopupMultipliers: make(map[int]float64),
 		ChannelUpstreamGroups:   make(map[int]string),
 		UpstreamAccounts:        make([]UpstreamAccountSource, 0),
 		AutoProvisionedChannels: make(map[int]AutoProvisionedChannelMeta),
@@ -885,6 +888,10 @@ func GetModelPriceSyncConfig() ModelPriceSyncConfig {
 	if cfg.ChannelExchangeRates == nil {
 		cfg.ChannelExchangeRates = make(map[int]float64)
 	}
+	cfg.ChannelTopupMultipliers = maps.Clone(modelPriceSyncCfg.ChannelTopupMultipliers)
+	if cfg.ChannelTopupMultipliers == nil {
+		cfg.ChannelTopupMultipliers = make(map[int]float64)
+	}
 	cfg.ChannelUpstreamGroups = maps.Clone(modelPriceSyncCfg.ChannelUpstreamGroups)
 	if cfg.ChannelUpstreamGroups == nil {
 		cfg.ChannelUpstreamGroups = make(map[int]string)
@@ -980,6 +987,9 @@ func LoadModelPriceSyncConfigFromJSON(raw string) error {
 	if cfg.ChannelExchangeRates == nil {
 		cfg.ChannelExchangeRates = make(map[int]float64)
 	}
+	if cfg.ChannelTopupMultipliers == nil {
+		cfg.ChannelTopupMultipliers = make(map[int]float64)
+	}
 	if cfg.ChannelUpstreamGroups == nil {
 		cfg.ChannelUpstreamGroups = make(map[int]string)
 	}
@@ -1016,6 +1026,9 @@ func SaveModelPriceSyncConfig(cfg ModelPriceSyncConfig) error {
 	}
 	if cfg.ChannelExchangeRates == nil {
 		cfg.ChannelExchangeRates = make(map[int]float64)
+	}
+	if cfg.ChannelTopupMultipliers == nil {
+		cfg.ChannelTopupMultipliers = make(map[int]float64)
 	}
 	if cfg.ChannelUpstreamGroups == nil {
 		cfg.ChannelUpstreamGroups = make(map[int]string)
@@ -1084,6 +1097,57 @@ func normalizeUpstreamAccountSource(src *UpstreamAccountSource) {
 		src.Currency = "CNY"
 	}
 	src.ExchangeRate = ResolveEffectiveChannelExchangeRate(curr, src.ExchangeRate)
+	if src.TopupMultiplier <= 0 || math.IsNaN(src.TopupMultiplier) || math.IsInf(src.TopupMultiplier, 0) {
+		src.TopupMultiplier = 1.0
+	}
+}
+
+// ResolveChannelTopupMultiplier returns the upstream top-up bonus multiplier (default 1.0)
+// for a channel, used strictly for discounting actual upstream cost calculations (ActualCost = NominalCost / TopupMultiplier)
+// without altering 1x selling prices.
+func ResolveChannelTopupMultiplier(channelID int, ch *Channel, syncCfg ModelPriceSyncConfig) float64 {
+	if channelID <= 0 && ch != nil {
+		channelID = ch.Id
+	}
+	if channelID > 0 {
+		if m, ok := syncCfg.ChannelTopupMultipliers[channelID]; ok && m > 0 && !math.IsNaN(m) && !math.IsInf(m, 0) && math.Abs(m-1.0) > 1e-6 {
+			return m
+		}
+		if meta, hasMeta := syncCfg.AutoProvisionedChannels[channelID]; hasMeta {
+			metaID := strings.TrimSpace(meta.SourceID)
+			metaName := strings.TrimSpace(meta.SourceName)
+			for _, acc := range syncCfg.UpstreamAccounts {
+				key := UpstreamAccountKey(acc)
+				if (metaID != "" && (acc.ID == metaID || key == metaID)) ||
+					(metaName != "" && strings.EqualFold(strings.TrimSpace(acc.Name), metaName)) {
+					if acc.TopupMultiplier > 0 && !math.IsNaN(acc.TopupMultiplier) && !math.IsInf(acc.TopupMultiplier, 0) {
+						return acc.TopupMultiplier
+					}
+				}
+			}
+		}
+	}
+	if ch == nil && channelID > 0 {
+		ch = lookupChannelOutsideRouting(channelID)
+	}
+	if ch != nil {
+		upID, _ := ResolveChannelUpstreamSource(ch, nil, syncCfg)
+		if upID != "" && upID != DirectUpstreamSourceID {
+			for _, acc := range syncCfg.UpstreamAccounts {
+				if UpstreamAccountKey(acc) == upID || acc.ID == upID {
+					if acc.TopupMultiplier > 0 && !math.IsNaN(acc.TopupMultiplier) && !math.IsInf(acc.TopupMultiplier, 0) {
+						return acc.TopupMultiplier
+					}
+				}
+			}
+		}
+	}
+	if channelID > 0 {
+		if m, ok := syncCfg.ChannelTopupMultipliers[channelID]; ok && m > 0 && !math.IsNaN(m) && !math.IsInf(m, 0) {
+			return m
+		}
+	}
+	return 1.0
 }
 
 func normalizeCronJobsList(jobs []CronJob) []CronJob {
@@ -2277,6 +2341,9 @@ func scoreChannelForSchedule(mode string, ch *Channel, modelName string) float64
 
 	// Effective composite cost (1x input + 3x output weighted per 1M tokens)
 	compositeCost := costEntry.InputCost + 3.0*costEntry.OutputCost
+	if topupMult := ResolveChannelTopupMultiplier(ch.Id, ch, GetModelPriceSyncConfig()); topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
+		compositeCost = compositeCost / topupMult
+	}
 	if compositeCost <= 0 {
 		compositeCost = 0.001
 	}
@@ -2729,6 +2796,10 @@ func resolveChannelModelUnitPricesUSD(channelID int, modelName string, syncCfg M
 			}
 		}
 		if inUSD > 0 || outUSD > 0 {
+			if topupMult := ResolveChannelTopupMultiplier(channelID, nil, syncCfg); topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
+				inUSD = roundCost(inUSD / topupMult)
+				outUSD = roundCost(outUSD / topupMult)
+			}
 			return entry.QuotaType, inUSD, outUSD, entry.CacheRatio, entry.CreateCacheRatio
 		}
 	}
@@ -2739,6 +2810,10 @@ func resolveChannelModelUnitPricesUSD(channelID int, modelName string, syncCfg M
 			if baseMult > 0 && baseMult != 1.0 {
 				inP = roundCost(inP * baseMult)
 				outP = roundCost(outP * baseMult)
+			}
+			if topupMult := ResolveChannelTopupMultiplier(channelID, ch, syncCfg); topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
+				inP = roundCost(inP / topupMult)
+				outP = roundCost(outP / topupMult)
 			}
 		}
 	}

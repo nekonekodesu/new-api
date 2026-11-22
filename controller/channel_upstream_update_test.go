@@ -611,3 +611,72 @@ func TestDetectAllChannelUpstreamModelUpdatesRejectsExistingActiveTask(t *testin
 	require.Contains(t, recorder.Body.String(), existing.TaskID)
 	require.Contains(t, recorder.Body.String(), "A model update task is already running or queued")
 }
+
+func TestUpstreamTopupMultiplierOnlyAffectsCostCalculation(t *testing.T) {
+	prevCfg := model.GetModelPriceSyncConfig()
+	t.Cleanup(func() {
+		_ = model.SaveModelPriceSyncConfig(prevCfg)
+	})
+
+	cfg := model.GetModelPriceSyncConfig()
+	cfg.UpstreamAccounts = []model.UpstreamAccountSource{
+		{
+			ID:              "upstream-test-2x",
+			Name:            "nearToken",
+			BaseURL:         "https://neartoken.cc",
+			Currency:        "USD",
+			ExchangeRate:    1.0,
+			TopupMultiplier: 2.0,
+			Enabled:         true,
+		},
+	}
+	cfg.AutoProvisionedChannels = map[int]model.AutoProvisionedChannelMeta{
+		164: {
+			ChannelID:     164,
+			ChannelName:   "nearToken-default-1",
+			SourceID:      "upstream-test-2x",
+			SourceName:    "nearToken",
+			UpstreamGroup: "default",
+			AutoCreated:   true,
+		},
+	}
+	cfg.ChannelTopupMultipliers = map[int]float64{
+		164: 2.0,
+	}
+	require.NoError(t, model.SaveModelPriceSyncConfig(cfg))
+
+	// Nominal upstream price: $100 per 1M input tokens (ModelRatio = 50), 1x group ratio
+	model.SetChannelUpstreamModelCosts(164, map[string]model.ChannelModelCostEntry{
+		"test-topup-2x-model": {
+			ChannelID:       164,
+			ChannelName:     "nearToken-default-1",
+			ChannelType:     constant.ChannelTypeNewAPI,
+			Model:           "test-topup-2x-model",
+			QuotaType:       0,
+			ModelRatio:      50.0,
+			CompletionRatio: 1.0,
+			RawInputCost:    100.0,
+			RawOutputCost:   100.0,
+			InputCost:       100.0,
+			OutputCost:      100.0,
+			BaseMultiplier:  1.0,
+			Currency:        "USD",
+			ExchangeRate:    1.0,
+			FromUpstream:    true,
+		},
+	}, false)
+
+	// 1. 1x authoritative selling price must remain 100 ($100/1M => ModelRatio = 50), NOT discounted by TopupMultiplier
+	qt, _, mr, cr, _, _ := model.ResolveAuthoritativeModelPricingUSD("test-topup-2x-model")
+	require.Equal(t, 0, qt)
+	require.InDelta(t, 50.0, mr, 1e-6)
+	require.InDelta(t, 1.0, cr, 1e-6)
+
+	// 2. Actual cost calculation for 1M prompt tokens must be divided by TopupMultiplier (100 / 2 = 50)
+	actualCost := model.CalculateChannelModelUsageCost(164, "test-topup-2x-model", 1, 1_000_000, 0, 0, 0)
+	require.InDelta(t, 50.0, actualCost, 1e-6)
+
+	// 3. Resolved top-up multiplier for channel 164 is 2.0
+	resolvedMult := model.ResolveChannelTopupMultiplier(164, nil, model.GetModelPriceSyncConfig())
+	require.InDelta(t, 2.0, resolvedMult, 1e-6)
+}

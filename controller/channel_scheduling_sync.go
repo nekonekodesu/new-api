@@ -866,6 +866,9 @@ func GetCronSyncConfig(c *gin.Context) {
 	if cfg.ChannelCurrencies == nil {
 		cfg.ChannelCurrencies = make(map[int]string)
 	}
+	if cfg.ChannelTopupMultipliers == nil {
+		cfg.ChannelTopupMultipliers = make(map[int]float64)
+	}
 	briefs := make([]ChannelBrief, 0, len(channels))
 	for _, ch := range channels {
 		if ch == nil {
@@ -875,6 +878,9 @@ func GetCronSyncConfig(c *gin.Context) {
 			if c := strings.ToUpper(strings.TrimSpace(*ch.CurrencyCode)); c != "" && c != "AUTO" {
 				cfg.ChannelCurrencies[ch.Id] = c
 			}
+		}
+		if cfg.ChannelTopupMultipliers[ch.Id] <= 0 {
+			cfg.ChannelTopupMultipliers[ch.Id] = model.ResolveChannelTopupMultiplier(ch.Id, ch, cfg)
 		}
 		briefs = append(briefs, ChannelBrief{
 			ID:                 ch.Id,
@@ -913,6 +919,9 @@ func UpdateCronSyncConfig(c *gin.Context) {
 	if req.ChannelExchangeRates == nil {
 		req.ChannelExchangeRates = existing.ChannelExchangeRates
 	}
+	if req.ChannelTopupMultipliers == nil {
+		req.ChannelTopupMultipliers = existing.ChannelTopupMultipliers
+	}
 	if req.ChannelUpstreamGroups == nil {
 		req.ChannelUpstreamGroups = existing.ChannelUpstreamGroups
 	}
@@ -944,6 +953,7 @@ func UpdateCronSyncConfig(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	model.ResetRealtimeProfitTracker()
 	if model.DB != nil && len(req.ChannelCurrencies) > 0 {
 		for chID, rawCurr := range req.ChannelCurrencies {
 			if chID <= 0 {

@@ -1152,6 +1152,9 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 				_ = existingCh.UpdateAbilities(nil)
 			}
 			cfg.ChannelUpstreamGroups[existingCh.Id] = g
+			if source.TopupMultiplier > 0 {
+				cfg.ChannelTopupMultipliers[existingCh.Id] = source.TopupMultiplier
+			}
 			if source.Currency != "" && source.Currency != "AUTO" {
 				cfg.ChannelCurrencies[existingCh.Id] = source.Currency
 				if source.ExchangeRate > 0 {
@@ -1209,6 +1212,9 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 							UpdatedAt:          now,
 						}
 						cfg.ChannelUpstreamGroups[inserted.Id] = g
+						if source.TopupMultiplier > 0 {
+							cfg.ChannelTopupMultipliers[inserted.Id] = source.TopupMultiplier
+						}
 						if source.Currency != "" && source.Currency != "AUTO" {
 							cfg.ChannelCurrencies[inserted.Id] = source.Currency
 							if source.ExchangeRate > 0 {
@@ -1281,6 +1287,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 					delete(cfg.ChannelUpstreamGroups, ch.Id)
 					delete(cfg.ChannelCurrencies, ch.Id)
 					delete(cfg.ChannelExchangeRates, ch.Id)
+					delete(cfg.ChannelTopupMultipliers, ch.Id)
 				}
 			}
 		}
@@ -1466,6 +1473,9 @@ func SaveUpstreamAccount(c *gin.Context) {
 	if req.Currency == "" {
 		req.Currency = "CNY"
 	}
+	if req.TopupMultiplier <= 0 || math.IsNaN(req.TopupMultiplier) || math.IsInf(req.TopupMultiplier, 0) {
+		req.TopupMultiplier = 1.0
+	}
 
 	cfg := model.GetModelPriceSyncConfig()
 	if req.ID == "" {
@@ -1504,10 +1514,36 @@ func SaveUpstreamAccount(c *gin.Context) {
 		cfg.UpstreamAccounts = append(cfg.UpstreamAccounts, req)
 	}
 
+	// Propagate TopupMultiplier immediately to all channels belonging to this upstream account
+	if cfg.ChannelTopupMultipliers == nil {
+		cfg.ChannelTopupMultipliers = make(map[int]float64)
+	}
+	for chID, meta := range cfg.AutoProvisionedChannels {
+		if chID > 0 && (meta.SourceID == req.ID || strings.EqualFold(strings.TrimSpace(meta.SourceName), req.Name)) {
+			cfg.ChannelTopupMultipliers[chID] = req.TopupMultiplier
+		}
+	}
+	if model.DB != nil {
+		var allChannels []*model.Channel
+		if err := model.DB.Omit("key").Find(&allChannels).Error; err == nil {
+			upKey := model.UpstreamAccountKey(req)
+			for _, ch := range allChannels {
+				if ch == nil || ch.Id <= 0 {
+					continue
+				}
+				srcID, srcName := model.ResolveChannelUpstreamSource(ch, nil, cfg)
+				if (upKey != "" && srcID == upKey) || strings.EqualFold(srcName, req.Name) {
+					cfg.ChannelTopupMultipliers[ch.Id] = req.TopupMultiplier
+				}
+			}
+		}
+	}
+
 	if err := model.SaveModelPriceSyncConfig(cfg); err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	model.ResetRealtimeProfitTracker()
 	common.ApiSuccess(c, gin.H{
 		"accounts":                  maskUpstreamAccountsForResponse(cfg.UpstreamAccounts),
 		"auto_provisioned_channels": enrichAutoProvisionedChannelsWithBalance(cfg.AutoProvisionedChannels),
@@ -1532,6 +1568,7 @@ func DeleteUpstreamAccount(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	model.ResetRealtimeProfitTracker()
 	common.ApiSuccess(c, gin.H{
 		"accounts":                  maskUpstreamAccountsForResponse(cfg.UpstreamAccounts),
 		"auto_provisioned_channels": enrichAutoProvisionedChannelsWithBalance(cfg.AutoProvisionedChannels),
@@ -1749,6 +1786,7 @@ type ModelChannelUsageDetail struct {
 	ChannelType      int     `json:"channel_type"`
 	UpstreamGroup    string  `json:"upstream_group,omitempty"`
 	BaseMultiplier   float64 `json:"base_multiplier"`
+	TopupMultiplier  float64 `json:"topup_multiplier"`
 	Currency         string  `json:"currency"`
 	ExchangeRate     float64 `json:"exchange_rate"`
 	FromUpstream     bool    `json:"from_upstream"`
@@ -2191,6 +2229,14 @@ func GetModelCostAnalysis(c *gin.Context) {
 				rawInCost = roundMoney6(baseIn * baseMult)
 				rawOutCost = roundMoney6(baseOut * baseMult)
 			}
+			topupMult := model.ResolveChannelTopupMultiplier(chID, ch, syncCfg)
+			if topupMult <= 0 {
+				topupMult = 1.0
+			}
+			if math.Abs(topupMult-1.0) > 1e-6 {
+				inCost = roundMoney6(inCost / topupMult)
+				outCost = roundMoney6(outCost / topupMult)
+			}
 			if inCost > 0 {
 				if !hasCostBounds || inCost < minInCost {
 					minInCost = inCost
@@ -2207,19 +2253,20 @@ func GetModelCostAnalysis(c *gin.Context) {
 				hasCostBounds = true
 			}
 			chStatMap[chID] = &ModelChannelUsageDetail{
-				ChannelID:      chID,
-				ChannelName:    chName,
-				ChannelType:    chType,
-				UpstreamGroup:  syncCfg.ChannelUpstreamGroups[chID],
-				BaseMultiplier: baseMult,
-				Currency:       curr,
-				ExchangeRate:   exRate,
-				FromUpstream:   hasEntry && entry.FromUpstream,
-				QuotaType:      chQuotaType,
-				InputCost:      inCost,
-				OutputCost:     outCost,
-				RawInputCost:   rawInCost,
-				RawOutputCost:  rawOutCost,
+				ChannelID:       chID,
+				ChannelName:     chName,
+				ChannelType:     chType,
+				UpstreamGroup:   syncCfg.ChannelUpstreamGroups[chID],
+				BaseMultiplier:  baseMult,
+				TopupMultiplier: topupMult,
+				Currency:        curr,
+				ExchangeRate:    exRate,
+				FromUpstream:    hasEntry && entry.FromUpstream,
+				QuotaType:       chQuotaType,
+				InputCost:       inCost,
+				OutputCost:      outCost,
+				RawInputCost:    rawInCost,
+				RawOutputCost:   rawOutCost,
 			}
 		}
 
@@ -2257,13 +2304,26 @@ func GetModelCostAnalysis(c *gin.Context) {
 			}
 			effBaseIn := baseIn
 			effBaseOut := baseOut
+			usedPreDividedDetail := false
 			if !hasEntry {
 				if chDetail, ok := chStatMap[st.ChannelID]; ok && (chDetail.InputCost > 0 || chDetail.OutputCost > 0) {
 					effBaseIn = chDetail.InputCost
 					effBaseOut = chDetail.OutputCost
+					usedPreDividedDetail = true
 				}
 			}
 			cost := calculateUsageUpstreamCostUSD(entry, hasEntry, quotaType, effBaseIn, effBaseOut, st.CallCount, st.PromptTokens, st.CompletionTokens, st.CacheTokens, st.CacheWriteTokens)
+			if !usedPreDividedDetail {
+				topupMult := 1.0
+				if chDetail, ok := chStatMap[st.ChannelID]; ok && chDetail.TopupMultiplier > 0 {
+					topupMult = chDetail.TopupMultiplier
+				} else {
+					topupMult = model.ResolveChannelTopupMultiplier(st.ChannelID, chByID[st.ChannelID], syncCfg)
+				}
+				if topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
+					cost = roundMoney6(cost / topupMult)
+				}
+			}
 
 			totalCalls += st.CallCount
 			totalPrompt += st.PromptTokens
@@ -2600,6 +2660,9 @@ func GetUserCostAnalysis(c *gin.Context) {
 				}
 			}
 			cost := calculateUsageUpstreamCostUSD(entry, hasEntry, bp.quotaType, effIn, effOut, st.CallCount, st.PromptTokens, st.CompletionTokens, st.CacheTokens, st.CacheWriteTokens)
+			if topupMult := model.ResolveChannelTopupMultiplier(st.ChannelID, chByID[st.ChannelID], syncCfg); topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
+				cost = roundMoney6(cost / topupMult)
+			}
 			prof := roundMoney6(rev - cost)
 			mPct := 0.0
 			if rev > 0 {
