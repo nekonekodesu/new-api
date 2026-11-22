@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
@@ -299,4 +301,98 @@ func TestLogDeltaBoundedWaitAndClusterActiveSync(t *testing.T) {
 	assert.Equal(t, 120, logs[0].PromptTokens)
 	assert.Equal(t, 45, logs[0].CompletionTokens)
 	assert.Less(t, elapsed, time.Second, "long-poll must wake up immediately on activity instead of waiting full 5s")
+}
+
+func TestWatchUserLogsIsolatedPerUser(t *testing.T) {
+	// Missing user ID must be rejected.
+	unauthRec := httptest.NewRecorder()
+	unauthCtx, _ := gin.CreateTestContext(unauthRec)
+	unauthCtx.Request = httptest.NewRequest(http.MethodGet, "/api/log/self/watch", nil)
+	WatchUserLogs(unauthCtx)
+	require.Equal(t, http.StatusUnauthorized, unauthRec.Code)
+
+	previousRedis, previousClient := common.RedisEnabled, common.RDB
+	common.RedisEnabled = false
+	common.RDB = nil
+	t.Cleanup(func() {
+		common.RedisEnabled, common.RDB = previousRedis, previousClient
+	})
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/api/log/self/watch", func(c *gin.Context) {
+		c.Set("id", 101)
+		WatchUserLogs(c)
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	defer cancelReq()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, server.URL+"/api/log/self/watch", nil)
+	require.NoError(t, err)
+	resp, err := server.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	type watchEvent struct {
+		Version     uint64 `json:"version"`
+		ActiveCount int    `json:"active_count"`
+	}
+	events := make(chan watchEvent, 16)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			var ev watchEvent
+			if err := common.Unmarshal([]byte(line), &ev); err == nil {
+				events <- ev
+			}
+		}
+	}()
+
+	select {
+	case initial := <-events:
+		assert.Equal(t, 0, initial.ActiveCount)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial watch event")
+	}
+
+	// Activity from another user (202) must NOT wake user 101 or expose active_count.
+	releaseOther := service.RegisterActiveRelayRequest(nil, &relaycommon.RelayInfo{
+		UserId:    202,
+		RequestId: "req-other-user",
+	})
+	model.NotifyLogActivityForUser(202)
+	releaseOther()
+
+	select {
+	case unexpected := <-events:
+		t.Fatalf("user 101 must not receive events from user 202, got %+v", unexpected)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// User 101's own active request must immediately push active_count=1 and then 0.
+	releaseSelf := service.RegisterActiveRelayRequest(nil, &relaycommon.RelayInfo{
+		UserId:    101,
+		RequestId: "req-self-user",
+	})
+	select {
+	case started := <-events:
+		assert.Equal(t, 1, started.ActiveCount)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for self active_count=1 event")
+	}
+
+	releaseSelf()
+	select {
+	case finished := <-events:
+		assert.Equal(t, 0, finished.ActiveCount)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for self active_count=0 event")
+	}
 }

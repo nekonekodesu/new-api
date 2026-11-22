@@ -27,8 +27,9 @@ import type { ChannelAffinityInfo } from '../types'
 export type LogsViewScope = 'all' | 'self'
 export type LogsViewAccess = 'self' | 'admin' | 'root'
 
-const AUTO_REFRESH_STORAGE_KEY = 'newapi.usage-logs.auto-refresh-seconds:v2'
-export const DEFAULT_AUTO_REFRESH_SECONDS = 0.1
+const AUTO_REFRESH_STORAGE_KEY = 'newapi.usage-logs.auto-refresh-seconds:v3'
+export const DEFAULT_AUTO_REFRESH_SECONDS = 1
+const MIN_AUTO_REFRESH_SECONDS = 0.5
 
 function normalizeAutoRefreshSeconds(seconds: number): number {
   if (!Number.isFinite(seconds) || seconds < 0) {
@@ -37,7 +38,10 @@ function normalizeAutoRefreshSeconds(seconds: number): number {
   if (seconds === 0) {
     return 0
   }
-  return Math.max(0.1, Math.min(Math.round(seconds * 10) / 10, 3600))
+  return Math.max(
+    MIN_AUTO_REFRESH_SECONDS,
+    Math.min(Math.round(seconds * 10) / 10, 3600)
+  )
 }
 
 function readStoredAutoRefreshSeconds(): number {

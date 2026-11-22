@@ -37,31 +37,31 @@ type activeRelayEntry struct {
 }
 
 type clusterActiveRelaySnapshot struct {
-	NodeID            string  `json:"node_id"`
-	Seq               int64   `json:"seq"`
-	UpdatedAtMs       int64   `json:"updated_at_ms"`
-	StartTimeMs       int64   `json:"start_time_ms"`
-	FirstResponseMs   int64   `json:"first_response_ms,omitempty"`
-	HasFirstResponse  bool    `json:"has_first_response,omitempty"`
-	RequestId         string  `json:"request_id"`
-	UserId            int     `json:"user_id"`
-	Username          string  `json:"username"`
-	TokenId           int     `json:"token_id"`
-	TokenName         string  `json:"token_name"`
-	ModelName         string  `json:"model_name"`
-	ChannelId         int     `json:"channel_id"`
-	Group             string  `json:"group"`
-	Ip                string  `json:"ip,omitempty"`
-	RequestPath       string  `json:"request_path,omitempty"`
-	RequestBodySize   int64   `json:"request_body_size,omitempty"`
-	PromptTokens      int     `json:"prompt_tokens"`
-	CompletionTokens  int     `json:"completion_tokens"`
-	IsStream          bool    `json:"is_stream"`
-	ReasoningEffort   string  `json:"reasoning_effort,omitempty"`
-	ModelRatio        float64 `json:"model_ratio,omitempty"`
-	GroupRatio        float64 `json:"group_ratio,omitempty"`
-	CompletionRatio   float64 `json:"completion_ratio,omitempty"`
-	ModelPrice        float64 `json:"model_price,omitempty"`
+	NodeID           string  `json:"node_id"`
+	Seq              int64   `json:"seq"`
+	UpdatedAtMs      int64   `json:"updated_at_ms"`
+	StartTimeMs      int64   `json:"start_time_ms"`
+	FirstResponseMs  int64   `json:"first_response_ms,omitempty"`
+	HasFirstResponse bool    `json:"has_first_response,omitempty"`
+	RequestId        string  `json:"request_id"`
+	UserId           int     `json:"user_id"`
+	Username         string  `json:"username"`
+	TokenId          int     `json:"token_id"`
+	TokenName        string  `json:"token_name"`
+	ModelName        string  `json:"model_name"`
+	ChannelId        int     `json:"channel_id"`
+	Group            string  `json:"group"`
+	Ip               string  `json:"ip,omitempty"`
+	RequestPath      string  `json:"request_path,omitempty"`
+	RequestBodySize  int64   `json:"request_body_size,omitempty"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	IsStream         bool    `json:"is_stream"`
+	ReasoningEffort  string  `json:"reasoning_effort,omitempty"`
+	ModelRatio       float64 `json:"model_ratio,omitempty"`
+	GroupRatio       float64 `json:"group_ratio,omitempty"`
+	CompletionRatio  float64 `json:"completion_ratio,omitempty"`
+	ModelPrice       float64 `json:"model_price,omitempty"`
 }
 
 var (
@@ -227,6 +227,45 @@ func GetClusterActiveRelayCount() int {
 	return max(total, 0)
 }
 
+// GetClusterActiveRelayCountForUser returns the number of in-flight relay
+// requests belonging to userId across the local node and remote Redis nodes.
+func GetClusterActiveRelayCountForUser(userId int) int {
+	if userId <= 0 {
+		return 0
+	}
+	total := 0
+	activeRelayRequests.Range(func(_, value any) bool {
+		entry, ok := value.(*activeRelayEntry)
+		if ok && entry != nil && entry.userId == userId {
+			total++
+		}
+		return true
+	})
+	if !common.RedisEnabled || common.RDB == nil {
+		return total
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	rawEntries, err := common.RDB.HGetAll(ctx, redisActiveRelayHashKey).Result()
+	cancel()
+	if err != nil || len(rawEntries) == 0 {
+		return total
+	}
+	nowMs := time.Now().UnixMilli()
+	for _, rawJSON := range rawEntries {
+		var snap clusterActiveRelaySnapshot
+		if err := common.UnmarshalJsonStr(rawJSON, &snap); err != nil {
+			continue
+		}
+		if snap.NodeID == localActiveNodeID || snap.UserId != userId {
+			continue
+		}
+		if nowMs-snap.UpdatedAtMs <= clusterActiveStaleMs {
+			total++
+		}
+	}
+	return total
+}
+
 // RegisterActiveRelayRequest registers an in-flight relay request so Usage Logs
 // can display it while it is still executing, and returns an idempotent cleanup
 // function to call via defer when the request finishes.
@@ -285,7 +324,7 @@ func RegisterActiveRelayRequest(c *gin.Context, info *relaycommon.RelayInfo) fun
 	activeRelayRequests.Store(seq, entry)
 	syncLocalActiveEntriesToRedis()
 	ensureClusterActiveSyncLoop()
-	model.NotifyLogActivity()
+	model.NotifyLogActivityForUser(info.UserId)
 
 	var once sync.Once
 	return func() {
@@ -293,7 +332,7 @@ func RegisterActiveRelayRequest(c *gin.Context, info *relaycommon.RelayInfo) fun
 			activeRelayRequests.Delete(seq)
 			activeRelayCount.Add(-1)
 			removeLocalActiveEntryFromRedis(seq)
-			model.NotifyLogActivity()
+			model.NotifyLogActivityForUser(info.UserId)
 		})
 	}
 }

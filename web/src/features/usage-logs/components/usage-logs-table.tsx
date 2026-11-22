@@ -377,7 +377,10 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       if (watchConnected && !hasActive) {
         return false
       }
-      return autoRefreshSeconds * 1000
+      const effectiveSeconds = watchConnected
+        ? Math.max(autoRefreshSeconds, 0.5)
+        : Math.max(autoRefreshSeconds, 2)
+      return effectiveSeconds * 1000
     },
     refetchIntervalInBackground: false,
     placeholderData: (previousData, previousQuery) => {

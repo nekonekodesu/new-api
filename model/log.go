@@ -19,15 +19,21 @@ import (
 )
 
 var (
-	logWriteVersion atomic.Uint64
-	logActivitySeq  atomic.Uint64
-	logActivityMu   sync.Mutex
-	logActivityCh   = make(chan struct{})
-	logQueryCacheMu sync.RWMutex
-	logQueryCache   = make(map[string]cachedLogQueryResult)
+	logWriteVersion    atomic.Uint64
+	logActivitySeq     atomic.Uint64
+	logActivityMu      sync.Mutex
+	logActivityCh      = make(chan struct{})
+	userLogActivityMu  sync.Mutex
+	userLogActivitySeq = make(map[int]uint64)
+	userLogActivityCh  = make(map[int]chan struct{})
+	logQueryCacheMu    sync.RWMutex
+	logQueryCache      = make(map[string]cachedLogQueryResult)
 )
 
-const redisLogActivityVersionKey = "newapi:log_activity_version"
+const (
+	redisLogActivityVersionKey           = "newapi:log_activity_version"
+	redisUserLogActivityVersionKeyPrefix = "newapi:log_activity_version:user:"
+)
 
 type cachedLogQueryResult struct {
 	version uint64
@@ -43,6 +49,13 @@ func GetLogWriteVersion() uint64 {
 // NotifyLogActivity wakes all local long-polling log watchers immediately and
 // increments the cluster-wide Redis activity counter when Redis is enabled.
 func NotifyLogActivity() {
+	NotifyLogActivityForUser(0)
+}
+
+// NotifyLogActivityForUser wakes global admin watchers and, when userId > 0,
+// wakes only that user's /api/log/self/watch stream and bumps their per-user
+// activity version without waking unrelated users.
+func NotifyLogActivityForUser(userId int) {
 	logActivitySeq.Add(1)
 	logActivityMu.Lock()
 	ch := logActivityCh
@@ -50,12 +63,28 @@ func NotifyLogActivity() {
 	logActivityMu.Unlock()
 	close(ch)
 
+	if userId > 0 {
+		userLogActivityMu.Lock()
+		userLogActivitySeq[userId]++
+		userCh := userLogActivityCh[userId]
+		delete(userLogActivityCh, userId)
+		userLogActivityMu.Unlock()
+		if userCh != nil {
+			close(userCh)
+		}
+	}
+
 	if common.RedisEnabled && common.RDB != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 		defer cancel()
 		pipe := common.RDB.Pipeline()
 		pipe.Incr(ctx, redisLogActivityVersionKey)
 		pipe.Expire(ctx, redisLogActivityVersionKey, 10*time.Minute)
+		if userId > 0 {
+			userKey := fmt.Sprintf("%s%d", redisUserLogActivityVersionKeyPrefix, userId)
+			pipe.Incr(ctx, userKey)
+			pipe.Expire(ctx, userKey, 10*time.Minute)
+		}
 		_, _ = pipe.Exec(ctx)
 	}
 }
@@ -67,6 +96,23 @@ func SubscribeLogActivity() (<-chan struct{}, uint64) {
 	ch := logActivityCh
 	logActivityMu.Unlock()
 	return ch, logActivitySeq.Load()
+}
+
+// SubscribeUserLogActivity returns a channel closed on the next local log or
+// relay activity event belonging to userId, along with that user's local seq.
+func SubscribeUserLogActivity(userId int) (<-chan struct{}, uint64) {
+	if userId <= 0 {
+		return SubscribeLogActivity()
+	}
+	userLogActivityMu.Lock()
+	ch := userLogActivityCh[userId]
+	if ch == nil {
+		ch = make(chan struct{})
+		userLogActivityCh[userId] = ch
+	}
+	seq := userLogActivitySeq[userId]
+	userLogActivityMu.Unlock()
+	return ch, seq
 }
 
 // GetClusterLogActivityVersion returns the shared Redis activity version across
@@ -82,6 +128,26 @@ func GetClusterLogActivityVersion() uint64 {
 	return logActivitySeq.Load()
 }
 
+// GetClusterUserLogActivityVersion returns the per-user activity version across
+// all nodes when Redis is enabled, or the user's local activity sequence otherwise.
+func GetClusterUserLogActivityVersion(userId int) uint64 {
+	if userId <= 0 {
+		return 0
+	}
+	if common.RedisEnabled && common.RDB != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+		userKey := fmt.Sprintf("%s%d", redisUserLogActivityVersionKeyPrefix, userId)
+		if val, err := common.RDB.Get(ctx, userKey).Uint64(); err == nil {
+			return val
+		}
+	}
+	userLogActivityMu.Lock()
+	seq := userLogActivitySeq[userId]
+	userLogActivityMu.Unlock()
+	return seq
+}
+
 // GetLatestPersistedLogID returns the highest log ID in LOG_DB as a lightweight
 // fallback change detector for multi-node deployments without Redis.
 func GetLatestPersistedLogID() int {
@@ -90,6 +156,17 @@ func GetLatestPersistedLogID() int {
 	}
 	var maxID int
 	_ = LOG_DB.Model(&Log{}).Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error
+	return maxID
+}
+
+// GetLatestPersistedUserLogID returns the highest log ID for userId in LOG_DB
+// as a fallback change detector for multi-node deployments without Redis.
+func GetLatestPersistedUserLogID(userId int) int {
+	if userId <= 0 || LOG_DB == nil || common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		return 0
+	}
+	var maxID int
+	_ = LOG_DB.Model(&Log{}).Where("user_id = ?", userId).Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error
 	return maxID
 }
 
@@ -195,7 +272,7 @@ func createLog(log *Log) error {
 	err := LOG_DB.Create(log).Error
 	if err == nil {
 		logWriteVersion.Add(1)
-		NotifyLogActivity()
+		NotifyLogActivityForUser(log.UserId)
 	}
 	return err
 }

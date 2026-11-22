@@ -89,20 +89,34 @@ const (
 )
 
 func WatchAllLogs(c *gin.Context) {
-	watchLogActivity(c)
+	watchLogActivity(c, 0)
 }
 
 func WatchUserLogs(c *gin.Context) {
-	watchLogActivity(c)
+	userId := c.GetInt("id")
+	if userId <= 0 {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+	watchLogActivity(c, userId)
 }
 
-func watchLogActivity(c *gin.Context) {
+func watchLogActivity(c *gin.Context, userId int) {
 	c.Header("Content-Type", "application/x-ndjson; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 
 	readState := func() (uint64, int) {
+		if userId > 0 {
+			ver := model.GetClusterUserLogActivityVersion(userId)
+			if !common.RedisEnabled || common.RDB == nil {
+				if maxID := model.GetLatestPersistedUserLogID(userId); maxID > 0 {
+					ver = (ver << 32) | uint64(maxID)
+				}
+			}
+			return ver, service.GetClusterActiveRelayCountForUser(userId)
+		}
 		ver := model.GetClusterLogActivityVersion()
 		if !common.RedisEnabled || common.RDB == nil {
 			if maxID := model.GetLatestPersistedLogID(); maxID > 0 {
@@ -110,6 +124,13 @@ func watchLogActivity(c *gin.Context) {
 			}
 		}
 		return ver, service.GetClusterActiveRelayCount()
+	}
+
+	subscribe := func() (<-chan struct{}, uint64) {
+		if userId > 0 {
+			return model.SubscribeUserLogActivity(userId)
+		}
+		return model.SubscribeLogActivity()
 	}
 
 	writeEvent := func(ver uint64, activeCount int) bool {
@@ -127,7 +148,7 @@ func watchLogActivity(c *gin.Context) {
 		return true
 	}
 
-	localCh, _ := model.SubscribeLogActivity()
+	localCh, _ := subscribe()
 	lastVer, lastActive := readState()
 	if !writeEvent(lastVer, lastActive) {
 		return
@@ -159,7 +180,7 @@ func watchLogActivity(c *gin.Context) {
 			}
 			c.Writer.Flush()
 		case <-localCh:
-			localCh, _ = model.SubscribeLogActivity()
+			localCh, _ = subscribe()
 			nextVer, nextActive := readState()
 			if nextVer != lastVer || nextActive != lastActive {
 				lastVer, lastActive = nextVer, nextActive

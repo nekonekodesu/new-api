@@ -47,7 +47,7 @@ import { cn } from '@/lib/utils'
 
 import { useOptionalUsageLogsContext } from './usage-logs-provider'
 
-const AUTO_REFRESH_PRESETS = [0, 0.1, 0.5, 1, 5, 15] as const
+const AUTO_REFRESH_PRESETS = [0, 0.5, 1, 3, 5, 15] as const
 
 function AutoRefreshControl() {
   const { t } = useTranslation()
@@ -55,7 +55,7 @@ function AutoRefreshControl() {
   const [open, setOpen] = useState(false)
   const autoRefreshSeconds = context?.autoRefreshSeconds ?? 0
   const [customValue, setCustomValue] = useState(() =>
-    autoRefreshSeconds > 0 ? String(autoRefreshSeconds) : '0.1'
+    autoRefreshSeconds > 0 ? String(autoRefreshSeconds) : '1'
   )
 
   if (!context) {
@@ -133,7 +133,7 @@ function AutoRefreshControl() {
           <div className='border-border/60 flex items-center gap-1.5 border-t pt-2'>
             <Input
               type='number'
-              step='0.1'
+              step='0.5'
               min={0}
               max={3600}
               value={customValue}
@@ -142,7 +142,7 @@ function AutoRefreshControl() {
                 if (e.key === 'Enter') handleApplyCustom()
               }}
               aria-label={t('Custom seconds')}
-              placeholder='0.1'
+              placeholder='1'
               className='h-7 text-xs tabular-nums'
             />
             <span className='text-muted-foreground text-xs'>s</span>
