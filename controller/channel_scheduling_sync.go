@@ -878,6 +878,14 @@ func GetCronSyncConfig(c *gin.Context) {
 			if c := strings.ToUpper(strings.TrimSpace(*ch.CurrencyCode)); c != "" && c != "AUTO" {
 				cfg.ChannelCurrencies[ch.Id] = c
 			}
+		} else if c := strings.ToUpper(strings.TrimSpace(cfg.ChannelCurrencies[ch.Id])); c != "" && c != "AUTO" {
+			dbCurr := ""
+			if ch.CurrencyCode != nil {
+				dbCurr = strings.ToUpper(strings.TrimSpace(*ch.CurrencyCode))
+			}
+			if dbCurr == "" && model.DB != nil {
+				_ = model.DB.Model(&model.Channel{}).Where("id = ?", ch.Id).Update("currency_code", c).Error
+			}
 		}
 		if cfg.ChannelTopupMultipliers[ch.Id] <= 0 {
 			cfg.ChannelTopupMultipliers[ch.Id] = model.ResolveChannelTopupMultiplier(ch.Id, ch, cfg)
@@ -1672,6 +1680,7 @@ func ExecuteChannelUpstreamSync(
 
 		var upstreamModels []string
 		var upstreamErr error
+		confirmedEmptyNewAPIGroup := false
 
 		if ch.Type == constant.ChannelTypeNewAPI {
 			cleanHost := cleanUpstreamAPIBaseURL(ch.GetBaseURL(), "")
@@ -1727,6 +1736,18 @@ func ExecuteChannelUpstreamSync(
 				itemRes.DetectedCurrency = resolvedCurrency
 				itemRes.ExchangeRate = resolvedRate
 				itemRes.AvailableGroups = collectAvailableUpstreamGroups(pricingResp.GroupRatio, pricingResp.Data)
+				if resolvedCurrency != "" && resolvedCurrency != "AUTO" {
+					cfg.ChannelCurrencies[ch.Id] = resolvedCurrency
+					dbCurr := ""
+					if ch.CurrencyCode != nil {
+						dbCurr = strings.ToUpper(strings.TrimSpace(*ch.CurrencyCode))
+					}
+					if dbCurr != resolvedCurrency && model.DB != nil {
+						currCopy := resolvedCurrency
+						ch.CurrencyCode = &currCopy
+						_ = model.DB.Model(&model.Channel{}).Where("id = ?", ch.Id).Update("currency_code", resolvedCurrency).Error
+					}
+				}
 
 				upstreamGroup, upstreamGroupRatio, autoUpdated := resolveChannelUpstreamGroup(
 					ch.Name,
@@ -1813,6 +1834,9 @@ func ExecuteChannelUpstreamSync(
 						}
 					}
 				}
+				if len(upstreamModels) == 0 && v1Err == nil {
+					confirmedEmptyNewAPIGroup = true
+				}
 			} else {
 				if pErr != nil {
 					upstreamErr = pErr
@@ -1860,6 +1884,18 @@ func ExecuteChannelUpstreamSync(
 			if newModelsStr != ch.Models {
 				ch.Models = newModelsStr
 				if err := model.DB.Model(&model.Channel{}).Where("id = ?", ch.Id).Update("models", ch.Models).Error; err == nil {
+					_ = ch.UpdateAbilities(nil)
+					anyChannelUpdated = true
+				}
+			}
+		} else if syncModels && replaceModels && confirmedEmptyNewAPIGroup {
+			if ch.Models != "" || ch.Status == common.ChannelStatusEnabled {
+				ch.Models = ""
+				ch.Status = common.ChannelStatusAutoDisabled
+				if err := model.DB.Model(&model.Channel{}).Where("id = ?", ch.Id).Updates(map[string]any{
+					"models": "",
+					"status": common.ChannelStatusAutoDisabled,
+				}).Error; err == nil {
 					_ = ch.UpdateAbilities(nil)
 					anyChannelUpdated = true
 				}
@@ -1922,6 +1958,19 @@ func ExecuteChannelUpstreamSync(
 
 	if syncPrices {
 		_, _ = applyAuthoritativeModelPricesToSystem(cfg)
+	}
+
+	if len(channelIDs) == 0 && model.DB != nil {
+		var allIDs []int
+		if err := model.DB.Model(&model.Channel{}).Pluck("id", &allIDs).Error; err == nil && len(allIDs) > 0 {
+			validIDs := make(map[int]struct{}, len(allIDs))
+			for _, id := range allIDs {
+				if id > 0 {
+					validIDs[id] = struct{}{}
+				}
+			}
+			model.PruneOrphanChannelsFromSyncConfig(&cfg, validIDs)
+		}
 	}
 
 	cfg.LastSyncTime = now

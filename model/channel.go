@@ -557,6 +557,8 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
+	var toDelete []*Channel
+	_ = DB.Omit("key").Where("id in (?)", ids).Find(&toDelete).Error
 	// 使用事务 分批删除channel表和abilities表
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -578,6 +580,7 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 	if err := tx.Commit().Error; err != nil {
 		return 0, err
 	}
+	ArchiveAndCleanupDeletedChannels(toDelete)
 	BumpSyncTopic(SyncTopicChannels)
 	return deletedCount, nil
 }
@@ -701,6 +704,13 @@ func (channel *Channel) UpdateBalance(balance float64) {
 }
 
 func (channel *Channel) Delete() error {
+	snapshot := channel
+	if channel != nil && channel.Id > 0 && strings.TrimSpace(channel.Name) == "" {
+		var loaded Channel
+		if err := DB.Omit("key").Where("id = ?", channel.Id).First(&loaded).Error; err == nil && loaded.Id > 0 {
+			snapshot = &loaded
+		}
+	}
 	var err error
 	err = DB.Delete(channel).Error
 	if err != nil {
@@ -708,6 +718,9 @@ func (channel *Channel) Delete() error {
 	}
 	defer BumpSyncTopic(SyncTopicChannels)
 	err = channel.DeleteAbilities()
+	if snapshot != nil && snapshot.Id > 0 {
+		ArchiveAndCleanupDeletedChannels([]*Channel{snapshot})
+	}
 	return err
 }
 
@@ -1101,13 +1114,42 @@ func updateChannelUsedQuota(id int, quota int) {
 }
 
 func DeleteChannelByStatus(status int64) (int64, error) {
+	var toDelete []*Channel
+	_ = DB.Omit("key").Where("status = ?", status).Find(&toDelete).Error
 	result := DB.Where("status = ?", status).Delete(&Channel{})
+	if result.Error == nil && len(toDelete) > 0 {
+		ids := make([]int, 0, len(toDelete))
+		for _, ch := range toDelete {
+			if ch != nil && ch.Id > 0 {
+				ids = append(ids, ch.Id)
+			}
+		}
+		if len(ids) > 0 {
+			_ = DB.Where("channel_id in (?)", ids).Delete(&Ability{}).Error
+		}
+		ArchiveAndCleanupDeletedChannels(toDelete)
+		BumpSyncTopic(SyncTopicChannels)
+	}
 	return result.RowsAffected, result.Error
 }
 
 func DeleteDisabledChannel() (int64, error) {
+	var toDelete []*Channel
+	_ = DB.Omit("key").Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Find(&toDelete).Error
 	result := DB.Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Delete(&Channel{})
 	if result.Error == nil {
+		if len(toDelete) > 0 {
+			ids := make([]int, 0, len(toDelete))
+			for _, ch := range toDelete {
+				if ch != nil && ch.Id > 0 {
+					ids = append(ids, ch.Id)
+				}
+			}
+			if len(ids) > 0 {
+				_ = DB.Where("channel_id in (?)", ids).Delete(&Ability{}).Error
+			}
+			ArchiveAndCleanupDeletedChannels(toDelete)
+		}
 		BumpSyncTopic(SyncTopicChannels)
 	}
 	return result.RowsAffected, result.Error

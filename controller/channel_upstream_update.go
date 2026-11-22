@@ -60,6 +60,7 @@ var channelUpstreamModelUpdateSelectFields = []string{
 	"tag",
 	"channel_info",
 	"header_override",
+	"currency_code",
 }
 
 var channelUpstreamModelUpdateNotifyState = struct {

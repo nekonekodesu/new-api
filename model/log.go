@@ -19,12 +19,12 @@ import (
 )
 
 var (
-	logWriteVersion   atomic.Uint64
-	logActivitySeq    atomic.Uint64
-	logActivityMu     sync.Mutex
-	logActivityCh     = make(chan struct{})
-	logQueryCacheMu   sync.RWMutex
-	logQueryCache     = make(map[string]cachedLogQueryResult)
+	logWriteVersion atomic.Uint64
+	logActivitySeq  atomic.Uint64
+	logActivityMu   sync.Mutex
+	logActivityCh   = make(chan struct{})
+	logQueryCacheMu sync.RWMutex
+	logQueryCache   = make(map[string]cachedLogQueryResult)
 )
 
 const redisLogActivityVersionKey = "newapi:log_activity_version"
@@ -448,6 +448,43 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
 	other := params.Other
+	if params.ChannelId > 0 {
+		if other == nil {
+			other = NewLogOther()
+		}
+		var cacheRead, cacheWrite int64
+		if other.public != nil {
+			switch v := other.public["cache_tokens"].(type) {
+			case int:
+				cacheRead = int64(v)
+			case int64:
+				cacheRead = v
+			case float64:
+				cacheRead = int64(v)
+			}
+			switch v := other.public["cache_write_tokens"].(type) {
+			case int:
+				cacheWrite = int64(v)
+			case int64:
+				cacheWrite = v
+			case float64:
+				cacheWrite = int64(v)
+			}
+		}
+		frozenCost := CalculateChannelModelUsageCost(
+			params.ChannelId,
+			params.ModelName,
+			1,
+			int64(params.PromptTokens),
+			int64(params.CompletionTokens),
+			cacheRead,
+			cacheWrite,
+		)
+		other.SetAdmin("upstream_cost_usd", frozenCost)
+		if ch := lookupChannelOutsideRouting(params.ChannelId); ch != nil && strings.TrimSpace(ch.Name) != "" {
+			other.SetAdmin("channel_name", strings.TrimSpace(ch.Name))
+		}
+	}
 	content := other.setContent(params.Content)
 	otherStr := other.JSONString()
 	// 判断是否需要记录 IP
@@ -538,6 +575,17 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	}
 	createdAt := common.GetTimestamp()
 	other := params.Other
+	if params.LogType == LogTypeConsume && params.ChannelId > 0 {
+		if other == nil {
+			other = NewLogOther()
+		}
+		if frozenCost := CalculateChannelModelUsageCost(params.ChannelId, params.ModelName, 1, 0, 0, 0, 0); frozenCost > 0 || params.Quota == 0 {
+			other.SetAdmin("upstream_cost_usd", frozenCost)
+		}
+		if ch := lookupChannelOutsideRouting(params.ChannelId); ch != nil && strings.TrimSpace(ch.Name) != "" {
+			other.SetAdmin("channel_name", strings.TrimSpace(ch.Name))
+		}
+	}
 	log := &Log{
 		UserId:    params.UserId,
 		Username:  username,
@@ -721,7 +769,15 @@ func GetAllLogs(filter LogFilter, startIdx int, num int) (logs []*Log, total int
 			channelMap[channel.Id] = channel.Name
 		}
 		for i := range logs {
-			logs[i].ChannelName = channelMap[logs[i].ChannelId]
+			name := channelMap[logs[i].ChannelId]
+			if name == "" && logs[i].ChannelId > 0 {
+				if archivedName := GetArchivedChannelName(logs[i].ChannelId); archivedName != "" {
+					name = archivedName + " (Deleted)"
+				} else if loggedName := parseLogOtherChannelName(logs[i].Other); loggedName != "" {
+					name = loggedName + " (Deleted)"
+				}
+			}
+			logs[i].ChannelName = name
 		}
 	}
 
@@ -776,6 +832,10 @@ func StreamAllLogs(ctx context.Context, filter LogFilter, role int, fn func(*Log
 			if !ok {
 				if channel, err := CacheGetChannel(log.ChannelId); err == nil {
 					name = channel.Name
+				} else if archivedName := GetArchivedChannelName(log.ChannelId); archivedName != "" {
+					name = archivedName + " (Deleted)"
+				} else if loggedName := parseLogOtherChannelName(log.Other); loggedName != "" {
+					name = loggedName + " (Deleted)"
 				}
 				channelNames[log.ChannelId] = name
 			}

@@ -708,6 +708,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = LoadGroupCostControlConfigFromJSON(value)
 	case ChannelModelCostsOptionKey:
 		err = LoadChannelModelCostsFromJSON(value)
+	case ArchivedChannelSnapshotsOptionKey:
+		err = LoadArchivedChannelSnapshotsFromJSON(value)
 	case ModelPriceSyncConfigOptionKey:
 		err = LoadModelPriceSyncConfigFromJSON(value)
 	case CronJobsConfigOptionKey:

@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -679,4 +680,285 @@ func TestUpstreamTopupMultiplierOnlyAffectsCostCalculation(t *testing.T) {
 	// 3. Resolved top-up multiplier for channel 164 is 2.0
 	resolvedMult := model.ResolveChannelTopupMultiplier(164, nil, model.GetModelPriceSyncConfig())
 	require.InDelta(t, 2.0, resolvedMult, 1e-6)
+}
+
+func TestDeletedChannelFrozenCostSnapshotAndSyncConfigCleanup(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	prevLogDB := model.LOG_DB
+	prevCfg := model.GetModelPriceSyncConfig()
+	prevLogConsume := common.LogConsumeEnabled
+	prevDataExport := common.DataExportEnabled
+	model.LOG_DB = db
+	common.LogConsumeEnabled = true
+	common.DataExportEnabled = false
+	t.Cleanup(func() {
+		model.LOG_DB = prevLogDB
+		common.LogConsumeEnabled = prevLogConsume
+		common.DataExportEnabled = prevDataExport
+		_ = model.SaveModelPriceSyncConfig(prevCfg)
+	})
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.User{}, &model.TopUp{}, &model.Option{}, &model.Ability{}))
+
+	user := &model.User{Username: "alice", DisplayName: "Alice", Group: "default", Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(user).Error)
+
+	curr := "USD"
+	usedCh := &model.Channel{
+		Name:         "nearToken-default-1",
+		Type:         constant.ChannelTypeNewAPI,
+		Key:          "sk-used",
+		Models:       "test-frozen-cost-model",
+		Group:        "default",
+		Status:       common.ChannelStatusEnabled,
+		CurrencyCode: &curr,
+	}
+	require.NoError(t, db.Create(usedCh).Error)
+
+	unusedCh := &model.Channel{
+		Name:   "lumiya-empty-1",
+		Type:   constant.ChannelTypeNewAPI,
+		Key:    "sk-unused",
+		Models: "",
+		Group:  "default",
+		Status: common.ChannelStatusEnabled,
+	}
+	require.NoError(t, db.Create(unusedCh).Error)
+
+	cfg := model.GetModelPriceSyncConfig()
+	cfg.ChannelCurrencies[usedCh.Id] = "USD"
+	cfg.ChannelExchangeRates[usedCh.Id] = 1.0
+	cfg.ChannelTopupMultipliers[usedCh.Id] = 2.0
+	cfg.ChannelUpstreamGroups[usedCh.Id] = "default"
+	cfg.PreferredChannels["test-frozen-cost-model"] = usedCh.Id
+	cfg.AutoProvisionedChannels[usedCh.Id] = model.AutoProvisionedChannelMeta{
+		ChannelID:     usedCh.Id,
+		ChannelName:   usedCh.Name,
+		SourceID:      "src-1",
+		SourceName:    "nearToken",
+		UpstreamGroup: "default",
+		AutoCreated:   true,
+	}
+	cfg.ChannelTopupMultipliers[unusedCh.Id] = 2.0
+	cfg.AutoProvisionedChannels[unusedCh.Id] = model.AutoProvisionedChannelMeta{
+		ChannelID:     unusedCh.Id,
+		ChannelName:   unusedCh.Name,
+		SourceID:      "src-2",
+		SourceName:    "lumiya",
+		UpstreamGroup: "empty",
+		AutoCreated:   true,
+	}
+	require.NoError(t, model.SaveModelPriceSyncConfig(cfg))
+
+	model.SetChannelUpstreamModelCosts(usedCh.Id, map[string]model.ChannelModelCostEntry{
+		"test-frozen-cost-model": {
+			ChannelID:       usedCh.Id,
+			ChannelName:     usedCh.Name,
+			ChannelType:     constant.ChannelTypeNewAPI,
+			Model:           "test-frozen-cost-model",
+			QuotaType:       0,
+			ModelRatio:      50.0,
+			CompletionRatio: 1.0,
+			RawInputCost:    100.0,
+			RawOutputCost:   100.0,
+			InputCost:       100.0,
+			OutputCost:      100.0,
+			BaseMultiplier:  1.0,
+			Currency:        "USD",
+			ExchangeRate:    1.0,
+			FromUpstream:    true,
+		},
+	}, false)
+
+	// Record a consume log for 1M prompt tokens (revenue = $100 = 50,000,000 quota, frozen actual cost = $50)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Set("username", user.Username)
+	model.RecordConsumeLog(ginCtx, user.Id, model.RecordConsumeLogParams{
+		ChannelId:    usedCh.Id,
+		ModelName:    "test-frozen-cost-model",
+		PromptTokens: 1_000_000,
+		Quota:        int(100 * common.QuotaPerUnit),
+		Group:        "default",
+		Other:        model.NewLogOther(),
+	})
+
+	// Delete both channels
+	require.NoError(t, usedCh.Delete())
+	require.NoError(t, unusedCh.Delete())
+
+	// Active config maps must have ZERO leftovers for both deleted channels
+	afterCfg := model.GetModelPriceSyncConfig()
+	_, hasAuto := afterCfg.AutoProvisionedChannels[usedCh.Id]
+	_, hasMult := afterCfg.ChannelTopupMultipliers[usedCh.Id]
+	_, hasCurr := afterCfg.ChannelCurrencies[usedCh.Id]
+	_, hasPref := afterCfg.PreferredChannels["test-frozen-cost-model"]
+	require.False(t, hasAuto)
+	require.False(t, hasMult)
+	require.False(t, hasCurr)
+	require.False(t, hasPref)
+	_, hasUnusedMult := afterCfg.ChannelTopupMultipliers[unusedCh.Id]
+	require.False(t, hasUnusedMult)
+
+	// Used channel must be archived; unused channel (0 logs) must NOT be archived
+	snap, hasSnap := model.GetArchivedChannelSnapshot(usedCh.Id)
+	require.True(t, hasSnap)
+	require.Equal(t, "nearToken-default-1", snap.ChannelName)
+	require.InDelta(t, 2.0, snap.TopupMultiplier, 1e-6)
+	_, hasUnusedSnap := model.GetArchivedChannelSnapshot(unusedCh.Id)
+	require.False(t, hasUnusedSnap)
+
+	// GetModelCostAnalysis must preserve frozen cost ($50) and 50% margin after channel deletion
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/channel/cost_management/models?keyword=test-frozen-cost-model", nil)
+	GetModelCostAnalysis(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Models []ModelCostAnalysisRow `json:"models"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Len(t, resp.Data.Models, 1)
+	row := resp.Data.Models[0]
+	require.InDelta(t, 100.0, row.RevenueUSD, 1e-4)
+	require.InDelta(t, 50.0, row.CostUSD, 1e-4)
+	require.InDelta(t, 50.0, row.ProfitUSD, 1e-4)
+	require.InDelta(t, 50.0, row.MarginPct, 1e-2)
+	require.Len(t, row.ChannelUsages, 1)
+	require.Equal(t, "nearToken-default-1 (Deleted)", row.ChannelUsages[0].ChannelName)
+}
+
+func TestSyncSingleUpstreamAccountSkipsEmptyGroupsWritesCurrencyAndCleansRemovedGroups(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	prevLogDB := model.LOG_DB
+	prevCfg := model.GetModelPriceSyncConfig()
+	model.LOG_DB = db
+	t.Cleanup(func() {
+		model.LOG_DB = prevLogDB
+		_ = model.SaveModelPriceSyncConfig(prevCfg)
+	})
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.Option{}, &model.Ability{}))
+
+	var createdTokenGroups []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/user/self/groups":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"default":{"desc":"Default","ratio":1},"empty-img":{"desc":"Empty Image Group","ratio":1}}}`))
+		case "/api/pricing":
+			// phantom-removed only exists in group_ratio (not in self/groups) and empty-img has 0 models
+			_, _ = w.Write([]byte(`{
+				"success":true,
+				"data":[{"model_name":"gpt-4o","quota_type":0,"model_ratio":1.25,"completion_ratio":4,"enable_groups":["default"]}],
+				"group_ratio":{"default":1,"empty-img":1,"phantom-removed":0.5},
+				"usable_group":{"default":"Default","empty-img":"Empty Image Group"}
+			}`))
+		case "/api/token/":
+			if r.Method == http.MethodPost {
+				bodyBytes, _ := io.ReadAll(r.Body)
+				var payload struct {
+					Group string `json:"group"`
+				}
+				_ = common.Unmarshal(bodyBytes, &payload)
+				createdTokenGroups = append(createdTokenGroups, payload.Group)
+				_, _ = w.Write([]byte(`{"success":true}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"data":{"items":[{"id":1,"name":"new_api-default-1","key":"sk-valid-default-key","status":1,"group":"default","unlimited_quota":true}]}}`))
+		case "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_per_unit":500000}}`))
+		case "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":5000000,"used_quota":0}}`))
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	baseURL := upstream.URL
+	tag := "auto:testup"
+	// Pre-existing empty-model channel and disappeared phantom-group channel
+	staleEmptyCh := &model.Channel{
+		Name:    "testup-empty-img-1",
+		Type:    constant.ChannelTypeNewAPI,
+		BaseURL: &baseURL,
+		Key:     "sk-empty",
+		Group:   "default",
+		Models:  "",
+		Tag:     &tag,
+		Status:  common.ChannelStatusEnabled,
+	}
+	staleRemovedCh := &model.Channel{
+		Name:    "testup-phantom-removed-0.5",
+		Type:    constant.ChannelTypeNewAPI,
+		BaseURL: &baseURL,
+		Key:     "sk-removed",
+		Group:   "default",
+		Models:  "old-model",
+		Tag:     &tag,
+		Status:  common.ChannelStatusEnabled,
+	}
+	require.NoError(t, db.Create(staleEmptyCh).Error)
+	require.NoError(t, db.Create(staleRemovedCh).Error)
+
+	source := model.UpstreamAccountSource{
+		ID:                   "src-sync-test",
+		Name:                 "testup",
+		BaseURL:              upstream.URL,
+		SyncMode:             model.UpstreamSyncModeStandard,
+		UserID:               "1",
+		AccessToken:          "tok-secret",
+		Currency:             "CNY",
+		TopupMultiplier:      2.0,
+		CleanRemovedGroups:   true,
+		AdoptExistingChannel: true,
+		Enabled:              true,
+	}
+	cfg := model.GetModelPriceSyncConfig()
+	cfg.AutoProvisionedChannels[staleEmptyCh.Id] = model.AutoProvisionedChannelMeta{
+		ChannelID:     staleEmptyCh.Id,
+		ChannelName:   staleEmptyCh.Name,
+		SourceID:      source.ID,
+		SourceName:    source.Name,
+		UpstreamGroup: "empty-img",
+		AutoCreated:   true,
+	}
+	cfg.AutoProvisionedChannels[staleRemovedCh.Id] = model.AutoProvisionedChannelMeta{
+		ChannelID:     staleRemovedCh.Id,
+		ChannelName:   staleRemovedCh.Name,
+		SourceID:      source.ID,
+		SourceName:    source.Name,
+		UpstreamGroup: "phantom-removed",
+		AutoCreated:   true,
+	}
+	cfg.ChannelTopupMultipliers[staleEmptyCh.Id] = 2.0
+	cfg.ChannelTopupMultipliers[staleRemovedCh.Id] = 2.0
+	cfg.AutoSyncPrices = false
+
+	require.NoError(t, syncSingleUpstreamAccountSource(t.Context(), &source, &cfg))
+
+	// No upstream token should be created for empty-img or phantom-removed
+	require.Empty(t, createdTokenGroups)
+
+	// Only testup-default-1 should remain in DB, with currency_code = "CNY" and models = "gpt-4o"
+	var remaining []*model.Channel
+	require.NoError(t, db.Order("id ASC").Find(&remaining).Error)
+	require.Len(t, remaining, 1)
+	require.Equal(t, "testup-default-1", remaining[0].Name)
+	require.Equal(t, "gpt-4o", remaining[0].Models)
+	require.NotNil(t, remaining[0].CurrencyCode)
+	require.Equal(t, "CNY", *remaining[0].CurrencyCode)
+
+	// Both stale channels must be purged from config maps
+	finalCfg := model.GetModelPriceSyncConfig()
+	_, hasEmpty := finalCfg.ChannelTopupMultipliers[staleEmptyCh.Id]
+	_, hasRemoved := finalCfg.ChannelTopupMultipliers[staleRemovedCh.Id]
+	require.False(t, hasEmpty)
+	require.False(t, hasRemoved)
+	require.InDelta(t, 2.0, finalCfg.ChannelTopupMultipliers[remaining[0].Id], 1e-6)
 }

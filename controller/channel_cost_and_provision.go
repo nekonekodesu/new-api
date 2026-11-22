@@ -814,14 +814,27 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 	// 1. Fetch upstream groups from /api/user/self/groups and /api/pricing
 	groupMap := make(map[string]upstreamGroupEntry)
 	selfGroups, selfGroupsErr := fetchUpstreamSelfGroups(ctx, source.BaseURL, source.AccessToken, source.UserID, source.SyncMode)
-	if selfGroupsErr == nil {
+	hasAuthoritativeSelfGroups := selfGroupsErr == nil && len(selfGroups) > 0
+	if hasAuthoritativeSelfGroups {
 		for k, v := range selfGroups {
 			groupMap[k] = v
 		}
 	}
 
 	pricingResp, pricingErr := fetchUpstreamPricingByURL(ctx, source.BaseURL, source.AccessToken, source.UserID, source.SyncMode)
+	pricingGroupsWithModels := make(map[string]int)
 	if pricingResp != nil {
+		for _, item := range pricingResp.Data {
+			if strings.TrimSpace(item.ModelName) == "" {
+				continue
+			}
+			for _, eg := range item.EnableGroups {
+				eg = strings.TrimSpace(eg)
+				if eg != "" {
+					pricingGroupsWithModels[eg]++
+				}
+			}
+		}
 		for g, desc := range pricingResp.UsableGroup {
 			g = strings.TrimSpace(g)
 			if isAutoUpstreamGroup(g, desc) {
@@ -839,7 +852,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 					existing.Description = desc
 				}
 				groupMap[g] = existing
-			} else {
+			} else if !hasAuthoritativeSelfGroups {
 				groupMap[g] = upstreamGroupEntry{
 					Name:        g,
 					Description: strings.TrimSpace(desc),
@@ -860,7 +873,8 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 					existing.Ratio = r
 					groupMap[g] = existing
 				}
-			} else {
+			} else if !hasAuthoritativeSelfGroups && pricingGroupsWithModels[g] > 0 {
+				// Never resurrect removed/phantom groups that only linger in GroupRatio without any models.
 				groupMap[g] = upstreamGroupEntry{
 					Name:  g,
 					Ratio: r,
@@ -904,9 +918,27 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 		}
 	}
 
+	// Pre-check whether each group has any models in /api/pricing before creating upstream tokens.
+	pricingModelCountByGroup := make(map[string]int, len(sortedGroups))
+	if pricingResp != nil {
+		for _, g := range sortedGroups {
+			cnt := 0
+			for _, item := range pricingResp.Data {
+				if strings.TrimSpace(item.ModelName) != "" && upstreamItemInGroup(item, g) {
+					cnt++
+				}
+			}
+			pricingModelCountByGroup[g] = cnt
+		}
+	}
+
 	createdAnyToken := false
 	for _, g := range sortedGroups {
 		if _, exists := tokenByGroup[g]; exists {
+			continue
+		}
+		if pricingResp != nil && pricingModelCountByGroup[g] == 0 {
+			// Skip creating an upstream token for a group with zero models.
 			continue
 		}
 		entry := groupMap[g]
@@ -1009,6 +1041,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 	updatedNames := make([]string, 0)
 	removedNames := make([]string, 0)
 	syncedChannelIDs := make([]int, 0, len(sortedGroups))
+	activeModelGroupSet := make(map[string]struct{}, len(sortedGroups))
 	now := time.Now().Unix()
 
 	selfBalance := fetchUpstreamSelfBalance(ctx, source.BaseURL, source.AccessToken, source.UserID, source.SyncMode, resolvedCurrency, resolvedRate)
@@ -1104,6 +1137,31 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 		sort.Strings(modelsList)
 		modelsJoined := strings.Join(modelsList, ",")
 
+		if len(modelsList) == 0 {
+			// Do not create new empty-model channels. For existing channels whose group now has
+			// zero models, let Step 4 delete auto-managed ones when CleanRemovedGroups is on,
+			// or auto-disable them and clear stale models when CleanRemovedGroups is off.
+			if existingCh != nil {
+				prevMeta, hadMeta := cfg.AutoProvisionedChannels[existingCh.Id]
+				isAuto := (hadMeta && prevMeta.AutoCreated) || source.AdoptExistingChannel || strings.EqualFold(existingCh.GetTag(), tagVal)
+				if !(source.CleanRemovedGroups && isAuto) && model.DB != nil {
+					if existingCh.Models != "" || existingCh.Status == common.ChannelStatusEnabled {
+						existingCh.Models = ""
+						existingCh.Status = common.ChannelStatusAutoDisabled
+						_ = model.DB.Model(&model.Channel{}).Where("id = ?", existingCh.Id).Updates(map[string]any{
+							"models": "",
+							"status": common.ChannelStatusAutoDisabled,
+						}).Error
+						_ = existingCh.UpdateAbilities(nil)
+						updatedNames = append(updatedNames, existingCh.Name)
+						syncedChannelIDs = append(syncedChannelIDs, existingCh.Id)
+					}
+				}
+			}
+			continue
+		}
+		activeModelGroupSet[g] = struct{}{}
+
 		var targetChannelID int
 		if existingCh != nil {
 			updates := map[string]any{
@@ -1111,11 +1169,16 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 				"base_url": source.BaseURL,
 			}
 			existingCh.Name = expectedChName
+			if resolvedCurrency != "" {
+				currCopy := resolvedCurrency
+				updates["currency_code"] = currCopy
+				existingCh.CurrencyCode = &currCopy
+			}
 			if fullKey != "" && fullKey != existingCh.Key {
 				updates["key"] = fullKey
 				existingCh.Key = fullKey
 			}
-			if modelsJoined != "" && modelsJoined != existingCh.Models {
+			if modelsJoined != existingCh.Models {
 				updates["models"] = modelsJoined
 				existingCh.Models = modelsJoined
 			}
@@ -1170,6 +1233,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 			}
 			baseURLCopy := source.BaseURL
 			tagCopy := tagVal
+			currCopy := resolvedCurrency
 			weight := uint(1)
 			priority := int64(0)
 			newCh := model.Channel{
@@ -1183,6 +1247,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 				Weight:             &weight,
 				Priority:           &priority,
 				Tag:                &tagCopy,
+				CurrencyCode:       &currCopy,
 				Balance:            chBalUSD,
 				BalanceUpdatedTime: now,
 				CreatedTime:        now,
@@ -1239,18 +1304,16 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 		}
 	}
 
-	// 4. Clean up auto-created channels whose upstream group disappeared
+	// 4. Clean up auto-created channels whose upstream group disappeared or now has zero models
 	if source.CleanRemovedGroups && len(sortedGroups) > 0 && model.DB != nil {
-		activeGroupSet := make(map[string]struct{}, len(sortedGroups))
-		for _, g := range sortedGroups {
-			activeGroupSet[g] = struct{}{}
-		}
 		var currentChannels []*model.Channel
 		if err := model.DB.Find(&currentChannels).Error; err == nil {
+			validChannelIDs := make(map[int]struct{}, len(currentChannels))
 			for _, ch := range currentChannels {
 				if ch == nil {
 					continue
 				}
+				validChannelIDs[ch.Id] = struct{}{}
 				meta, hasMeta := cfg.AutoProvisionedChannels[ch.Id]
 				belongsToSource := false
 				isAutoCreated := false
@@ -1280,34 +1343,47 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 				if upGroup == "" {
 					continue
 				}
-				if _, stillExists := activeGroupSet[upGroup]; !stillExists {
+				if _, stillActive := activeModelGroupSet[upGroup]; !stillActive {
 					removedNames = append(removedNames, ch.Name)
 					_ = ch.Delete()
+					delete(validChannelIDs, ch.Id)
 					delete(cfg.AutoProvisionedChannels, ch.Id)
 					delete(cfg.ChannelUpstreamGroups, ch.Id)
 					delete(cfg.ChannelCurrencies, ch.Id)
 					delete(cfg.ChannelExchangeRates, ch.Id)
 					delete(cfg.ChannelTopupMultipliers, ch.Id)
+					for mName, prefID := range cfg.PreferredChannels {
+						if prefID == ch.Id {
+							delete(cfg.PreferredChannels, mName)
+						}
+					}
 				}
 			}
+			model.PruneOrphanChannelsFromSyncConfig(cfg, validChannelIDs)
 		}
 	}
 
+	activeGroupsList := make([]string, 0, len(activeModelGroupSet))
+	for g := range activeModelGroupSet {
+		activeGroupsList = append(activeGroupsList, g)
+	}
+	sort.Strings(activeGroupsList)
+
 	source.LastSyncAt = now
 	source.LastStatus = "success"
-	source.ActiveGroups = sortedGroups
+	source.ActiveGroups = activeGroupsList
 	source.CreatedChannels = createdNames
 	source.UpdatedChannels = updatedNames
 	source.RemovedChannels = removedNames
 	source.LastMessage = fmt.Sprintf(
 		"Groups: %d | Created: +%d | Updated: %d | Removed: -%d",
-		len(sortedGroups), len(createdNames), len(updatedNames), len(removedNames),
+		len(activeGroupsList), len(createdNames), len(updatedNames), len(removedNames),
 	)
 
 	_ = model.SaveModelPriceSyncConfig(*cfg)
 
-	if len(syncedChannelIDs) > 0 && model.DB != nil {
-		if pricingResp != nil {
+	if (len(syncedChannelIDs) > 0 || len(removedNames) > 0) && model.DB != nil {
+		if pricingResp != nil || len(syncedChannelIDs) == 0 {
 			model.RecalculateAllChannelModelCosts(true)
 			if cfg.AutoSyncPrices {
 				_, _ = applyAuthoritativeModelPricesToSystem(*cfg)
@@ -1323,7 +1399,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 				nil,
 			)
 		}
-		if cfg.IsClassifierEnabled() {
+		if len(syncedChannelIDs) > 0 && cfg.IsClassifierEnabled() {
 			_, _ = model.ApplyChannelClassifierToChannels(syncedChannelIDs)
 		}
 		model.InitChannelCache()
@@ -1514,13 +1590,18 @@ func SaveUpstreamAccount(c *gin.Context) {
 		cfg.UpstreamAccounts = append(cfg.UpstreamAccounts, req)
 	}
 
-	// Propagate TopupMultiplier immediately to all channels belonging to this upstream account
+	// Propagate TopupMultiplier and Currency immediately to all channels belonging to this upstream account
 	if cfg.ChannelTopupMultipliers == nil {
 		cfg.ChannelTopupMultipliers = make(map[int]float64)
 	}
+	if cfg.ChannelCurrencies == nil {
+		cfg.ChannelCurrencies = make(map[int]string)
+	}
+	reqCurr := strings.ToUpper(strings.TrimSpace(req.Currency))
+	matchedChIDs := make(map[int]struct{})
 	for chID, meta := range cfg.AutoProvisionedChannels {
 		if chID > 0 && (meta.SourceID == req.ID || strings.EqualFold(strings.TrimSpace(meta.SourceName), req.Name)) {
-			cfg.ChannelTopupMultipliers[chID] = req.TopupMultiplier
+			matchedChIDs[chID] = struct{}{}
 		}
 	}
 	if model.DB != nil {
@@ -1533,8 +1614,17 @@ func SaveUpstreamAccount(c *gin.Context) {
 				}
 				srcID, srcName := model.ResolveChannelUpstreamSource(ch, nil, cfg)
 				if (upKey != "" && srcID == upKey) || strings.EqualFold(srcName, req.Name) {
-					cfg.ChannelTopupMultipliers[ch.Id] = req.TopupMultiplier
+					matchedChIDs[ch.Id] = struct{}{}
 				}
+			}
+		}
+	}
+	for chID := range matchedChIDs {
+		cfg.ChannelTopupMultipliers[chID] = req.TopupMultiplier
+		if reqCurr != "" && reqCurr != "AUTO" {
+			cfg.ChannelCurrencies[chID] = reqCurr
+			if model.DB != nil {
+				_ = model.DB.Model(&model.Channel{}).Where("id = ?", chID).Update("currency_code", reqCurr).Error
 			}
 		}
 	}
@@ -2188,11 +2278,26 @@ func GetModelCostAnalysis(c *gin.Context) {
 			ch := chByID[chID]
 			chName := fmt.Sprintf("Channel #%d", chID)
 			chType := 0
+			var archivedSnap model.ArchivedChannelSnapshot
+			hasArchivedSnap := false
 			if ch != nil {
 				chName = ch.Name
 				chType = ch.Type
+			} else if snap, ok := model.GetArchivedChannelSnapshot(chID); ok {
+				archivedSnap = snap
+				hasArchivedSnap = true
+				if strings.TrimSpace(snap.ChannelName) != "" {
+					chName = strings.TrimSpace(snap.ChannelName) + " (Deleted)"
+				}
+				chType = snap.ChannelType
 			}
 			entry, hasEntry := costMap[chID][modelName]
+			if !hasEntry && hasArchivedSnap {
+				if archivedEntry, ok := archivedSnap.ModelCosts[modelName]; ok {
+					entry = archivedEntry
+					hasEntry = true
+				}
+			}
 			inCost := baseIn
 			outCost := baseOut
 			rawInCost := baseIn
@@ -2228,8 +2333,39 @@ func GetModelCostAnalysis(c *gin.Context) {
 				outCost = roundMoney6(baseOut * costScale)
 				rawInCost = roundMoney6(baseIn * baseMult)
 				rawOutCost = roundMoney6(baseOut * baseMult)
+			} else if hasArchivedSnap {
+				curr = archivedSnap.Currency
+				if curr == "" {
+					curr = "USD"
+				}
+				exRate = archivedSnap.ExchangeRate
+				if exRate <= 0 {
+					exRate = 1.0
+				}
+				baseMult = archivedSnap.BaseMultiplier
+				if baseMult <= 0 {
+					baseMult = 1.0
+				}
+				costScale := baseMult
+				if archivedSnap.ChannelType == constant.ChannelTypeNewAPI {
+					unitMult := resolveUpstreamUnitToLocalUnitMultiplier(curr, exRate)
+					if unitMult > 0 {
+						costScale = roundMoney6(costScale * unitMult)
+					}
+				}
+				inCost = roundMoney6(baseIn * costScale)
+				outCost = roundMoney6(baseOut * costScale)
+				rawInCost = roundMoney6(baseIn * baseMult)
+				rawOutCost = roundMoney6(baseOut * baseMult)
 			}
-			topupMult := model.ResolveChannelTopupMultiplier(chID, ch, syncCfg)
+			topupMult := 1.0
+			if ch != nil {
+				topupMult = model.ResolveChannelTopupMultiplier(chID, ch, syncCfg)
+			} else if hasArchivedSnap && archivedSnap.TopupMultiplier > 0 {
+				topupMult = archivedSnap.TopupMultiplier
+			} else {
+				topupMult = model.ResolveChannelTopupMultiplier(chID, nil, syncCfg)
+			}
 			if topupMult <= 0 {
 				topupMult = 1.0
 			}
@@ -2252,11 +2388,15 @@ func GetModelCostAnalysis(c *gin.Context) {
 				}
 				hasCostBounds = true
 			}
+			upGroup := syncCfg.ChannelUpstreamGroups[chID]
+			if upGroup == "" && hasArchivedSnap {
+				upGroup = archivedSnap.UpstreamGroup
+			}
 			chStatMap[chID] = &ModelChannelUsageDetail{
 				ChannelID:       chID,
 				ChannelName:     chName,
 				ChannelType:     chType,
-				UpstreamGroup:   syncCfg.ChannelUpstreamGroups[chID],
+				UpstreamGroup:   upGroup,
 				BaseMultiplier:  baseMult,
 				TopupMultiplier: topupMult,
 				Currency:        curr,
@@ -2292,37 +2432,57 @@ func GetModelCostAnalysis(c *gin.Context) {
 
 		for _, st := range mStats {
 			rev := roundMoney6(float64(st.TotalQuota) / quotaUnit)
-			entry, hasEntry := costMap[st.ChannelID][modelName]
-			if !hasEntry {
-				entry.Model = modelName
-				if cacheR, ok := ratio_setting.GetCacheRatio(modelName); ok && cacheR > 0 {
-					entry.CacheRatio = cacheR
+			var cost float64
+			if st.FrozenCallCount >= st.CallCount && st.FrozenCallCount > 0 {
+				cost = roundMoney6(st.FrozenCostUSD)
+			} else {
+				remCalls := max(st.CallCount-st.FrozenCallCount, 0)
+				remPrompt := max(st.PromptTokens-st.FrozenPromptTokens, 0)
+				remComp := max(st.CompletionTokens-st.FrozenCompletionTokens, 0)
+				remCache := max(st.CacheTokens-st.FrozenCacheTokens, 0)
+				remCacheWrite := max(st.CacheWriteTokens-st.FrozenCacheWriteTokens, 0)
+
+				entry, hasEntry := costMap[st.ChannelID][modelName]
+				if !hasEntry {
+					if snap, ok := model.GetArchivedChannelSnapshot(st.ChannelID); ok {
+						if archivedEntry, ok := snap.ModelCosts[modelName]; ok {
+							entry = archivedEntry
+							hasEntry = true
+						}
+					}
 				}
-				if createCacheR, ok := ratio_setting.GetCreateCacheRatio(modelName); ok && createCacheR > 0 {
-					entry.CreateCacheRatio = createCacheR
+				if !hasEntry {
+					entry.Model = modelName
+					if cacheR, ok := ratio_setting.GetCacheRatio(modelName); ok && cacheR > 0 {
+						entry.CacheRatio = cacheR
+					}
+					if createCacheR, ok := ratio_setting.GetCreateCacheRatio(modelName); ok && createCacheR > 0 {
+						entry.CreateCacheRatio = createCacheR
+					}
 				}
-			}
-			effBaseIn := baseIn
-			effBaseOut := baseOut
-			usedPreDividedDetail := false
-			if !hasEntry {
-				if chDetail, ok := chStatMap[st.ChannelID]; ok && (chDetail.InputCost > 0 || chDetail.OutputCost > 0) {
-					effBaseIn = chDetail.InputCost
-					effBaseOut = chDetail.OutputCost
-					usedPreDividedDetail = true
+				effBaseIn := baseIn
+				effBaseOut := baseOut
+				usedPreDividedDetail := false
+				if !hasEntry {
+					if chDetail, ok := chStatMap[st.ChannelID]; ok && (chDetail.InputCost > 0 || chDetail.OutputCost > 0) {
+						effBaseIn = chDetail.InputCost
+						effBaseOut = chDetail.OutputCost
+						usedPreDividedDetail = true
+					}
 				}
-			}
-			cost := calculateUsageUpstreamCostUSD(entry, hasEntry, quotaType, effBaseIn, effBaseOut, st.CallCount, st.PromptTokens, st.CompletionTokens, st.CacheTokens, st.CacheWriteTokens)
-			if !usedPreDividedDetail {
-				topupMult := 1.0
-				if chDetail, ok := chStatMap[st.ChannelID]; ok && chDetail.TopupMultiplier > 0 {
-					topupMult = chDetail.TopupMultiplier
-				} else {
-					topupMult = model.ResolveChannelTopupMultiplier(st.ChannelID, chByID[st.ChannelID], syncCfg)
+				remCost := calculateUsageUpstreamCostUSD(entry, hasEntry, quotaType, effBaseIn, effBaseOut, remCalls, remPrompt, remComp, remCache, remCacheWrite)
+				if !usedPreDividedDetail {
+					topupMult := 1.0
+					if chDetail, ok := chStatMap[st.ChannelID]; ok && chDetail.TopupMultiplier > 0 {
+						topupMult = chDetail.TopupMultiplier
+					} else {
+						topupMult = model.ResolveChannelTopupMultiplier(st.ChannelID, chByID[st.ChannelID], syncCfg)
+					}
+					if topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
+						remCost = roundMoney6(remCost / topupMult)
+					}
 				}
-				if topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
-					cost = roundMoney6(cost / topupMult)
-				}
+				cost = roundMoney6(st.FrozenCostUSD + remCost)
 			}
 
 			totalCalls += st.CallCount
@@ -2631,37 +2791,77 @@ func GetUserCostAnalysis(c *gin.Context) {
 
 		for _, st := range uLogs {
 			rev := roundMoney6(float64(st.TotalQuota) / quotaUnit)
-			bp := getBasePricing(st.ModelName)
-			entry, hasEntry := costMap[st.ChannelID][st.ModelName]
-			effIn := bp.inPrice
-			effOut := bp.outPrice
-			if !hasEntry {
-				entry.Model = st.ModelName
-				if cacheR, ok := ratio_setting.GetCacheRatio(st.ModelName); ok && cacheR > 0 {
-					entry.CacheRatio = cacheR
-				}
-				if createCacheR, ok := ratio_setting.GetCreateCacheRatio(st.ModelName); ok && createCacheR > 0 {
-					entry.CreateCacheRatio = createCacheR
-				}
-				if ch := chByID[st.ChannelID]; ch != nil {
-					curr, exRate, baseMult := model.ResolveChannelCurrencyAndMultiplier(ch, costMap[st.ChannelID], syncCfg)
-					costScale := 1.0
-					if baseMult > 0 && baseMult != 1.0 {
-						costScale = baseMult
+			var cost float64
+			if st.FrozenCallCount >= st.CallCount && st.FrozenCallCount > 0 {
+				cost = roundMoney6(st.FrozenCostUSD)
+			} else {
+				remCalls := max(st.CallCount-st.FrozenCallCount, 0)
+				remPrompt := max(st.PromptTokens-st.FrozenPromptTokens, 0)
+				remComp := max(st.CompletionTokens-st.FrozenCompletionTokens, 0)
+				remCache := max(st.CacheTokens-st.FrozenCacheTokens, 0)
+				remCacheWrite := max(st.CacheWriteTokens-st.FrozenCacheWriteTokens, 0)
+
+				bp := getBasePricing(st.ModelName)
+				entry, hasEntry := costMap[st.ChannelID][st.ModelName]
+				archivedSnap, hasArchivedSnap := model.GetArchivedChannelSnapshot(st.ChannelID)
+				if !hasEntry && hasArchivedSnap {
+					if archivedEntry, ok := archivedSnap.ModelCosts[st.ModelName]; ok {
+						entry = archivedEntry
+						hasEntry = true
 					}
-					if ch.Type == constant.ChannelTypeNewAPI {
-						unitMult := resolveUpstreamUnitToLocalUnitMultiplier(curr, exRate)
-						if unitMult > 0 {
-							costScale = roundMoney6(costScale * unitMult)
+				}
+				effIn := bp.inPrice
+				effOut := bp.outPrice
+				if !hasEntry {
+					entry.Model = st.ModelName
+					if cacheR, ok := ratio_setting.GetCacheRatio(st.ModelName); ok && cacheR > 0 {
+						entry.CacheRatio = cacheR
+					}
+					if createCacheR, ok := ratio_setting.GetCreateCacheRatio(st.ModelName); ok && createCacheR > 0 {
+						entry.CreateCacheRatio = createCacheR
+					}
+					if ch := chByID[st.ChannelID]; ch != nil {
+						curr, exRate, baseMult := model.ResolveChannelCurrencyAndMultiplier(ch, costMap[st.ChannelID], syncCfg)
+						costScale := 1.0
+						if baseMult > 0 && baseMult != 1.0 {
+							costScale = baseMult
 						}
+						if ch.Type == constant.ChannelTypeNewAPI {
+							unitMult := resolveUpstreamUnitToLocalUnitMultiplier(curr, exRate)
+							if unitMult > 0 {
+								costScale = roundMoney6(costScale * unitMult)
+							}
+						}
+						effIn = roundMoney6(bp.inPrice * costScale)
+						effOut = roundMoney6(bp.outPrice * costScale)
+					} else if hasArchivedSnap {
+						costScale := 1.0
+						if archivedSnap.BaseMultiplier > 0 && archivedSnap.BaseMultiplier != 1.0 {
+							costScale = archivedSnap.BaseMultiplier
+						}
+						if archivedSnap.ChannelType == constant.ChannelTypeNewAPI {
+							unitMult := resolveUpstreamUnitToLocalUnitMultiplier(archivedSnap.Currency, archivedSnap.ExchangeRate)
+							if unitMult > 0 {
+								costScale = roundMoney6(costScale * unitMult)
+							}
+						}
+						effIn = roundMoney6(bp.inPrice * costScale)
+						effOut = roundMoney6(bp.outPrice * costScale)
 					}
-					effIn = roundMoney6(bp.inPrice * costScale)
-					effOut = roundMoney6(bp.outPrice * costScale)
 				}
-			}
-			cost := calculateUsageUpstreamCostUSD(entry, hasEntry, bp.quotaType, effIn, effOut, st.CallCount, st.PromptTokens, st.CompletionTokens, st.CacheTokens, st.CacheWriteTokens)
-			if topupMult := model.ResolveChannelTopupMultiplier(st.ChannelID, chByID[st.ChannelID], syncCfg); topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
-				cost = roundMoney6(cost / topupMult)
+				remCost := calculateUsageUpstreamCostUSD(entry, hasEntry, bp.quotaType, effIn, effOut, remCalls, remPrompt, remComp, remCache, remCacheWrite)
+				topupMult := 1.0
+				if chByID[st.ChannelID] != nil {
+					topupMult = model.ResolveChannelTopupMultiplier(st.ChannelID, chByID[st.ChannelID], syncCfg)
+				} else if hasArchivedSnap && archivedSnap.TopupMultiplier > 0 {
+					topupMult = archivedSnap.TopupMultiplier
+				} else {
+					topupMult = model.ResolveChannelTopupMultiplier(st.ChannelID, nil, syncCfg)
+				}
+				if topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
+					remCost = roundMoney6(remCost / topupMult)
+				}
+				cost = roundMoney6(st.FrozenCostUSD + remCost)
 			}
 			prof := roundMoney6(rev - cost)
 			mPct := 0.0
@@ -2671,7 +2871,11 @@ func GetUserCostAnalysis(c *gin.Context) {
 
 			chName := chNameByID[st.ChannelID]
 			if chName == "" {
-				chName = fmt.Sprintf("Channel #%d", st.ChannelID)
+				if archivedName := model.GetArchivedChannelName(st.ChannelID); archivedName != "" {
+					chName = archivedName + " (Deleted)"
+				} else {
+					chName = fmt.Sprintf("Channel #%d", st.ChannelID)
+				}
 			}
 
 			uCalls += st.CallCount

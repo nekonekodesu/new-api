@@ -24,11 +24,12 @@ import (
 )
 
 const (
-	GroupSchedulingConfigOptionKey  = "GroupSchedulingConfig"
-	GroupCostControlConfigOptionKey = "GroupCostControlConfig"
-	ChannelModelCostsOptionKey      = "ChannelModelCosts"
-	ModelPriceSyncConfigOptionKey   = "ModelPriceSyncConfig"
-	CronJobsConfigOptionKey         = "CronJobsConfig"
+	GroupSchedulingConfigOptionKey    = "GroupSchedulingConfig"
+	GroupCostControlConfigOptionKey   = "GroupCostControlConfig"
+	ChannelModelCostsOptionKey        = "ChannelModelCosts"
+	ArchivedChannelSnapshotsOptionKey = "ArchivedChannelSnapshots"
+	ModelPriceSyncConfigOptionKey     = "ModelPriceSyncConfig"
+	CronJobsConfigOptionKey           = "CronJobsConfig"
 
 	SchedulingModeStandard     = "standard"
 	SchedulingModeBBR          = "bbr"
@@ -358,6 +359,9 @@ var (
 
 	channelModelCostMu  sync.RWMutex
 	channelModelCostMap = map[int]map[string]ChannelModelCostEntry{}
+
+	archivedChannelSnapshotsMu  sync.RWMutex
+	archivedChannelSnapshotsMap = map[int]ArchivedChannelSnapshot{}
 
 	modelPriceSyncMu  sync.RWMutex
 	modelPriceSyncCfg = defaultModelPriceSyncConfig()
@@ -1545,6 +1549,314 @@ func parseCronField(field string, minVal int, maxVal int) (uint64, error) {
 	return mask, nil
 }
 
+type ArchivedChannelSnapshot struct {
+	ChannelID       int                              `json:"channel_id"`
+	ChannelName     string                           `json:"channel_name"`
+	ChannelType     int                              `json:"channel_type"`
+	UpstreamGroup   string                           `json:"upstream_group,omitempty"`
+	Currency        string                           `json:"currency"`
+	ExchangeRate    float64                          `json:"exchange_rate"`
+	BaseMultiplier  float64                          `json:"base_multiplier"`
+	TopupMultiplier float64                          `json:"topup_multiplier"`
+	DeletedAt       int64                            `json:"deleted_at"`
+	ModelCosts      map[string]ChannelModelCostEntry `json:"model_costs,omitempty"`
+}
+
+func cloneArchivedChannelSnapshot(src ArchivedChannelSnapshot) ArchivedChannelSnapshot {
+	cp := src
+	if src.ModelCosts != nil {
+		cp.ModelCosts = maps.Clone(src.ModelCosts)
+	}
+	return cp
+}
+
+func LoadArchivedChannelSnapshotsFromJSON(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		archivedChannelSnapshotsMu.Lock()
+		archivedChannelSnapshotsMap = make(map[int]ArchivedChannelSnapshot)
+		archivedChannelSnapshotsMu.Unlock()
+		return nil
+	}
+	var parsed map[int]ArchivedChannelSnapshot
+	if err := common.Unmarshal([]byte(raw), &parsed); err != nil {
+		return err
+	}
+	if parsed == nil {
+		parsed = make(map[int]ArchivedChannelSnapshot)
+	}
+	for id, snap := range parsed {
+		if snap.TopupMultiplier <= 0 || math.IsNaN(snap.TopupMultiplier) || math.IsInf(snap.TopupMultiplier, 0) {
+			snap.TopupMultiplier = 1.0
+		}
+		if snap.BaseMultiplier <= 0 {
+			snap.BaseMultiplier = 1.0
+		}
+		parsed[id] = snap
+	}
+	archivedChannelSnapshotsMu.Lock()
+	archivedChannelSnapshotsMap = parsed
+	archivedChannelSnapshotsMu.Unlock()
+	return nil
+}
+
+func GetArchivedChannelSnapshot(channelID int) (ArchivedChannelSnapshot, bool) {
+	if channelID <= 0 {
+		return ArchivedChannelSnapshot{}, false
+	}
+	archivedChannelSnapshotsMu.RLock()
+	snap, ok := archivedChannelSnapshotsMap[channelID]
+	archivedChannelSnapshotsMu.RUnlock()
+	if !ok {
+		return ArchivedChannelSnapshot{}, false
+	}
+	return cloneArchivedChannelSnapshot(snap), true
+}
+
+func GetArchivedChannelName(channelID int) string {
+	snap, ok := GetArchivedChannelSnapshot(channelID)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(snap.ChannelName)
+}
+
+func saveArchivedChannelSnapshots(snapshot map[int]ArchivedChannelSnapshot) error {
+	if DB == nil {
+		return nil
+	}
+	encoded, err := common.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	common.OptionMapRWMutex.Lock()
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
+	common.OptionMapRWMutex.Unlock()
+	return UpdateOption(ArchivedChannelSnapshotsOptionKey, string(encoded))
+}
+
+// ArchiveAndCleanupDeletedChannels snapshots cost metadata for deleted channels
+// that have historical consumption logs, then prunes all deleted channel IDs
+// from active sync configuration maps and in-memory cost caches.
+func ArchiveAndCleanupDeletedChannels(deletedChannels []*Channel) {
+	if len(deletedChannels) == 0 {
+		return
+	}
+	chByID := make(map[int]*Channel, len(deletedChannels))
+	ids := make([]int, 0, len(deletedChannels))
+	for _, ch := range deletedChannels {
+		if ch == nil || ch.Id <= 0 {
+			continue
+		}
+		if _, exists := chByID[ch.Id]; !exists {
+			chByID[ch.Id] = ch
+			ids = append(ids, ch.Id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	// Query LOG_DB to find which (channel_id, model_name) pairs actually have consume logs.
+	usedModelsByCh := make(map[int]map[string]struct{})
+	logDB := LOG_DB
+	if logDB == nil {
+		logDB = DB
+	}
+	if logDB != nil {
+		type chModelPair struct {
+			ChannelID int    `gorm:"column:channel_id"`
+			ModelName string `gorm:"column:model_name"`
+		}
+		var pairs []chModelPair
+		if err := logDB.Model(&Log{}).
+			Select("channel_id, model_name").
+			Where("type = ? AND channel_id IN ?", LogTypeConsume, ids).
+			Group("channel_id, model_name").
+			Scan(&pairs).Error; err == nil {
+			for _, p := range pairs {
+				if p.ChannelID <= 0 {
+					continue
+				}
+				if usedModelsByCh[p.ChannelID] == nil {
+					usedModelsByCh[p.ChannelID] = make(map[string]struct{})
+				}
+				if m := strings.TrimSpace(p.ModelName); m != "" {
+					usedModelsByCh[p.ChannelID][m] = struct{}{}
+				}
+			}
+		}
+	}
+
+	syncCfg := GetModelPriceSyncConfig()
+	now := time.Now().Unix()
+	archivedAny := false
+
+	channelModelCostMu.RLock()
+	archivedChannelSnapshotsMu.Lock()
+	for _, chID := range ids {
+		ch := chByID[chID]
+		usedModels := usedModelsByCh[chID]
+		if len(usedModels) == 0 && (ch == nil || ch.UsedQuota <= 0) {
+			// Zero consumption history: skip archiving to avoid bloat.
+			continue
+		}
+		chCosts := channelModelCostMap[chID]
+		curr, effRate, baseMult := ResolveChannelCurrencyAndMultiplier(ch, chCosts, syncCfg)
+		topupMult := ResolveChannelTopupMultiplier(chID, ch, syncCfg)
+		if topupMult <= 0 {
+			topupMult = 1.0
+		}
+		chName := ""
+		chType := 0
+		if ch != nil {
+			chName = strings.TrimSpace(ch.Name)
+			chType = ch.Type
+		}
+		if chName == "" {
+			if meta, ok := syncCfg.AutoProvisionedChannels[chID]; ok {
+				chName = strings.TrimSpace(meta.ChannelName)
+			}
+		}
+		upGroup := strings.TrimSpace(syncCfg.ChannelUpstreamGroups[chID])
+		if upGroup == "" {
+			if meta, ok := syncCfg.AutoProvisionedChannels[chID]; ok {
+				upGroup = strings.TrimSpace(meta.UpstreamGroup)
+			}
+		}
+
+		keptModels := make(map[string]ChannelModelCostEntry, len(usedModels))
+		for mName := range usedModels {
+			if entry, ok := chCosts[mName]; ok {
+				keptModels[mName] = entry
+			} else if ch != nil {
+				keptModels[mName] = computeDefaultModelCostEntry(ch, mName, now, chCosts)
+			}
+		}
+		archivedChannelSnapshotsMap[chID] = ArchivedChannelSnapshot{
+			ChannelID:       chID,
+			ChannelName:     chName,
+			ChannelType:     chType,
+			UpstreamGroup:   upGroup,
+			Currency:        curr,
+			ExchangeRate:    effRate,
+			BaseMultiplier:  baseMult,
+			TopupMultiplier: topupMult,
+			DeletedAt:       now,
+			ModelCosts:      keptModels,
+		}
+		archivedAny = true
+	}
+	var snapshotsToPersist map[int]ArchivedChannelSnapshot
+	if archivedAny {
+		snapshotsToPersist = make(map[int]ArchivedChannelSnapshot, len(archivedChannelSnapshotsMap))
+		for id, s := range archivedChannelSnapshotsMap {
+			snapshotsToPersist[id] = cloneArchivedChannelSnapshot(s)
+		}
+	}
+	archivedChannelSnapshotsMu.Unlock()
+	channelModelCostMu.RUnlock()
+	if archivedAny {
+		// Persist outside locks because UpdateOption invokes LoadArchivedChannelSnapshotsFromJSON.
+		_ = saveArchivedChannelSnapshots(snapshotsToPersist)
+	}
+
+	// Remove deleted IDs from active ModelPriceSyncConfig maps.
+	deletedSet := make(map[int]struct{}, len(ids))
+	for _, id := range ids {
+		deletedSet[id] = struct{}{}
+	}
+	cfgChanged := false
+	for _, id := range ids {
+		if _, ok := syncCfg.AutoProvisionedChannels[id]; ok {
+			delete(syncCfg.AutoProvisionedChannels, id)
+			cfgChanged = true
+		}
+		if _, ok := syncCfg.ChannelUpstreamGroups[id]; ok {
+			delete(syncCfg.ChannelUpstreamGroups, id)
+			cfgChanged = true
+		}
+		if _, ok := syncCfg.ChannelCurrencies[id]; ok {
+			delete(syncCfg.ChannelCurrencies, id)
+			cfgChanged = true
+		}
+		if _, ok := syncCfg.ChannelExchangeRates[id]; ok {
+			delete(syncCfg.ChannelExchangeRates, id)
+			cfgChanged = true
+		}
+		if _, ok := syncCfg.ChannelTopupMultipliers[id]; ok {
+			delete(syncCfg.ChannelTopupMultipliers, id)
+			cfgChanged = true
+		}
+	}
+	for mName, prefID := range syncCfg.PreferredChannels {
+		if _, deleted := deletedSet[prefID]; deleted {
+			delete(syncCfg.PreferredChannels, mName)
+			cfgChanged = true
+		}
+	}
+	if cfgChanged {
+		_ = SaveModelPriceSyncConfig(syncCfg)
+	}
+
+	channelModelCostMu.Lock()
+	for _, id := range ids {
+		delete(channelModelCostMap, id)
+	}
+	channelModelCostMu.Unlock()
+
+	ResetRealtimeProfitTracker()
+}
+
+// PruneOrphanChannelsFromSyncConfig sweeps any stale channel IDs that no longer
+// exist in the channels table out of ModelPriceSyncConfig maps.
+func PruneOrphanChannelsFromSyncConfig(cfg *ModelPriceSyncConfig, validChannelIDs map[int]struct{}) bool {
+	if cfg == nil || len(validChannelIDs) == 0 {
+		return false
+	}
+	changed := false
+	for id := range cfg.AutoProvisionedChannels {
+		if _, ok := validChannelIDs[id]; !ok {
+			delete(cfg.AutoProvisionedChannels, id)
+			changed = true
+		}
+	}
+	for id := range cfg.ChannelUpstreamGroups {
+		if _, ok := validChannelIDs[id]; !ok {
+			delete(cfg.ChannelUpstreamGroups, id)
+			changed = true
+		}
+	}
+	for id := range cfg.ChannelCurrencies {
+		if _, ok := validChannelIDs[id]; !ok {
+			delete(cfg.ChannelCurrencies, id)
+			changed = true
+		}
+	}
+	for id := range cfg.ChannelExchangeRates {
+		if _, ok := validChannelIDs[id]; !ok {
+			delete(cfg.ChannelExchangeRates, id)
+			changed = true
+		}
+	}
+	for id := range cfg.ChannelTopupMultipliers {
+		if _, ok := validChannelIDs[id]; !ok {
+			delete(cfg.ChannelTopupMultipliers, id)
+			changed = true
+		}
+	}
+	for mName, id := range cfg.PreferredChannels {
+		if id > 0 {
+			if _, ok := validChannelIDs[id]; !ok {
+				delete(cfg.PreferredChannels, mName)
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
 func LoadChannelModelCostsFromJSON(raw string) error {
 	if strings.TrimSpace(raw) == "" {
 		return nil
@@ -2487,28 +2799,40 @@ func selectChannelByGroupSchedule(group string, modelName string, retry int, can
 }
 
 type ModelChannelGroupLogStat struct {
-	ModelName        string `json:"model_name" gorm:"column:model_name"`
-	ChannelID        int    `json:"channel_id" gorm:"column:channel_id"`
-	UserGroup        string `json:"user_group" gorm:"column:user_group"`
-	CallCount        int64  `json:"call_count" gorm:"column:call_count"`
-	PromptTokens     int64  `json:"prompt_tokens" gorm:"column:prompt_tokens"`
-	CompletionTokens int64  `json:"completion_tokens" gorm:"column:completion_tokens"`
-	CacheTokens      int64  `json:"cache_tokens" gorm:"column:cache_tokens"`
-	CacheWriteTokens int64  `json:"cache_write_tokens" gorm:"column:cache_write_tokens"`
-	TotalQuota       int64  `json:"total_quota" gorm:"column:total_quota"`
+	ModelName              string  `json:"model_name" gorm:"column:model_name"`
+	ChannelID              int     `json:"channel_id" gorm:"column:channel_id"`
+	UserGroup              string  `json:"user_group" gorm:"column:user_group"`
+	CallCount              int64   `json:"call_count" gorm:"column:call_count"`
+	PromptTokens           int64   `json:"prompt_tokens" gorm:"column:prompt_tokens"`
+	CompletionTokens       int64   `json:"completion_tokens" gorm:"column:completion_tokens"`
+	CacheTokens            int64   `json:"cache_tokens" gorm:"column:cache_tokens"`
+	CacheWriteTokens       int64   `json:"cache_write_tokens" gorm:"column:cache_write_tokens"`
+	TotalQuota             int64   `json:"total_quota" gorm:"column:total_quota"`
+	FrozenCostUSD          float64 `json:"frozen_cost_usd" gorm:"-"`
+	FrozenCallCount        int64   `json:"frozen_call_count" gorm:"-"`
+	FrozenPromptTokens     int64   `json:"frozen_prompt_tokens" gorm:"-"`
+	FrozenCompletionTokens int64   `json:"frozen_completion_tokens" gorm:"-"`
+	FrozenCacheTokens      int64   `json:"frozen_cache_tokens" gorm:"-"`
+	FrozenCacheWriteTokens int64   `json:"frozen_cache_write_tokens" gorm:"-"`
 }
 
 type UserModelChannelLogStat struct {
-	UserID           int    `json:"user_id" gorm:"column:user_id"`
-	Username         string `json:"username" gorm:"column:username"`
-	ModelName        string `json:"model_name" gorm:"column:model_name"`
-	ChannelID        int    `json:"channel_id" gorm:"column:channel_id"`
-	CallCount        int64  `json:"call_count" gorm:"column:call_count"`
-	PromptTokens     int64  `json:"prompt_tokens" gorm:"column:prompt_tokens"`
-	CompletionTokens int64  `json:"completion_tokens" gorm:"column:completion_tokens"`
-	CacheTokens      int64  `json:"cache_tokens" gorm:"column:cache_tokens"`
-	CacheWriteTokens int64  `json:"cache_write_tokens" gorm:"column:cache_write_tokens"`
-	TotalQuota       int64  `json:"total_quota" gorm:"column:total_quota"`
+	UserID                 int     `json:"user_id" gorm:"column:user_id"`
+	Username               string  `json:"username" gorm:"column:username"`
+	ModelName              string  `json:"model_name" gorm:"column:model_name"`
+	ChannelID              int     `json:"channel_id" gorm:"column:channel_id"`
+	CallCount              int64   `json:"call_count" gorm:"column:call_count"`
+	PromptTokens           int64   `json:"prompt_tokens" gorm:"column:prompt_tokens"`
+	CompletionTokens       int64   `json:"completion_tokens" gorm:"column:completion_tokens"`
+	CacheTokens            int64   `json:"cache_tokens" gorm:"column:cache_tokens"`
+	CacheWriteTokens       int64   `json:"cache_write_tokens" gorm:"column:cache_write_tokens"`
+	TotalQuota             int64   `json:"total_quota" gorm:"column:total_quota"`
+	FrozenCostUSD          float64 `json:"frozen_cost_usd" gorm:"-"`
+	FrozenCallCount        int64   `json:"frozen_call_count" gorm:"-"`
+	FrozenPromptTokens     int64   `json:"frozen_prompt_tokens" gorm:"-"`
+	FrozenCompletionTokens int64   `json:"frozen_completion_tokens" gorm:"-"`
+	FrozenCacheTokens      int64   `json:"frozen_cache_tokens" gorm:"-"`
+	FrozenCacheWriteTokens int64   `json:"frozen_cache_write_tokens" gorm:"-"`
 }
 
 type UserTopupLogStat struct {
@@ -2538,7 +2862,31 @@ var (
 	logCacheCreationTokensRe   = regexp.MustCompile(`"cache_creation_tokens"\s*:\s*(\d+)`)
 	logCacheCreationTokens5mRe = regexp.MustCompile(`"cache_creation_tokens_5m"\s*:\s*(\d+)`)
 	logCacheCreationTokens1hRe = regexp.MustCompile(`"cache_creation_tokens_1h"\s*:\s*(\d+)`)
+	logUpstreamCostUSDRe       = regexp.MustCompile(`"upstream_cost_usd"\s*:\s*([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)`)
+	logAdminChannelNameRe      = regexp.MustCompile(`"channel_name"\s*:\s*"([^"\\]*)"`)
 )
+
+func parseLogOtherUpstreamCostUSD(other string) (float64, bool) {
+	if !strings.Contains(other, "upstream_cost_usd") {
+		return 0, false
+	}
+	if m := logUpstreamCostUSDRe.FindStringSubmatch(other); len(m) == 2 {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+func parseLogOtherChannelName(other string) string {
+	if !strings.Contains(other, "channel_name") {
+		return ""
+	}
+	if m := logAdminChannelNameRe.FindStringSubmatch(other); len(m) == 2 {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
 
 func parseLogOtherCacheTokens(other string) (cacheRead int64, cacheWrite int64) {
 	if !strings.Contains(other, "cache_") {
@@ -2803,6 +3151,35 @@ func resolveChannelModelUnitPricesUSD(channelID int, modelName string, syncCfg M
 			return entry.QuotaType, inUSD, outUSD, entry.CacheRatio, entry.CreateCacheRatio
 		}
 	}
+	if snap, hasSnap := GetArchivedChannelSnapshot(channelID); hasSnap {
+		topupMult := snap.TopupMultiplier
+		if topupMult <= 0 {
+			topupMult = 1.0
+		}
+		if entry, ok := snap.ModelCosts[modelName]; ok {
+			curr := strings.ToUpper(strings.TrimSpace(snap.Currency))
+			if curr == "" {
+				curr = strings.ToUpper(strings.TrimSpace(entry.Currency))
+			}
+			if curr == "" {
+				curr = "USD"
+			}
+			effRate := ResolveEffectiveChannelExchangeRate(curr, snap.ExchangeRate)
+			unitMult := ResolveUpstreamToQuotaUnitMultiplier(curr, effRate)
+			if entry.FromUpstream && entry.RawInputCost > 0 {
+				inUSD = roundCost(entry.RawInputCost * unitMult)
+				outUSD = roundCost(entry.RawOutputCost * unitMult)
+			} else if entry.InputCost > 0 || entry.OutputCost > 0 {
+				inUSD = entry.InputCost
+				outUSD = entry.OutputCost
+			}
+			if inUSD > 0 || outUSD > 0 {
+				inUSD = roundCost(inUSD / topupMult)
+				outUSD = roundCost(outUSD / topupMult)
+				return entry.QuotaType, inUSD, outUSD, entry.CacheRatio, entry.CreateCacheRatio
+			}
+		}
+	}
 	qt, inP, outP, cacheR, createCacheR := resolveBaseModelPricesUSD(modelName)
 	if channelID > 0 && (inP > 0 || outP > 0) {
 		if ch := lookupChannelOutsideRouting(channelID); ch != nil {
@@ -2815,6 +3192,22 @@ func resolveChannelModelUnitPricesUSD(channelID int, modelName string, syncCfg M
 				inP = roundCost(inP / topupMult)
 				outP = roundCost(outP / topupMult)
 			}
+		} else if snap, hasSnap := GetArchivedChannelSnapshot(channelID); hasSnap {
+			costScale := 1.0
+			if snap.BaseMultiplier > 0 && snap.BaseMultiplier != 1.0 {
+				costScale = snap.BaseMultiplier
+			}
+			if snap.ChannelType == constant.ChannelTypeNewAPI {
+				unitMult := ResolveUpstreamToQuotaUnitMultiplier(snap.Currency, snap.ExchangeRate)
+				if unitMult > 0 {
+					costScale = roundCost(costScale * unitMult)
+				}
+			}
+			if snap.TopupMultiplier > 0 && math.Abs(snap.TopupMultiplier-1.0) > 1e-6 {
+				costScale = costScale / snap.TopupMultiplier
+			}
+			inP = roundCost(inP * costScale)
+			outP = roundCost(outP * costScale)
 		}
 	}
 	return qt, inP, outP, cacheR, createCacheR
@@ -3037,6 +3430,69 @@ func AggregateGroupCostControlUsage(group string, startTs int64, endTs int64) ([
 			stats[i].CacheWriteTokens = writeMap[k]
 		}
 	}
+
+	type rawFrozenLog struct {
+		ModelName        string `gorm:"column:model_name"`
+		ChannelID        int    `gorm:"column:channel_id"`
+		PromptTokens     int64  `gorm:"column:prompt_tokens"`
+		CompletionTokens int64  `gorm:"column:completion_tokens"`
+		Other            string `gorm:"column:other"`
+	}
+	var frozenRows []rawFrozenLog
+	frozenTx := logDB.Model(&Log{}).
+		Select("model_name, channel_id, prompt_tokens, completion_tokens, other").
+		Where("type = ? AND "+grpCol+" = ? AND other LIKE ?", LogTypeConsume, group, "%upstream_cost_usd%")
+	if startTs > 0 {
+		frozenTx = frozenTx.Where("created_at >= ?", startTs)
+	}
+	if endTs > 0 {
+		frozenTx = frozenTx.Where("created_at <= ?", endTs)
+	}
+	if err := frozenTx.Scan(&frozenRows).Error; err == nil && len(frozenRows) > 0 {
+		type mcKey struct {
+			model   string
+			channel int
+		}
+		type frozenAgg struct {
+			cost  float64
+			calls int64
+			pTok  int64
+			cTok  int64
+			crTok int64
+			cwTok int64
+		}
+		fMap := make(map[mcKey]*frozenAgg)
+		for _, r := range frozenRows {
+			cost, ok := parseLogOtherUpstreamCostUSD(r.Other)
+			if !ok {
+				continue
+			}
+			k := mcKey{model: r.ModelName, channel: r.ChannelID}
+			agg := fMap[k]
+			if agg == nil {
+				agg = &frozenAgg{}
+				fMap[k] = agg
+			}
+			agg.cost += cost
+			agg.calls++
+			agg.pTok += r.PromptTokens
+			agg.cTok += r.CompletionTokens
+			cr, cw := parseLogOtherCacheTokens(r.Other)
+			agg.crTok += cr
+			agg.cwTok += cw
+		}
+		for i := range stats {
+			k := mcKey{model: stats[i].ModelName, channel: stats[i].ChannelID}
+			if agg := fMap[k]; agg != nil {
+				stats[i].FrozenCostUSD = roundCost(agg.cost)
+				stats[i].FrozenCallCount = agg.calls
+				stats[i].FrozenPromptTokens = agg.pTok
+				stats[i].FrozenCompletionTokens = agg.cTok
+				stats[i].FrozenCacheTokens = agg.crTok
+				stats[i].FrozenCacheWriteTokens = agg.cwTok
+			}
+		}
+	}
 	return stats, nil
 }
 
@@ -3091,7 +3547,17 @@ func hydrateGroupRealtimeProfitFromDB(group string) {
 
 	for _, st := range stats {
 		rev := float64(st.TotalQuota) / quotaUnit
-		cost := CalculateChannelModelUsageCost(st.ChannelID, st.ModelName, st.CallCount, st.PromptTokens, st.CompletionTokens, st.CacheTokens, st.CacheWriteTokens)
+		var cost float64
+		if st.FrozenCallCount >= st.CallCount && st.FrozenCallCount > 0 {
+			cost = roundCost(st.FrozenCostUSD)
+		} else {
+			remCalls := max(st.CallCount-st.FrozenCallCount, 0)
+			remPrompt := max(st.PromptTokens-st.FrozenPromptTokens, 0)
+			remComp := max(st.CompletionTokens-st.FrozenCompletionTokens, 0)
+			remCache := max(st.CacheTokens-st.FrozenCacheTokens, 0)
+			remCacheWrite := max(st.CacheWriteTokens-st.FrozenCacheWriteTokens, 0)
+			cost = roundCost(st.FrozenCostUSD + CalculateChannelModelUsageCost(st.ChannelID, st.ModelName, remCalls, remPrompt, remComp, remCache, remCacheWrite))
+		}
 
 		totalCalls += st.CallCount
 		totalRev += rev
@@ -3671,6 +4137,71 @@ func AggregateModelChannelGroupUsage(startTs, endTs int64) ([]ModelChannelGroupL
 		}
 	}
 
+	type rawFrozenGrpLog struct {
+		ModelName        string `gorm:"column:model_name"`
+		ChannelID        int    `gorm:"column:channel_id"`
+		UserGroup        string `gorm:"column:user_group"`
+		PromptTokens     int64  `gorm:"column:prompt_tokens"`
+		CompletionTokens int64  `gorm:"column:completion_tokens"`
+		Other            string `gorm:"column:other"`
+	}
+	var frozenGrpRows []rawFrozenGrpLog
+	frozenGrpTx := logDB.Model(&Log{}).
+		Select("model_name, channel_id, "+grpCol+" as user_group, prompt_tokens, completion_tokens, other").
+		Where("type = ? AND other LIKE ?", LogTypeConsume, "%upstream_cost_usd%")
+	if startTs > 0 {
+		frozenGrpTx = frozenGrpTx.Where("created_at >= ?", startTs)
+	}
+	if endTs > 0 {
+		frozenGrpTx = frozenGrpTx.Where("created_at <= ?", endTs)
+	}
+	if err := frozenGrpTx.Scan(&frozenGrpRows).Error; err == nil && len(frozenGrpRows) > 0 {
+		type grpKey struct {
+			model   string
+			channel int
+			group   string
+		}
+		type frozenAgg struct {
+			cost  float64
+			calls int64
+			pTok  int64
+			cTok  int64
+			crTok int64
+			cwTok int64
+		}
+		fMap := make(map[grpKey]*frozenAgg)
+		for _, r := range frozenGrpRows {
+			cost, ok := parseLogOtherUpstreamCostUSD(r.Other)
+			if !ok {
+				continue
+			}
+			k := grpKey{model: r.ModelName, channel: r.ChannelID, group: r.UserGroup}
+			agg := fMap[k]
+			if agg == nil {
+				agg = &frozenAgg{}
+				fMap[k] = agg
+			}
+			agg.cost += cost
+			agg.calls++
+			agg.pTok += r.PromptTokens
+			agg.cTok += r.CompletionTokens
+			cr, cw := parseLogOtherCacheTokens(r.Other)
+			agg.crTok += cr
+			agg.cwTok += cw
+		}
+		for i := range stats {
+			k := grpKey{model: stats[i].ModelName, channel: stats[i].ChannelID, group: stats[i].UserGroup}
+			if agg := fMap[k]; agg != nil {
+				stats[i].FrozenCostUSD = roundCost(agg.cost)
+				stats[i].FrozenCallCount = agg.calls
+				stats[i].FrozenPromptTokens = agg.pTok
+				stats[i].FrozenCompletionTokens = agg.cTok
+				stats[i].FrozenCacheTokens = agg.crTok
+				stats[i].FrozenCacheWriteTokens = agg.cwTok
+			}
+		}
+	}
+
 	return stats, nil
 }
 
@@ -3733,6 +4264,71 @@ func AggregateUserCostUsage(startTs, endTs int64) ([]UserModelChannelLogStat, ma
 			k := uKey{uid: consumeStats[i].UserID, model: consumeStats[i].ModelName, channel: consumeStats[i].ChannelID}
 			consumeStats[i].CacheTokens = readMap[k]
 			consumeStats[i].CacheWriteTokens = writeMap[k]
+		}
+	}
+
+	type rawUserFrozenLog struct {
+		UserID           int    `gorm:"column:user_id"`
+		ModelName        string `gorm:"column:model_name"`
+		ChannelID        int    `gorm:"column:channel_id"`
+		PromptTokens     int64  `gorm:"column:prompt_tokens"`
+		CompletionTokens int64  `gorm:"column:completion_tokens"`
+		Other            string `gorm:"column:other"`
+	}
+	var userFrozenRows []rawUserFrozenLog
+	uFrozenTx := logDB.Model(&Log{}).
+		Select("user_id, model_name, channel_id, prompt_tokens, completion_tokens, other").
+		Where("type = ? AND other LIKE ?", LogTypeConsume, "%upstream_cost_usd%")
+	if startTs > 0 {
+		uFrozenTx = uFrozenTx.Where("created_at >= ?", startTs)
+	}
+	if endTs > 0 {
+		uFrozenTx = uFrozenTx.Where("created_at <= ?", endTs)
+	}
+	if err := uFrozenTx.Scan(&userFrozenRows).Error; err == nil && len(userFrozenRows) > 0 {
+		type uKey struct {
+			uid     int
+			model   string
+			channel int
+		}
+		type frozenAgg struct {
+			cost  float64
+			calls int64
+			pTok  int64
+			cTok  int64
+			crTok int64
+			cwTok int64
+		}
+		fMap := make(map[uKey]*frozenAgg)
+		for _, r := range userFrozenRows {
+			cost, ok := parseLogOtherUpstreamCostUSD(r.Other)
+			if !ok {
+				continue
+			}
+			k := uKey{uid: r.UserID, model: r.ModelName, channel: r.ChannelID}
+			agg := fMap[k]
+			if agg == nil {
+				agg = &frozenAgg{}
+				fMap[k] = agg
+			}
+			agg.cost += cost
+			agg.calls++
+			agg.pTok += r.PromptTokens
+			agg.cTok += r.CompletionTokens
+			cr, cw := parseLogOtherCacheTokens(r.Other)
+			agg.crTok += cr
+			agg.cwTok += cw
+		}
+		for i := range consumeStats {
+			k := uKey{uid: consumeStats[i].UserID, model: consumeStats[i].ModelName, channel: consumeStats[i].ChannelID}
+			if agg := fMap[k]; agg != nil {
+				consumeStats[i].FrozenCostUSD = roundCost(agg.cost)
+				consumeStats[i].FrozenCallCount = agg.calls
+				consumeStats[i].FrozenPromptTokens = agg.pTok
+				consumeStats[i].FrozenCompletionTokens = agg.cTok
+				consumeStats[i].FrozenCacheTokens = agg.crTok
+				consumeStats[i].FrozenCacheWriteTokens = agg.cwTok
+			}
 		}
 	}
 
