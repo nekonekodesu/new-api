@@ -54,7 +54,7 @@ ECPay and NewebPay amount previews now use the same provider currency/fee quote 
 
 ## Current Release
 
-- Version: `Ver 1.2.3R1`
+- Version: `Ver 1.2.3R2`
 - Release note: 基於 newapi v1.0.0-rc.51 深度訂製而來。
 
 The release version is read from `VERSION` at startup when no `VERSION` environment variable or linker-injected release version is present. The fallback in `common/constants.go` is generic and no longer contains a deployment version string.
