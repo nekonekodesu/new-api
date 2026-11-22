@@ -14,6 +14,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,12 +22,30 @@ import (
 type Adaptor struct {
 }
 
-func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
-	return nil, errors.New("codex channel: endpoint not supported")
+func (a *Adaptor) convertAnyToCodexResponses(c *gin.Context, info *relaycommon.RelayInfo, request any) (any, error) {
+	if request == nil {
+		return nil, errors.New("request is nil")
+	}
+	result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAIResponses, request)
+	if err != nil {
+		return nil, err
+	}
+	responsesReq, ok := result.Value.(*dto.OpenAIResponsesRequest)
+	if !ok {
+		return nil, errors.New("failed to convert request to OpenAI Responses format for codex channel")
+	}
+	if info != nil {
+		info.FinalRequestRelayFormat = types.RelayFormatOpenAIResponses
+	}
+	return a.ConvertOpenAIResponsesRequest(c, info, *responsesReq)
 }
 
-func (a *Adaptor) ConvertClaudeRequest(*gin.Context, *relaycommon.RelayInfo, *dto.ClaudeRequest) (any, error) {
-	return nil, errors.New("codex channel: /v1/messages endpoint not supported")
+func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
+	return a.convertAnyToCodexResponses(c, info, request)
+}
+
+func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
+	return a.convertAnyToCodexResponses(c, info, request)
 }
 
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
@@ -41,7 +60,7 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
-	return nil, errors.New("codex channel: /v1/chat/completions endpoint not supported")
+	return a.convertAnyToCodexResponses(c, info, request)
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
@@ -126,6 +145,12 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		}
 		return openai.OaiResponsesHandler(c, info, resp)
 	default:
+		if info != nil && info.GetFinalRequestRelayFormat() == types.RelayFormatOpenAIResponses {
+			if info.IsStream {
+				return openai.OaiResponsesToChatStreamHandler(c, info, resp)
+			}
+			return openai.OaiResponsesToChatHandler(c, info, resp)
+		}
 		return nil, types.NewError(errors.New("codex channel: endpoint not supported"), types.ErrorCodeInvalidRequest)
 	}
 }
@@ -148,6 +173,10 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	case relayconstant.RelayModeAlphaSearch:
 		path = "/backend-api/codex/alpha/search"
 	default:
+		if info != nil && info.GetFinalRequestRelayFormat() == types.RelayFormatOpenAIResponses {
+			path = "/backend-api/codex/responses"
+			break
+		}
 		return "", errors.New("codex channel: only /v1/responses, /v1/responses/compact and /v1/alpha/search are supported")
 	}
 	return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, path, info.ChannelType), nil

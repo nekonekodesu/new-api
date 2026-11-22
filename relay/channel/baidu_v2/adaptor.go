@@ -20,14 +20,12 @@ import (
 type Adaptor struct {
 }
 
-func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dto.GeminiChatRequest) (any, error) {
-	//TODO implement me
-	return nil, errors.New("not implemented")
+func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
+	return openai.ConvertGeminiToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, req *dto.ClaudeRequest) (any, error) {
-	adaptor := openai.Adaptor{}
-	return adaptor.ConvertClaudeRequest(c, info, req)
+	return openai.ConvertClaudeToOpenAIWithAdaptor(c, info, req, a.ConvertOpenAIRequest)
 }
 
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
@@ -45,7 +43,10 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	switch info.RelayMode {
-	case constant.RelayModeChatCompletions:
+	case constant.RelayModeChatCompletions,
+		constant.RelayModeUnknown,
+		constant.RelayModeGemini,
+		constant.RelayModeResponses:
 		return fmt.Sprintf("%s/v2/chat/completions", info.ChannelBaseUrl), nil
 	case constant.RelayModeEmbeddings:
 		return fmt.Sprintf("%s/v2/embeddings", info.ChannelBaseUrl), nil
@@ -107,8 +108,7 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	// TODO implement me
-	return nil, errors.New("not implemented")
+	return openai.ConvertResponsesToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {

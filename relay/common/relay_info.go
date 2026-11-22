@@ -213,6 +213,9 @@ type RelayInfo struct {
 	// 最终请求到上游的格式。可由 adaptor 显式设置；
 	// 若为空，调用 GetFinalRequestRelayFormat 会回退到 RequestConversionChain 的最后一项或 RelayFormat。
 	FinalRequestRelayFormat types.RelayFormat
+	// ForceTargetRelayFormat overrides the adaptor's default protocol choice on
+	// an in-attempt fallback or learned cross-protocol route.
+	ForceTargetRelayFormat types.RelayFormat
 
 	StreamStatus *StreamStatus
 	// VendorToolUsage reads the upstream's own billed tool counts from a raw
@@ -291,6 +294,7 @@ func (info *RelayInfo) RequestedImageCount() int {
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.ResponseModel = nil
 	info.FinalRequestRelayFormat = ""
+	info.ForceTargetRelayFormat = ""
 	info.RequestConversionChain = nil
 	info.InitRequestConversionChain()
 	// Per-attempt only. Do not clear StreamStatus, conversion diagnostics,

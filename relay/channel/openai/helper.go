@@ -139,7 +139,10 @@ func ProcessStreamResponse(streamResponse dto.ChatCompletionsStreamResponse, res
 
 func processTokenData(info *relaycommon.RelayInfo, data string, responseTextBuilder *strings.Builder, toolCount *int) error {
 	switch info.RelayMode {
-	case relayconstant.RelayModeChatCompletions:
+	case relayconstant.RelayModeChatCompletions,
+		relayconstant.RelayModeUnknown,
+		relayconstant.RelayModeGemini,
+		relayconstant.RelayModeResponses:
 		var streamResponse dto.ChatCompletionsStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 			return err
@@ -204,28 +207,35 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 		helper.Done(c)
 
 	case types.RelayFormatClaude:
-		var streamResponse dto.ChatCompletionsStreamResponse
-		if err := common.Unmarshal(common.StringToByteSlice(lastStreamData), &streamResponse); err != nil {
-			common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
-			return
+		claudeInfo := info.EnsureClaudeConvertInfo()
+		claudeInfo.Usage = usage
+		if lastStreamData != "" {
+			var streamResponse dto.ChatCompletionsStreamResponse
+			if err := common.Unmarshal(common.StringToByteSlice(lastStreamData), &streamResponse); err != nil {
+				common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
+			} else {
+				result, err := service.ConvertStreamResponse(c, info, types.RelayFormatClaude, &streamResponse)
+				if err != nil {
+					common.SysLog(common.LogText("error converting Claude stream response: %s", err.Error()))
+				} else if claudeResponses, ok := result.Value.([]*dto.ClaudeResponse); ok {
+					for _, resp := range claudeResponses {
+						_ = helper.ClaudeData(c, *resp)
+					}
+				}
+			}
 		}
-
-		info.ClaudeConvertInfo.Usage = usage
-
-		result, err := service.ConvertStreamResponse(c, info, types.RelayFormatClaude, &streamResponse)
-		if err != nil {
-			common.SysLog(common.LogText("error converting Claude stream response: %s", err.Error()))
-			return
+		if !claudeInfo.Done {
+			if state, err := relayconvert.NewResponseStreamState(types.RelayFormatOpenAI, types.RelayFormatClaude, relayconvert.ResponseStreamOptions{}); err == nil {
+				if results, err := service.FinalizeStreamResponse(c, info, state); err == nil {
+					for _, res := range results {
+						if resp, ok := res.Value.(*dto.ClaudeResponse); ok && resp != nil {
+							_ = helper.ClaudeData(c, *resp)
+						}
+					}
+				}
+			}
 		}
-		claudeResponses, ok := result.Value.([]*dto.ClaudeResponse)
-		if !ok {
-			common.SysLog(common.LogText("expected Claude stream responses, got %T", result.Value))
-			return
-		}
-		for _, resp := range claudeResponses {
-			_ = helper.ClaudeData(c, *resp)
-		}
-		info.ClaudeConvertInfo.Done = true
+		claudeInfo.Done = true
 
 	case types.RelayFormatGemini:
 		var streamResponse dto.ChatCompletionsStreamResponse

@@ -24,12 +24,14 @@ import (
 type Adaptor struct {
 }
 
-func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dto.GeminiChatRequest) (any, error) {
-	//TODO implement me
-	return nil, errors.New("not implemented")
+func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
+	return openai.ConvertGeminiToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, req *dto.ClaudeRequest) (any, error) {
+	if info != nil && info.ForceTargetRelayFormat == types.RelayFormatOpenAI {
+		return openai.ConvertClaudeToOpenAIWithAdaptor(c, info, req, a.ConvertOpenAIRequest)
+	}
 	adaptor := claude.Adaptor{}
 	// A model modifier is rendered into DeepSeek's own thinking and effort
 	// fields below; Anthropic's model rules (budgets, adaptive thinking,
@@ -74,6 +76,9 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	fimBaseUrl := info.ChannelBaseUrl
+	if info.GetFinalRequestRelayFormat() == types.RelayFormatOpenAI && info.RelayFormat != types.RelayFormatOpenAI {
+		return fmt.Sprintf("%s/v1/chat/completions", info.ChannelBaseUrl), nil
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		return fmt.Sprintf("%s/anthropic/v1/messages", info.ChannelBaseUrl), nil
@@ -204,7 +209,10 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 	return nil, errors.New("not implemented")
 }
 
-func (a *Adaptor) ConvertOpenAIResponsesRequest(_ *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+	if info != nil && info.ForceTargetRelayFormat == types.RelayFormatOpenAI {
+		return openai.ConvertResponsesToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
+	}
 	applyDeepSeekV4ResponsesThinkingSuffix(info, &request)
 	return request, nil
 }
@@ -287,6 +295,10 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	if info != nil && info.GetFinalRequestRelayFormat() == types.RelayFormatOpenAI && info.RelayFormat != types.RelayFormatOpenAI {
+		adaptor := openai.Adaptor{}
+		return adaptor.DoResponse(c, resp, info)
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		adaptor := claude.Adaptor{}

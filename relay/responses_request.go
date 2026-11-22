@@ -43,6 +43,7 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 	if err := helper.ApplyReasoningModelSuffix(c, info, request); err != nil {
 		return nil, nil, nil, newConvertRequestFailedError(c, info, err)
 	}
+	ApplyLearnedProtocolFormat(info)
 
 	adaptor := GetAdaptor(info.ApiType)
 	if adaptor == nil {

@@ -42,7 +42,15 @@ type Adaptor struct {
 	ResponseFormat string
 }
 
-func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
+func ConvertGeminiToOpenAIWithAdaptor(
+	c *gin.Context,
+	info *relaycommon.RelayInfo,
+	request *dto.GeminiChatRequest,
+	convertOpenAI func(*gin.Context, *relaycommon.RelayInfo, *dto.GeneralOpenAIRequest) (any, error),
+) (any, error) {
+	if request == nil {
+		return nil, errors.New("request is nil")
+	}
 	result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAI, request)
 	if err != nil {
 		return nil, err
@@ -51,25 +59,29 @@ func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayIn
 	if !ok {
 		return nil, fmt.Errorf("expected OpenAI chat completions request, got %T", result.Value)
 	}
-	if info.SupportStreamOptions && info.IsStream {
-		openaiRequest.StreamOptions = &dto.StreamOptions{
-			IncludeUsage: true,
+	if info != nil {
+		info.FinalRequestRelayFormat = types.RelayFormatOpenAI
+		if info.SupportStreamOptions && info.IsStream {
+			openaiRequest.StreamOptions = &dto.StreamOptions{
+				IncludeUsage: true,
+			}
 		}
 	}
-	return a.ConvertOpenAIRequest(c, info, openaiRequest)
+	if convertOpenAI == nil {
+		return openaiRequest, nil
+	}
+	return convertOpenAI(c, info, openaiRequest)
 }
 
-func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
-	//if !strings.Contains(request.Model, "claude") {
-	//	return nil, fmt.Errorf("you are using openai channel type with path /v1/messages, only claude model supported convert, but got %s", request.Model)
-	//}
-	//if common.DebugEnabled {
-	//	bodyBytes := []byte(common.GetJsonString(request))
-	//	err := os.WriteFile(fmt.Sprintf("claude_request_%s.txt", c.GetString(common.RequestIdKey)), bodyBytes, 0644)
-	//	if err != nil {
-	//		println(fmt.Sprintf("failed to save request body to file: %v", err))
-	//	}
-	//}
+func ConvertClaudeToOpenAIWithAdaptor(
+	c *gin.Context,
+	info *relaycommon.RelayInfo,
+	request *dto.ClaudeRequest,
+	convertOpenAI func(*gin.Context, *relaycommon.RelayInfo, *dto.GeneralOpenAIRequest) (any, error),
+) (any, error) {
+	if request == nil {
+		return nil, errors.New("request is nil")
+	}
 	result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAI, request)
 	if err != nil {
 		return nil, err
@@ -78,21 +90,54 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 	if !ok {
 		return nil, fmt.Errorf("expected OpenAI chat completions request, got %T", result.Value)
 	}
-	//if common.DebugEnabled {
-	//	println(fmt.Sprintf("convert claude to openai request result: %s", common.GetJsonString(aiRequest)))
-	//	// Save request body to file for debugging
-	//	bodyBytes := []byte(common.GetJsonString(aiRequest))
-	//	err = os.WriteFile(fmt.Sprintf("claude_to_openai_request_%s.txt", c.GetString(common.RequestIdKey)), bodyBytes, 0644)
-	//	if err != nil {
-	//		println(fmt.Sprintf("failed to save request body to file: %v", err))
-	//	}
-	//}
-	if info.SupportStreamOptions && info.IsStream {
-		aiRequest.StreamOptions = &dto.StreamOptions{
-			IncludeUsage: true,
+	if info != nil {
+		info.FinalRequestRelayFormat = types.RelayFormatOpenAI
+		if info.SupportStreamOptions && info.IsStream {
+			aiRequest.StreamOptions = &dto.StreamOptions{
+				IncludeUsage: true,
+			}
 		}
 	}
-	return a.ConvertOpenAIRequest(c, info, aiRequest)
+	if convertOpenAI == nil {
+		return aiRequest, nil
+	}
+	return convertOpenAI(c, info, aiRequest)
+}
+
+func ConvertResponsesToOpenAIWithAdaptor(
+	c *gin.Context,
+	info *relaycommon.RelayInfo,
+	request dto.OpenAIResponsesRequest,
+	convertOpenAI func(*gin.Context, *relaycommon.RelayInfo, *dto.GeneralOpenAIRequest) (any, error),
+) (any, error) {
+	result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAI, &request)
+	if err != nil {
+		return nil, err
+	}
+	openaiRequest, ok := result.Value.(*dto.GeneralOpenAIRequest)
+	if !ok {
+		return nil, fmt.Errorf("expected OpenAI chat completions request, got %T", result.Value)
+	}
+	if info != nil {
+		info.FinalRequestRelayFormat = types.RelayFormatOpenAI
+		if info.SupportStreamOptions && info.IsStream {
+			openaiRequest.StreamOptions = &dto.StreamOptions{
+				IncludeUsage: true,
+			}
+		}
+	}
+	if convertOpenAI == nil {
+		return openaiRequest, nil
+	}
+	return convertOpenAI(c, info, openaiRequest)
+}
+
+func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
+	return ConvertGeminiToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
+}
+
+func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
+	return ConvertClaudeToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
 }
 
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
@@ -180,6 +225,10 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		url = strings.Replace(url, "{model}", info.UpstreamModelName, -1)
 		return url, nil
 	default:
+		if info.GetFinalRequestRelayFormat() == types.RelayFormatOpenAI &&
+			info.RelayFormat != types.RelayFormatOpenAI {
+			return fmt.Sprintf("%s/v1/chat/completions", info.ChannelBaseUrl), nil
+		}
 		if (info.RelayFormat == types.RelayFormatClaude || info.RelayFormat == types.RelayFormatGemini) &&
 			info.RelayMode != relayconstant.RelayModeResponses &&
 			info.RelayMode != relayconstant.RelayModeResponsesCompact {
@@ -677,6 +726,12 @@ func detectImageMimeType(filename string) string {
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+	if info != nil && info.RelayMode != relayconstant.RelayModeResponsesCompact &&
+		(info.ForceTargetRelayFormat == types.RelayFormatOpenAI ||
+			info.ChannelType == constant.ChannelTypeOpenRouter ||
+			info.ChannelType == constant.ChannelTypeXinference) {
+		return ConvertResponsesToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
+	}
 	//  转换模型推理力度后缀
 	effort, originModel := reasoning.ParseOpenAIReasoningEffortFromModelSuffix(request.Model)
 	preserveSuffix := model_setting.ShouldPreserveThinkingSuffix(request.Model) || (info != nil && model_setting.ShouldPreserveThinkingSuffix(info.OriginModelName))
@@ -778,6 +833,14 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	case relayconstant.RelayModeRerank:
 		usage, err = common_handler.RerankHandler(c, info, resp)
 	case relayconstant.RelayModeResponses:
+		if info != nil && info.GetFinalRequestRelayFormat() == types.RelayFormatOpenAI {
+			if info.IsStream {
+				usage, err = OaiChatToResponsesStreamHandler(c, info, resp)
+			} else {
+				usage, err = OaiChatToResponsesHandler(c, info, resp)
+			}
+			return
+		}
 		if info.IsStream {
 			usage, err = OaiResponsesStreamHandler(c, info, resp)
 		} else {

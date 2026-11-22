@@ -64,6 +64,15 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		httpResp = resp.(*http.Response)
 
 		if httpResp.StatusCode != http.StatusOK {
+			if info.RelayMode != relayconstant.RelayModeResponsesCompact {
+				if fallbackUsage, fallbackErr, handled := TryProtocolFallbackOnError(c, info, adaptor, responsesReq, httpResp, statusCodeMappingStr); handled {
+					if fallbackErr != nil {
+						return fallbackErr
+					}
+					ConsumeResponsesQuota(c, info, fallbackUsage)
+					return nil
+				}
+			}
 			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)

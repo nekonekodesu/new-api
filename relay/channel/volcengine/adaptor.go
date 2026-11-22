@@ -32,18 +32,18 @@ const (
 type Adaptor struct {
 }
 
-func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dto.GeminiChatRequest) (any, error) {
-	//TODO implement me
-	return nil, errors.New("not implemented")
+func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
+	return openai.ConvertGeminiToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, req *dto.ClaudeRequest) (any, error) {
-	if _, ok := channelconstant.ChannelSpecialBases[info.ChannelBaseUrl]; ok {
-		adaptor := claude.Adaptor{}
-		return adaptor.ConvertClaudeRequest(c, info, req)
+	if (info == nil || info.ForceTargetRelayFormat != types.RelayFormatOpenAI) && info != nil {
+		if _, ok := channelconstant.ChannelSpecialBases[info.ChannelBaseUrl]; ok {
+			adaptor := claude.Adaptor{}
+			return adaptor.ConvertClaudeRequest(c, info, req)
+		}
 	}
-	adaptor := openai.Adaptor{}
-	return adaptor.ConvertClaudeRequest(c, info, req)
+	return openai.ConvertClaudeToOpenAIWithAdaptor(c, info, req, a.ConvertOpenAIRequest)
 }
 
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {

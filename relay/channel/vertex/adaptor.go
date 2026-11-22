@@ -55,6 +55,20 @@ type Adaptor struct {
 }
 
 func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
+	if a.RequestMode == RequestModeClaude {
+		result, err := service.ConvertRequest(c, info, types.RelayFormatClaude, request)
+		if err != nil {
+			return nil, err
+		}
+		claudeReq, ok := result.Value.(*dto.ClaudeRequest)
+		if !ok {
+			return nil, fmt.Errorf("expected Anthropic Messages request, got %T", result.Value)
+		}
+		return a.ConvertClaudeRequest(c, info, claudeReq)
+	}
+	if a.RequestMode == RequestModeOpenSource {
+		return openai.ConvertGeminiToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
+	}
 	// Vertex AI's generateContent schema does not expose the Gemini API's
 	// function-call identity fields. Strip both sides at this provider boundary.
 	if model_setting.GetGeminiSettings().RemoveFunctionResponseIdEnabled {
@@ -94,6 +108,23 @@ func removeFunctionCallIDs(request *dto.GeminiChatRequest) {
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
+	if a.RequestMode == RequestModeGemini {
+		result, err := service.ConvertRequest(c, info, types.RelayFormatGemini, request)
+		if err != nil {
+			return nil, err
+		}
+		geminiReq, ok := result.Value.(*dto.GeminiChatRequest)
+		if !ok {
+			return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
+		}
+		if c != nil && info != nil {
+			c.Set("request_model", info.UpstreamModelName)
+		}
+		return a.ConvertGeminiRequest(c, info, geminiReq)
+	}
+	if a.RequestMode == RequestModeOpenSource {
+		return openai.ConvertClaudeToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
+	}
 	claudeAdaptor := claude.Adaptor{}
 	if _, err := claudeAdaptor.ConvertClaudeRequest(c, info, request); err != nil {
 		return nil, err
@@ -334,8 +365,32 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	// TODO implement me
-	return nil, errors.New("not implemented")
+	if a.RequestMode == RequestModeClaude {
+		result, err := service.ConvertRequest(c, info, types.RelayFormatClaude, &request)
+		if err != nil {
+			return nil, err
+		}
+		claudeReq, ok := result.Value.(*dto.ClaudeRequest)
+		if !ok {
+			return nil, fmt.Errorf("expected Anthropic Messages request, got %T", result.Value)
+		}
+		return a.ConvertClaudeRequest(c, info, claudeReq)
+	}
+	if a.RequestMode == RequestModeOpenSource {
+		return openai.ConvertResponsesToOpenAIWithAdaptor(c, info, request, a.ConvertOpenAIRequest)
+	}
+	result, err := service.ConvertRequest(c, info, types.RelayFormatGemini, &request)
+	if err != nil {
+		return nil, err
+	}
+	geminiReq, ok := result.Value.(*dto.GeminiChatRequest)
+	if !ok {
+		return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
+	}
+	if c != nil {
+		c.Set("request_model", request.Model)
+	}
+	return a.ConvertGeminiRequest(c, info, geminiReq)
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
@@ -349,12 +404,18 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		case RequestModeClaude:
 			return claudeAdaptor.DoResponse(c, resp, info)
 		case RequestModeGemini:
+			if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+				return gemini.GeminiResponsesStreamHandler(c, info, resp)
+			}
 			if info.RelayMode == constant.RelayModeGemini {
 				return gemini.GeminiTextGenerationStreamHandler(c, info, resp)
 			} else {
 				return gemini.GeminiChatStreamHandler(c, info, resp)
 			}
 		case RequestModeOpenSource:
+			if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+				return openai.OaiChatToResponsesStreamHandler(c, info, resp)
+			}
 			return openai.OaiStreamHandler(c, info, resp)
 		}
 	} else {
@@ -362,6 +423,9 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		case RequestModeClaude:
 			return claudeAdaptor.DoResponse(c, resp, info)
 		case RequestModeGemini:
+			if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+				return gemini.GeminiResponsesHandler(c, info, resp)
+			}
 			if info.RelayMode == constant.RelayModeGemini {
 				return gemini.GeminiTextGenerationHandler(c, info, resp)
 			} else {
@@ -371,6 +435,9 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 				return gemini.GeminiChatHandler(c, info, resp)
 			}
 		case RequestModeOpenSource:
+			if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
+				return openai.OaiChatToResponsesHandler(c, info, resp)
+			}
 			return openai.OpenaiHandler(c, info, resp)
 		}
 	}

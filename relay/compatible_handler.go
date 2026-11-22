@@ -46,6 +46,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	if err := helper.ApplyReasoningModelSuffix(c, info, request); err != nil {
 		return newConvertRequestFailedError(c, info, err)
 	}
+	ApplyLearnedProtocolFormat(info)
 
 	includeUsage := true
 	// 判断用户是否需要返回使用情况
@@ -76,7 +77,8 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	passThrough := info.ShouldPassThroughBody()
 	if info.RelayMode == relayconstant.RelayModeChatCompletions &&
 		!passThrough &&
-		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
+		(service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) ||
+			info.ForceTargetRelayFormat == types.RelayFormatOpenAIResponses) {
 		applySystemPromptIfNeeded(c, info, request)
 		usage, newApiErr := textRequestViaResponses(c, info, adaptor, request)
 		if newApiErr != nil {
@@ -166,6 +168,19 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		httpResp = resp.(*http.Response)
 		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
 		if httpResp.StatusCode != http.StatusOK {
+			if fallbackUsage, fallbackErr, handled := TryProtocolFallbackOnError(c, info, adaptor, request, httpResp, statusCodeMappingStr); handled {
+				if fallbackErr != nil {
+					return fallbackErr
+				}
+				var containAudioTokens = fallbackUsage.CompletionTokenDetails.AudioTokens > 0 || fallbackUsage.PromptTokensDetails.AudioTokens > 0
+				var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
+				if containAudioTokens && containsAudioRatios {
+					service.PostAudioConsumeQuota(c, info, fallbackUsage, nil)
+				} else {
+					service.PostTextConsumeQuota(c, info, fallbackUsage, nil)
+				}
+				return nil
+			}
 			newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newApiErr, statusCodeMappingStr)

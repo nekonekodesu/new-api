@@ -40,6 +40,7 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	if err := helper.ApplyReasoningModelSuffix(c, info, request); err != nil {
 		return newConvertRequestFailedError(c, info, err)
 	}
+	ApplyLearnedProtocolFormat(info)
 
 	adaptor := GetAdaptor(info.ApiType)
 	if adaptor == nil {
@@ -86,6 +87,17 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		if !hasContent {
 			request.SystemInstructions = nil
 		}
+	}
+
+	if !info.ShouldPassThroughBody() &&
+		(service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) ||
+			info.ForceTargetRelayFormat == types.RelayFormatOpenAIResponses) {
+		usage, newApiErr := textRequestViaResponses(c, info, adaptor, request)
+		if newApiErr != nil {
+			return newApiErr
+		}
+		service.PostTextConsumeQuota(c, info, usage, nil)
+		return nil
 	}
 
 	var requestBody io.Reader
@@ -148,6 +160,13 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		httpResp = resp.(*http.Response)
 		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
 		if httpResp.StatusCode != http.StatusOK {
+			if fallbackUsage, fallbackErr, handled := TryProtocolFallbackOnError(c, info, adaptor, request, httpResp, statusCodeMappingStr); handled {
+				if fallbackErr != nil {
+					return fallbackErr
+				}
+				service.PostTextConsumeQuota(c, info, fallbackUsage, nil)
+				return nil
+			}
 			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)

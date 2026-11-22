@@ -282,14 +282,15 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
-	if info.RelayMode == constant.RelayModeResponses {
+	info.FinalRequestRelayFormat = types.RelayFormatGemini
+	if info.RelayMode == constant.RelayModeResponses || info.RelayFormat == types.RelayFormatOpenAIResponses {
 		if info.IsStream {
 			return GeminiResponsesStreamHandler(c, info, resp)
 		}
 		return GeminiResponsesHandler(c, info, resp)
 	}
 
-	if info.RelayMode == constant.RelayModeGemini {
+	if info.RelayMode == constant.RelayModeGemini || info.RelayFormat == types.RelayFormatGemini {
 		if strings.Contains(info.RequestURLPath, ":embedContent") ||
 			strings.Contains(info.RequestURLPath, ":batchEmbedContents") {
 			return NativeGeminiEmbeddingHandler(c, resp, info)

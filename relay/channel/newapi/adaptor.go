@@ -13,6 +13,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -33,11 +34,21 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	if info.RelayMode == relayconstant.RelayModeAlphaSearch {
 		return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, "/v1/alpha/search", info.ChannelType), nil
 	}
-	if info.GetFinalRequestRelayFormat() == types.RelayFormatClaude && info.RelayFormat != types.RelayFormatClaude {
+	finalFormat := info.GetFinalRequestRelayFormat()
+	if info.FinalRequestRelayFormat == "" && info.ForceTargetRelayFormat != "" {
+		finalFormat = info.ForceTargetRelayFormat
+	}
+	if finalFormat == types.RelayFormatClaude && info.RelayFormat != types.RelayFormatClaude {
 		return a.claudeAdaptor.GetRequestURL(info)
 	}
-	if info.RelayFormat == types.RelayFormatGemini && info.IsModelMapped && !info.ShouldPassThroughBody() {
+	if finalFormat == types.RelayFormatGemini && (info.RelayFormat != types.RelayFormatGemini || (info.IsModelMapped && !info.ShouldPassThroughBody())) {
 		return a.geminiAdaptor.GetRequestURL(info)
+	}
+	if finalFormat == types.RelayFormatOpenAIResponses && info.RelayFormat != types.RelayFormatOpenAIResponses {
+		return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, "/v1/responses", info.ChannelType), nil
+	}
+	if finalFormat == types.RelayFormatOpenAI && info.RelayFormat != types.RelayFormatOpenAI {
+		return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, "/v1/chat/completions", info.ChannelType), nil
 	}
 	return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, info.RequestURLPath, info.ChannelType), nil
 }
@@ -67,17 +78,70 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	if info.TargetsClaudeModel() {
-		return a.claudeAdaptor.ConvertOpenAIRequest(c, info, request)
+	target := types.RelayFormatOpenAI
+	if info != nil && info.ForceTargetRelayFormat != "" {
+		target = info.ForceTargetRelayFormat
+	} else if info.TargetsClaudeModel() {
+		target = types.RelayFormatClaude
+	} else if info.TargetsResponsesOnlyModel() {
+		target = types.RelayFormatOpenAIResponses
 	}
-	return request, nil
+	switch target {
+	case types.RelayFormatClaude:
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatClaude
+		}
+		return a.claudeAdaptor.ConvertOpenAIRequest(c, info, request)
+	case types.RelayFormatGemini:
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatGemini
+		}
+		return a.geminiAdaptor.ConvertOpenAIRequest(c, info, request)
+	case types.RelayFormatOpenAIResponses:
+		result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAIResponses, request)
+		if err != nil {
+			return nil, err
+		}
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatOpenAIResponses
+		}
+		return result.Value, nil
+	default:
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatOpenAI
+		}
+		return request, nil
+	}
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	if info.TargetsClaudeModel() {
-		return a.claudeAdaptor.ConvertOpenAIResponsesRequest(c, info, request)
+	var target types.RelayFormat = types.RelayFormatOpenAIResponses
+	if info != nil && info.ForceTargetRelayFormat != "" {
+		target = info.ForceTargetRelayFormat
+	} else if info.TargetsClaudeModel() {
+		target = types.RelayFormatClaude
+	} else if info.TargetsGeminiModel() {
+		target = types.RelayFormatGemini
 	}
-	return request, nil
+	switch target {
+	case types.RelayFormatClaude:
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatClaude
+		}
+		return a.claudeAdaptor.ConvertOpenAIResponsesRequest(c, info, request)
+	case types.RelayFormatGemini:
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatGemini
+		}
+		return a.geminiAdaptor.ConvertOpenAIResponsesRequest(c, info, request)
+	case types.RelayFormatOpenAI:
+		return openai.ConvertResponsesToOpenAIWithAdaptor(c, info, request, a.openaiAdaptor.ConvertOpenAIRequest)
+	default:
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatOpenAIResponses
+		}
+		return request, nil
+	}
 }
 
 func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.EmbeddingRequest) (any, error) {
@@ -88,14 +152,76 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	return a.claudeAdaptor.ConvertClaudeRequest(c, info, request)
+	var target types.RelayFormat = types.RelayFormatClaude
+	if info != nil && info.ForceTargetRelayFormat != "" {
+		target = info.ForceTargetRelayFormat
+	} else if info.TargetsGeminiModel() {
+		target = types.RelayFormatGemini
+	} else if info.TargetsResponsesOnlyModel() {
+		target = types.RelayFormatOpenAIResponses
+	}
+	switch target {
+	case types.RelayFormatOpenAI:
+		return openai.ConvertClaudeToOpenAIWithAdaptor(c, info, request, a.openaiAdaptor.ConvertOpenAIRequest)
+	case types.RelayFormatGemini:
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatGemini
+		}
+		return a.geminiAdaptor.ConvertClaudeRequest(c, info, request)
+	case types.RelayFormatOpenAIResponses:
+		result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAIResponses, request)
+		if err != nil {
+			return nil, err
+		}
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatOpenAIResponses
+		}
+		return result.Value, nil
+	default:
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatClaude
+		}
+		return a.claudeAdaptor.ConvertClaudeRequest(c, info, request)
+	}
 }
 
 func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	return a.geminiAdaptor.ConvertGeminiRequest(c, info, request)
+	var target types.RelayFormat = types.RelayFormatGemini
+	if info != nil && info.ForceTargetRelayFormat != "" {
+		target = info.ForceTargetRelayFormat
+	} else if info.TargetsClaudeModel() {
+		target = types.RelayFormatClaude
+	} else if info.TargetsResponsesOnlyModel() {
+		target = types.RelayFormatOpenAIResponses
+	} else if info != nil && !info.TargetsGeminiModel() && (info.UpstreamModelName != "" || info.OriginModelName != "") {
+		target = types.RelayFormatOpenAI
+	}
+	switch target {
+	case types.RelayFormatClaude:
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatClaude
+		}
+		return a.claudeAdaptor.ConvertGeminiRequest(c, info, request)
+	case types.RelayFormatOpenAI:
+		return openai.ConvertGeminiToOpenAIWithAdaptor(c, info, request, a.openaiAdaptor.ConvertOpenAIRequest)
+	case types.RelayFormatOpenAIResponses:
+		result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAIResponses, request)
+		if err != nil {
+			return nil, err
+		}
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatOpenAIResponses
+		}
+		return result.Value, nil
+	default:
+		if info != nil {
+			info.FinalRequestRelayFormat = types.RelayFormatGemini
+		}
+		return a.geminiAdaptor.ConvertGeminiRequest(c, info, request)
+	}
 }
 
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
@@ -120,6 +246,14 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return a.claudeAdaptor.DoResponse(c, resp, info)
 	case types.RelayFormatGemini:
 		return a.geminiAdaptor.DoResponse(c, resp, info)
+	case types.RelayFormatOpenAIResponses:
+		if info.RelayFormat != types.RelayFormatOpenAIResponses {
+			if info.IsStream {
+				return openai.OaiResponsesToChatStreamHandler(c, info, resp)
+			}
+			return openai.OaiResponsesToChatHandler(c, info, resp)
+		}
+		return a.openaiAdaptor.DoResponse(c, resp, info)
 	default:
 		return a.openaiAdaptor.DoResponse(c, resp, info)
 	}
