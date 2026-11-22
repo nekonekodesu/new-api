@@ -478,14 +478,55 @@ func updateChannelSub2APIBalance(channel *model.Channel) (float64, error) {
 	return *balance, nil
 }
 
+// resolveNewAPIChannelBalanceCurrency determines the configured currency of a
+// New API channel (falling back to USD when unset) and returns any matched
+// upstream account source for unlimited-token fallback queries.
+func resolveNewAPIChannelBalanceCurrency(channel *model.Channel) (string, *model.UpstreamAccountSource) {
+	syncCfg := model.GetModelPriceSyncConfig()
+	var matchedAcc *model.UpstreamAccountSource
+	if channel != nil {
+		upID, _ := model.ResolveChannelUpstreamSource(channel, nil, syncCfg)
+		if upID != "" && upID != model.DirectUpstreamSourceID {
+			for i := range syncCfg.UpstreamAccounts {
+				if model.UpstreamAccountKey(syncCfg.UpstreamAccounts[i]) == upID || syncCfg.UpstreamAccounts[i].ID == upID {
+					accCopy := syncCfg.UpstreamAccounts[i]
+					matchedAcc = &accCopy
+					break
+				}
+			}
+		}
+		if channel.Id > 0 {
+			if c := strings.ToUpper(strings.TrimSpace(syncCfg.ChannelCurrencies[channel.Id])); c != "" && c != "AUTO" {
+				return c, matchedAcc
+			}
+		}
+		if channel.CurrencyCode != nil {
+			if c := strings.ToUpper(strings.TrimSpace(*channel.CurrencyCode)); c != "" && c != "AUTO" {
+				return c, matchedAcc
+			}
+		}
+		if matchedAcc != nil {
+			if c := strings.ToUpper(strings.TrimSpace(matchedAcc.Currency)); c != "" && c != "AUTO" {
+				return c, matchedAcc
+			}
+		}
+	}
+	if defCurr := strings.ToUpper(strings.TrimSpace(syncCfg.DefaultCurrency)); defCurr != "" && defCurr != "AUTO" {
+		return defCurr, matchedAcc
+	}
+	return "USD", matchedAcc
+}
+
 // updateChannelNewAPIBalance reads the upstream key's remaining quota. When the
 // upstream also returns its owner's quota, the smaller of the two is what the
-// key can still spend. Quota converts to USD with the upstream's quota_per_unit.
+// key can still spend. Quota converts to USD with the upstream's quota_per_unit
+// and the channel's configured currency exchange rate.
 func updateChannelNewAPIBalance(channel *model.Channel) (float64, error) {
 	baseURL := strings.TrimRight(channel.GetBaseURL(), "/")
 	if baseURL == "" {
 		return 0, errors.New("New API channel is missing base_url")
 	}
+	currency, matchedAcc := resolveNewAPIChannelBalanceCurrency(channel)
 	body, err := GetResponseBody("GET", baseURL+"/api/usage/token/", channel, GetAuthHeader(channel.Key))
 	if err != nil {
 		return 0, err
@@ -515,6 +556,15 @@ func updateChannelNewAPIBalance(channel *model.Channel) (float64, error) {
 		remaining = min(remaining, userQuota.TotalAvailable)
 	}
 	if math.IsInf(remaining, 1) {
+		if matchedAcc != nil && strings.TrimSpace(matchedAcc.AccessToken) != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			selfInfo := fetchUpstreamSelfBalance(ctx, matchedAcc.BaseURL, matchedAcc.AccessToken, matchedAcc.UserID, matchedAcc.SyncMode, currency, 0)
+			if selfInfo.HasValidQuota {
+				channel.UpdateBalance(selfInfo.BalanceUSD)
+				return selfInfo.BalanceUSD, nil
+			}
+		}
 		return 0, common.NewMessage(`The upstream key has unlimited quota. Turn on "Allow querying user quota" for this key on the upstream to see the real balance.`)
 	}
 
@@ -533,7 +583,12 @@ func updateChannelNewAPIBalance(channel *model.Channel) (float64, error) {
 	if status.Data.QuotaPerUnit <= 0 {
 		return 0, errors.New("New API /api/status response is missing quota_per_unit")
 	}
-	balance := remaining / status.Data.QuotaPerUnit
+	rawUnits := remaining / status.Data.QuotaPerUnit
+	unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(currency, 0)
+	balance := rawUnits
+	if unitMult > 0 && math.Abs(unitMult-1.0) > 1e-9 {
+		balance = math.Round((rawUnits*unitMult)*1e4) / 1e4
+	}
 	channel.UpdateBalance(balance)
 	return balance, nil
 }

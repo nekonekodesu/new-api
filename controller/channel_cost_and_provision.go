@@ -1212,6 +1212,9 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 			}
 			if model.DB != nil {
 				_ = model.DB.Model(&model.Channel{}).Where("id = ?", existingCh.Id).Updates(updates).Error
+				if hasChBal && existingCh.GetBalanceDetail() != nil {
+					recordBuiltinBalance(existingCh, channelBalanceResult{Balance: chBalUSD}, nil)
+				}
 				_ = existingCh.UpdateAbilities(nil)
 			}
 			cfg.ChannelUpstreamGroups[existingCh.Id] = g

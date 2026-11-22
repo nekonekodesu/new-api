@@ -418,3 +418,129 @@ func TestApplyAuthoritativeModelPricesConvertsUpstreamCurrencyToUSD(t *testing.T
 	require.True(t, ok)
 	assert.InDelta(t, 0.625, unconfRatio, 1e-5, "unconfigured 37.5 model must get sensible family fallback instead of 37.5 ($2,400/1M in TWD)")
 }
+
+func TestUpdateChannelNewAPIBalanceConvertsConfiguredCurrencyToUSD(t *testing.T) {
+	origRates := operation_setting.GetGeneralSetting().CurrencyRates
+	origUSD := operation_setting.USDExchangeRate
+	origNTD := operation_setting.NTDExchangeRate
+	prevCfg := model.GetModelPriceSyncConfig()
+	t.Cleanup(func() {
+		gs := operation_setting.GetGeneralSetting()
+		gs.CurrencyRates = origRates
+		operation_setting.USDExchangeRate = origUSD
+		operation_setting.NTDExchangeRate = origNTD
+		_ = model.SaveModelPriceSyncConfig(prevCfg)
+	})
+
+	gs := operation_setting.GetGeneralSetting()
+	operation_setting.USDExchangeRate = 7.3
+	operation_setting.NTDExchangeRate = 32.0
+	gs.CurrencyRates = map[string]operation_setting.CurrencyRate{
+		"USD": {Symbol: "$", Rate: 1.0},
+		"CNY": {Symbol: "¥", Rate: 5.0}, // 1 CNY = 5 TWD, 1 USD = 32 TWD => unitMult = 5/32 = 1/6.4
+		"TWD": {Symbol: "NT$", Rate: 32.0},
+	}
+
+	tests := []struct {
+		name              string
+		usageJSON         string
+		selfJSON          string
+		channelCurrency   string
+		mapCurrency       string
+		upstreamCurrency  string
+		upstreamAccessTok string
+		wantBalanceUSD    float64
+	}{
+		{
+			name:            "CNY from channel CurrencyCode converts using central rate",
+			usageJSON:       `{"code":true,"data":{"total_available":97000000,"unlimited_quota":false}}`, // 194 CNY @ 500000/unit
+			channelCurrency: "CNY",
+			wantBalanceUSD:  30.3125, // 194 * (5/32) = 30.3125 USD (= NT$970)
+		},
+		{
+			name:           "CNY from syncCfg ChannelCurrencies map converts using central rate",
+			usageJSON:      `{"code":true,"data":{"total_available":0,"unlimited_quota":true,"user_quota":{"total_available":97000000}}}`,
+			mapCurrency:    "CNY",
+			wantBalanceUSD: 30.3125,
+		},
+		{
+			name:              "unlimited token without user_quota falls back to matched upstream account self balance in configured currency",
+			usageJSON:         `{"code":true,"data":{"total_available":0,"unlimited_quota":true}}`,
+			selfJSON:          `{"success":true,"data":{"quota":97000000,"used_quota":0}}`,
+			upstreamCurrency:  "CNY",
+			upstreamAccessTok: "upstream-pat-secret",
+			wantBalanceUSD:    30.3125,
+		},
+		{
+			name:            "TWD channel converts to USD",
+			usageJSON:       `{"code":true,"data":{"total_available":16000000,"unlimited_quota":false}}`, // 32 TWD @ 500000/unit
+			channelCurrency: "TWD",
+			wantBalanceUSD:  1.0,
+		},
+		{
+			name:            "USD channel remains 1:1",
+			usageJSON:       `{"code":true,"data":{"total_available":5000000,"unlimited_quota":false}}`, // 10 USD
+			channelCurrency: "USD",
+			wantBalanceUSD:  10.0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setupSub2APIBalanceTest(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/usage/token/":
+					_, _ = w.Write([]byte(tc.usageJSON))
+				case "/api/status":
+					_, _ = w.Write([]byte(`{"success":true,"data":{"quota_per_unit":500000}}`))
+				case "/api/user/self":
+					_, _ = w.Write([]byte(tc.selfJSON))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			baseURL := server.URL
+			channel := &model.Channel{
+				Type:    constant.ChannelTypeNewAPI,
+				BaseURL: &baseURL,
+				Key:     "sk-upstream",
+				Name:    "gc-default-1",
+			}
+			if tc.channelCurrency != "" {
+				c := tc.channelCurrency
+				channel.CurrencyCode = &c
+			}
+			require.NoError(t, model.DB.Create(channel).Error)
+
+			cfg := model.GetModelPriceSyncConfig()
+			cfg.DefaultCurrency = "AUTO"
+			cfg.ChannelCurrencies = map[int]string{}
+			cfg.UpstreamAccounts = nil
+			if tc.mapCurrency != "" {
+				cfg.ChannelCurrencies[channel.Id] = tc.mapCurrency
+			}
+			if tc.upstreamCurrency != "" {
+				cfg.UpstreamAccounts = []model.UpstreamAccountSource{
+					{
+						ID:          "src-gc",
+						Name:        "gc",
+						BaseURL:     baseURL,
+						UserID:      "1",
+						AccessToken: tc.upstreamAccessTok,
+						Currency:    tc.upstreamCurrency,
+						Enabled:     true,
+					},
+				}
+			}
+			require.NoError(t, model.SaveModelPriceSyncConfig(cfg))
+
+			result, err := updateChannelBalance(channel)
+			require.NoError(t, err)
+			assert.InDelta(t, tc.wantBalanceUSD, result.Balance, 1e-4)
+			assert.InDelta(t, tc.wantBalanceUSD, channel.Balance, 1e-4)
+		})
+	}
+}
