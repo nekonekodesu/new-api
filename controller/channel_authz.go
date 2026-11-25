@@ -1,6 +1,9 @@
 package controller
 
-import "github.com/QuantumNous/new-api/model"
+import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+)
 
 func channelHasSensitiveChanges(channel *PatchChannel, origin *model.Channel, requestData map[string]any) bool {
 	if _, ok := requestData["type"]; ok && channel.Type != origin.Type {
@@ -9,19 +12,19 @@ func channelHasSensitiveChanges(channel *PatchChannel, origin *model.Channel, re
 	if _, ok := requestData["key"]; ok && channel.Key != "" && channel.Key != origin.Key {
 		return true
 	}
-	if _, ok := requestData["base_url"]; ok && !equalStringPtr(channel.BaseURL, origin.BaseURL) {
+	if _, ok := requestData["base_url"]; ok && !common.EqualPtr(channel.BaseURL, origin.BaseURL) {
 		return true
 	}
-	if _, ok := requestData["openai_organization"]; ok && !equalStringPtr(channel.OpenAIOrganization, origin.OpenAIOrganization) {
+	if _, ok := requestData["openai_organization"]; ok && !common.EqualPtr(channel.OpenAIOrganization, origin.OpenAIOrganization) {
 		return true
 	}
-	if _, ok := requestData["header_override"]; ok && !equalStringPtr(channel.HeaderOverride, origin.HeaderOverride) {
+	if _, ok := requestData["header_override"]; ok && !common.EqualPtr(channel.HeaderOverride, origin.HeaderOverride) {
 		return true
 	}
-	if _, ok := requestData["param_override"]; ok && !equalStringPtr(channel.ParamOverride, origin.ParamOverride) {
+	if _, ok := requestData["param_override"]; ok && !common.EqualPtr(channel.ParamOverride, origin.ParamOverride) {
 		return true
 	}
-	if _, ok := requestData["setting"]; ok && !equalStringPtr(channel.Setting, origin.Setting) {
+	if _, ok := requestData["setting"]; ok && !common.EqualPtr(channel.Setting, origin.Setting) {
 		return true
 	}
 	if _, ok := requestData["other"]; ok && channel.Other != origin.Other {

@@ -512,6 +512,21 @@ type RecordConsumeLogParams struct {
 	Other            *LogOther         `json:"other"`
 }
 
+func readLogPublicInt64(m map[string]any, key string) int64 {
+	if m == nil {
+		return 0
+	}
+	switch v := m[key].(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	}
+	return 0
+}
+
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
 	// Request plugin report hooks read what the request settled, whether or
 	// not consume logs are kept.
@@ -531,21 +546,14 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		}
 		var cacheRead, cacheWrite int64
 		if other.public != nil {
-			switch v := other.public["cache_tokens"].(type) {
-			case int:
-				cacheRead = int64(v)
-			case int64:
-				cacheRead = v
-			case float64:
-				cacheRead = int64(v)
+			cacheRead = readLogPublicInt64(other.public, "cache_tokens")
+			cacheWrite = readLogPublicInt64(other.public, "cache_write_tokens")
+			if cacheWrite == 0 {
+				cacheWrite = readLogPublicInt64(other.public, "cache_creation_tokens")
 			}
-			switch v := other.public["cache_write_tokens"].(type) {
-			case int:
-				cacheWrite = int64(v)
-			case int64:
-				cacheWrite = v
-			case float64:
-				cacheWrite = int64(v)
+			if cacheWrite == 0 {
+				cacheWrite = readLogPublicInt64(other.public, "cache_creation_tokens_5m") +
+					readLogPublicInt64(other.public, "cache_creation_tokens_1h")
 			}
 		}
 		frozenCost := CalculateChannelModelUsageCost(

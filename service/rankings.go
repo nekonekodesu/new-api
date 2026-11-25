@@ -211,7 +211,7 @@ func buildRankingsSnapshot(config rankingPeriodConfig, now time.Time) (*Rankings
 	movers, droppers := buildRankingMovers(rankedModels)
 
 	return &RankingsResponse{
-		Models:             limitRankedModels(rankedModels, rankingLeaderboardLimit),
+		Models:             limitSlice(rankedModels, rankingLeaderboardLimit),
 		Vendors:            vendors,
 		TopMovers:          movers,
 		TopDroppers:        droppers,
@@ -360,7 +360,7 @@ func ensureVendorAggregate(aggregates map[string]*vendorAggregate, meta rankingM
 
 func buildModelHistory(buckets []model.RankingQuotaBucket, totals []model.RankingQuotaTotal, meta map[string]rankingModelMeta, config rankingPeriodConfig) ModelHistorySeries {
 	topModels := make(map[string]struct{})
-	models := make([]ModelHistoryModel, 0, minInt(len(totals), rankingHistoryLimit)+1)
+	models := make([]ModelHistoryModel, 0, min(len(totals), rankingHistoryLimit)+1)
 	otherTotal := int64(0)
 	for idx, item := range totals {
 		if idx < rankingHistoryLimit {
@@ -416,7 +416,7 @@ func buildModelHistory(buckets []model.RankingQuotaBucket, totals []model.Rankin
 
 func buildVendorShareHistory(buckets []model.RankingQuotaBucket, vendors []RankedVendor, totalTokens int64, meta map[string]rankingModelMeta, config rankingPeriodConfig) VendorShareSeries {
 	topVendors := make(map[string]struct{})
-	vendorRows := make([]VendorShareVendor, 0, minInt(len(vendors), rankingVendorLimit)+1)
+	vendorRows := make([]VendorShareVendor, 0, min(len(vendors), rankingVendorLimit)+1)
 	otherTotal := int64(0)
 	for idx, vendor := range vendors {
 		if idx < rankingVendorLimit {
@@ -509,7 +509,7 @@ func buildRankingMovers(models []RankedModel) ([]RankingMover, []RankingMover) {
 		}
 		return droppers[i].RankDelta < droppers[j].RankDelta
 	})
-	return limitRankingMovers(movers, rankingMoverLimit), limitRankingMovers(droppers, rankingMoverLimit)
+	return limitSlice(movers, rankingMoverLimit), limitSlice(droppers, rankingMoverLimit)
 }
 
 func sortedRankingBuckets(bucketSet map[int64]struct{}) []int64 {
@@ -574,23 +574,9 @@ func roundRankingFloat(value float64) float64 {
 	return math.Round(value*10000) / 10000
 }
 
-func limitRankedModels(rows []RankedModel, limit int) []RankedModel {
+func limitSlice[T any](rows []T, limit int) []T {
 	if limit <= 0 || len(rows) <= limit {
 		return rows
 	}
 	return rows[:limit]
-}
-
-func limitRankingMovers(rows []RankingMover, limit int) []RankingMover {
-	if limit <= 0 || len(rows) <= limit {
-		return rows
-	}
-	return rows[:limit]
-}
-
-func minInt(a int, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

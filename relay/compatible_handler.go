@@ -4,15 +4,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
-	"github.com/QuantumNous/new-api/relay/requestplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -85,33 +82,18 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			return newApiErr
 		}
 
-		var containAudioTokens = usage.CompletionTokenDetails.AudioTokens > 0 || usage.PromptTokensDetails.AudioTokens > 0
-		var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
-
-		if containAudioTokens && containsAudioRatios {
-			service.PostAudioConsumeQuota(c, info, usage, nil)
-		} else {
-			service.PostTextConsumeQuota(c, info, usage, nil)
-		}
+		postTextOrAudioConsumeQuota(c, info, usage)
 		return nil
 	}
 
 	var requestBody io.Reader
 
 	if passThrough {
-		storage, err := common.GetBodyStorage(c)
-		if err != nil {
-			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		body, apiErr := preparePassThroughRequestBody(c, info, true)
+		if apiErr != nil {
+			return apiErr
 		}
-		if newAPIError = requestplugin.PassThrough(c, info, storage); newAPIError != nil {
-			return newAPIError
-		}
-		if common.DebugEnabled {
-			if debugBytes, bErr := storage.Bytes(); bErr == nil {
-				logger.LogDebug(c, "requestBody: %s", debugBytes)
-			}
-		}
-		requestBody = common.NewReplayableBodyReader(storage)
+		requestBody = body
 	} else {
 		applySystemPromptIfNeeded(c, info, request)
 		convertedRequest, err := adaptor.ConvertOpenAIRequest(c, info, request)
@@ -120,39 +102,15 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		}
 		relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 
-		jsonData, err := common.Marshal(convertedRequest)
-		if err != nil {
-			return types.NewError(err, types.ErrorCodeJsonMarshalFailed, types.ErrOptionWithSkipRetry())
-		}
-
-		// remove disabled fields for OpenAI API
-		jsonData, err = relaycommon.RemoveDisabledFields(jsonData, info.ChannelOtherSettings, info.ChannelSetting.PassThroughBodyEnabled)
-		if err != nil {
-			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
-		}
-
-		if jsonData, newAPIError = requestplugin.Outbound(c, info, jsonData); newAPIError != nil {
-			return newAPIError
-		}
-		// apply param override
-		if len(info.ParamOverride) > 0 {
-			jsonData, err = relaycommon.ApplyParamOverrideWithRelayInfo(jsonData, info)
-			if err != nil {
-				return newAPIErrorFromParamOverride(err)
-			}
-		}
-		if newAPIError = requestplugin.Egress(c, info, jsonData); newAPIError != nil {
-			return newAPIError
-		}
-
-		logger.LogDebug(c, "text request body: %s", jsonData)
-
-		body, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
-		if err != nil {
-			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		body, closer, apiErr := buildOutboundJSONRequestBody(c, info, convertedRequest, outboundJSONOptions{
+			removeDisabledFields: true,
+			marshalErrCode:       types.ErrorCodeJsonMarshalFailed,
+			debugLogPrefix:       "text request body: ",
+		})
+		if apiErr != nil {
+			return apiErr
 		}
 		defer closer.Close()
-		jsonData = nil
 		requestBody = body
 	}
 
@@ -166,19 +124,13 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	if resp != nil {
 		httpResp = resp.(*http.Response)
-		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
+		info.IsStream = info.IsStream || isResponsesEventStreamContentType(httpResp.Header.Get("Content-Type"))
 		if httpResp.StatusCode != http.StatusOK {
 			if fallbackUsage, fallbackErr, handled := TryProtocolFallbackOnError(c, info, adaptor, request, httpResp, statusCodeMappingStr); handled {
 				if fallbackErr != nil {
 					return fallbackErr
 				}
-				var containAudioTokens = fallbackUsage.CompletionTokenDetails.AudioTokens > 0 || fallbackUsage.PromptTokensDetails.AudioTokens > 0
-				var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
-				if containAudioTokens && containsAudioRatios {
-					service.PostAudioConsumeQuota(c, info, fallbackUsage, nil)
-				} else {
-					service.PostTextConsumeQuota(c, info, fallbackUsage, nil)
-				}
+				postTextOrAudioConsumeQuota(c, info, fallbackUsage)
 				return nil
 			}
 			newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
@@ -195,13 +147,16 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		return newApiErr
 	}
 
-	var containAudioTokens = usage.(*dto.Usage).CompletionTokenDetails.AudioTokens > 0 || usage.(*dto.Usage).PromptTokensDetails.AudioTokens > 0
-	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
-
-	if containAudioTokens && containsAudioRatios {
-		service.PostAudioConsumeQuota(c, info, usage.(*dto.Usage), nil)
-	} else {
-		service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
-	}
+	postTextOrAudioConsumeQuota(c, info, usage.(*dto.Usage))
 	return nil
+}
+
+func postTextOrAudioConsumeQuota(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) {
+	containAudioTokens := usage != nil && (usage.CompletionTokenDetails.AudioTokens > 0 || usage.PromptTokensDetails.AudioTokens > 0)
+	containsAudioRatios := ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
+	if containAudioTokens && containsAudioRatios {
+		service.PostAudioConsumeQuota(c, info, usage, nil)
+	} else {
+		service.PostTextConsumeQuota(c, info, usage, nil)
+	}
 }

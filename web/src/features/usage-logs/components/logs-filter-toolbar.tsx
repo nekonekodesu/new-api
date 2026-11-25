@@ -42,7 +42,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
-import { useMediaQuery } from '@/hooks'
+import { useIsCompactScreen } from '@/hooks'
 import { cn } from '@/lib/utils'
 
 import { useOptionalUsageLogsContext } from './usage-logs-provider'
@@ -216,7 +216,7 @@ export function LogsFilterToolbar<TData>(props: LogsFilterToolbarProps<TData>) {
   const { t } = useTranslation()
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
 
   const hasAdvancedFilters = props.advancedFilters != null
   const activeAdvancedCount =

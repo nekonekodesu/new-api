@@ -231,6 +231,7 @@ func TestGroupChannelSchedulingAndCostCalculation(t *testing.T) {
 		Models: "deepseek-v4",
 		Status: common.ChannelStatusEnabled,
 	}
+	setupSchedulingBandTestGroup(t, "vip", SchedulingModeStandard, chOfficial.Id, chLowCost.Id, chFast.Id)
 
 	// Official API defaults to 1x multiplier
 	officialEntry := computeDefaultModelCostEntry(chOfficial, "deepseek-v4", 1000)
@@ -312,9 +313,19 @@ func TestGroupChannelSchedulingAndCostCalculation(t *testing.T) {
 	groupSchedulingMu.Lock()
 	groupSchedulingModes["vip"] = SchedulingModeSpeed
 	groupSchedulingMu.Unlock()
-	pickedSpeed := selectChannelByGroupSchedule("vip", "deepseek-v4", 0, candidates, nil)
-	require.NotNil(t, pickedSpeed)
-	assert.Equal(t, chFast.Id, pickedSpeed.Id)
+	assert.Greater(t,
+		scoreChannelForSchedule(SchedulingModeSpeed, chFast, "deepseek-v4"),
+		scoreChannelForSchedule(SchedulingModeSpeed, chLowCost, "deepseek-v4"),
+	)
+	speedFastWins := 0
+	for range 200 {
+		pickedSpeed := selectChannelByGroupSchedule("vip", "deepseek-v4", 0, []*Channel{chLowCost, chFast}, nil)
+		require.NotNil(t, pickedSpeed)
+		if pickedSpeed.Id == chFast.Id {
+			speedFastWins++
+		}
+	}
+	assert.Greater(t, speedFastWins, 170)
 
 	// Availability scheduling picks chLowCost (100% availability vs 50% on chFast)
 	groupSchedulingMu.Lock()
@@ -331,9 +342,19 @@ func TestGroupChannelSchedulingAndCostCalculation(t *testing.T) {
 	groupSchedulingMu.Lock()
 	groupSchedulingModes["vip"] = SchedulingModeBBR
 	groupSchedulingMu.Unlock()
-	pickedBBR := selectChannelByGroupSchedule("vip", "deepseek-v4", 0, []*Channel{chLowCost, chFast}, nil)
-	require.NotNil(t, pickedBBR)
-	assert.Equal(t, chLowCost.Id, pickedBBR.Id)
+	assert.Greater(t,
+		scoreChannelForSchedule(SchedulingModeBBR, chLowCost, "deepseek-v4"),
+		scoreChannelForSchedule(SchedulingModeBBR, chFast, "deepseek-v4"),
+	)
+	bbrLowCostWins := 0
+	for range 200 {
+		pickedBBR := selectChannelByGroupSchedule("vip", "deepseek-v4", 0, []*Channel{chLowCost, chFast}, nil)
+		require.NotNil(t, pickedBBR)
+		if pickedBBR.Id == chLowCost.Id {
+			bbrLowCostWins++
+		}
+	}
+	assert.Greater(t, bbrLowCostWins, 170)
 
 	// Verify EMA recovery over time so a degraded channel is not permanently dead
 	recovered := recoverChannelSuccessRate(0.2, time.Now().Add(-15*time.Minute), time.Now())

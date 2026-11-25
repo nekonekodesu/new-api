@@ -6,6 +6,8 @@ on:
       - '*'  # Triggers on version tags like v1.0.0
       - '!*-*'  # Ignore pre-release tags like v1.0.0-beta
       - '!*-alpha*' # Ignore alpha tags like v1.0.0-alpha
+      - '!*[0-9]B[0-9]*' # Ignore beta tags like v1.2.4B1
+      - '!*[0-9]b[0-9]*' # Ignore beta tags like v1.2.4b1
   workflow_dispatch:  # Allows manual triggering
 
 jobs:
@@ -78,9 +80,13 @@ jobs:
           
             VERSION="$MAJOR.$MINOR.$PATCH"
           
-            # If there's extra content, append it without adding -dev
+            # If there's extra content, ensure SemVer hyphen separator for npm version
             if [[ -n "$REST" ]]; then
-              VERSION="$VERSION$REST"
+              if [[ "$REST" != -* && "$REST" != +* ]]; then
+                VERSION="$VERSION-$REST"
+              else
+                VERSION="$VERSION$REST"
+              fi
             fi
           fi
           npm version $VERSION --no-git-tag-version --allow-same-version

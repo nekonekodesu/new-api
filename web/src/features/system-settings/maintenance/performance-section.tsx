@@ -23,19 +23,9 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import * as z from 'zod'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -51,6 +41,7 @@ import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/api'
+import { formatBinaryBytes } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -135,19 +126,6 @@ const normalizeFormValues = (values: PerfFormValues): FlatPerfDefaults => ({
     values.performance_setting.monitor_disk_threshold,
 })
 
-function formatBytes(bytes: number, decimals = 2): string {
-  if (!bytes || Number.isNaN(bytes)) return '0 Bytes'
-  if (bytes === 0) return '0 Bytes'
-  if (bytes < 0) return `-${formatBytes(-bytes, decimals)}`
-  const k = 1024
-  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k))
-  if (i < 0 || i >= sizes.length) return `${bytes} Bytes`
-  return `${Number.parseFloat((bytes / Math.pow(k, i)).toFixed(decimals))} ${
-    sizes[i]
-  }`
-}
-
 interface Props {
   defaultValues: FlatPerfDefaults
 }
@@ -189,6 +167,7 @@ export function PerformanceSection(props: Props) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
   const [stats, setStats] = useState<PerformanceStats | null>(null)
+  const [showClearCacheDialog, setShowClearCacheDialog] = useState(false)
 
   const formDefaults = useMemo(
     () => buildFormDefaults(props.defaultValues),
@@ -400,8 +379,8 @@ export function PerformanceSection(props: Props) {
                     stats.disk_space_info.total > 0 && (
                       <FormDescription>
                         {t('Free: {{free}} / Total: {{total}}', {
-                          free: formatBytes(stats.disk_space_info.free),
-                          total: formatBytes(stats.disk_space_info.total),
+                          free: formatBinaryBytes(stats.disk_space_info.free),
+                          total: formatBinaryBytes(stats.disk_space_info.total),
                         })}
                       </FormDescription>
                     )}
@@ -414,7 +393,7 @@ export function PerformanceSection(props: Props) {
           {lowDiskSpace && (
             <Alert variant='destructive'>
               <AlertDescription>
-                {`${t('Warning')}: ${t('Available disk space')} (${formatBytes(stats?.disk_space_info?.free ?? 0)}) ${t('is less than the configured maximum cache size')} (${maxCacheSizeMb} MB). ${t('This may cause cache failures.')}`}
+                {`${t('Warning')}: ${t('Available disk space')} (${formatBinaryBytes(stats?.disk_space_info?.free ?? 0)}) ${t('is less than the configured maximum cache size')} (${maxCacheSizeMb} MB). ${t('This may cause cache failures.')}`}
               </AlertDescription>
             </Alert>
           )}
@@ -549,32 +528,29 @@ export function PerformanceSection(props: Props) {
           <Button variant='outline' size='sm' onClick={fetchStats}>
             {t('Refresh Stats')}
           </Button>
-          <AlertDialog>
-            <AlertDialogTrigger render={<Button variant='outline' size='sm' />}>
-              {t('Clean up inactive cache')}
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>
-                  {t('Confirm cleanup of inactive disk cache?')}
-                </AlertDialogTitle>
-                <AlertDialogDescription>
-                  {t(
-                    'This will delete temporary cache files that have not been used for more than 10 minutes'
-                  )}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>{t('Cancel')}</AlertDialogCancel>
-                <AlertDialogAction
-                  variant='destructive'
-                  onClick={clearDiskCache}
-                >
-                  {t('Confirm')}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            onClick={() => setShowClearCacheDialog(true)}
+          >
+            {t('Clean up inactive cache')}
+          </Button>
+          <ConfirmDialog
+            open={showClearCacheDialog}
+            onOpenChange={setShowClearCacheDialog}
+            title={t('Confirm cleanup of inactive disk cache?')}
+            desc={t(
+              'This will delete temporary cache files that have not been used for more than 10 minutes'
+            )}
+            cancelBtnText={t('Cancel')}
+            confirmText={t('Confirm')}
+            destructive
+            handleConfirm={() => {
+              setShowClearCacheDialog(false)
+              void clearDiskCache()
+            }}
+          />
           <Button variant='outline' size='sm' onClick={resetStats}>
             {t('Reset Stats')}
           </Button>
@@ -593,11 +569,11 @@ export function PerformanceSection(props: Props) {
                 <Progress value={diskCachePercent} />
                 <div className='text-muted-foreground flex justify-between text-xs'>
                   <span>
-                    {formatBytes(
+                    {formatBinaryBytes(
                       stats.cache_stats?.current_disk_usage_bytes ?? 0
                     )}{' '}
                     /{' '}
-                    {formatBytes(stats.cache_stats?.disk_cache_max_bytes ?? 0)}
+                    {formatBinaryBytes(stats.cache_stats?.disk_cache_max_bytes ?? 0)}
                   </span>
                   <span>
                     {t('Active Files')}:{' '}
@@ -615,7 +591,7 @@ export function PerformanceSection(props: Props) {
                 <div className='text-muted-foreground flex justify-between text-xs'>
                   <span>
                     {t('Current Cache Size')}:{' '}
-                    {formatBytes(
+                    {formatBinaryBytes(
                       stats.cache_stats?.current_memory_usage_bytes ?? 0
                     )}
                   </span>
@@ -641,13 +617,13 @@ export function PerformanceSection(props: Props) {
                 />
                 <div className='text-muted-foreground mt-2 flex justify-between text-xs'>
                   <span>
-                    {t('Used')}: {formatBytes(stats.disk_space_info.used)}
+                    {t('Used')}: {formatBinaryBytes(stats.disk_space_info.used)}
                   </span>
                   <span>
-                    {t('Available')}: {formatBytes(stats.disk_space_info.free)}
+                    {t('Available')}: {formatBinaryBytes(stats.disk_space_info.free)}
                   </span>
                   <span>
-                    {t('Total')}: {formatBytes(stats.disk_space_info.total)}
+                    {t('Total')}: {formatBinaryBytes(stats.disk_space_info.total)}
                   </span>
                 </div>
               </div>
@@ -663,19 +639,19 @@ export function PerformanceSection(props: Props) {
                     <span className='text-muted-foreground'>
                       {t('Allocated Memory')}:
                     </span>{' '}
-                    {formatBytes(stats.memory_stats.alloc)}
+                    {formatBinaryBytes(stats.memory_stats.alloc)}
                   </div>
                   <div>
                     <span className='text-muted-foreground'>
                       {t('Total Allocated')}:
                     </span>{' '}
-                    {formatBytes(stats.memory_stats.total_alloc)}
+                    {formatBinaryBytes(stats.memory_stats.total_alloc)}
                   </div>
                   <div>
                     <span className='text-muted-foreground'>
                       {t('System Memory')}:
                     </span>{' '}
-                    {formatBytes(stats.memory_stats.sys)}
+                    {formatBinaryBytes(stats.memory_stats.sys)}
                   </div>
                   <div>
                     <span className='text-muted-foreground'>
@@ -715,7 +691,7 @@ export function PerformanceSection(props: Props) {
                     <span className='text-muted-foreground'>
                       {t('Directory Total Size')}:
                     </span>{' '}
-                    {formatBytes(stats.disk_cache_info.total_size)}
+                    {formatBinaryBytes(stats.disk_cache_info.total_size)}
                   </div>
                 </div>
               </div>

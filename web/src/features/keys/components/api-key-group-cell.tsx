@@ -26,7 +26,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { useMediaQuery } from '@/hooks'
+import { useIsCompactScreen } from '@/hooks'
 import { cn } from '@/lib/utils'
 
 import { GroupRatioBadge, type GroupRatio } from './auto-group-visuals'
@@ -40,7 +40,7 @@ type ApiKeyGroupCellProps = {
 
 export function ApiKeyGroupCell(props: ApiKeyGroupCellProps) {
   const { t } = useTranslation()
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
 
   const group = props.group?.trim() || ''
   if (group !== 'auto') {

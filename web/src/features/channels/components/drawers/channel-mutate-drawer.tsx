@@ -69,6 +69,7 @@ import { JsonEditor } from '@/components/json-editor'
 import { LearnMore } from '@/components/learn-more'
 import { LoadingState } from '@/components/loading-state'
 import { MultiSelect } from '@/components/multi-select'
+import { formatTimestampToDate } from '@/lib/format'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -379,7 +380,7 @@ function parseSettingsRecord(
 function formatUnixTime(timestamp: unknown): string {
   const seconds = Number(timestamp)
   if (!Number.isFinite(seconds) || seconds <= 0) return '-'
-  return new Date(seconds * 1000).toLocaleString()
+  return formatTimestampToDate(seconds)
 }
 
 function channelConfigurationBlockClassName(

@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { StatusBadgeProps } from '@/components/status-badge'
-import { formatTimestampToDate } from '@/lib/format'
 
 import type { TopupStatus } from '../types'
 
@@ -74,11 +73,4 @@ export function getPaymentMethodName(
 ): string {
   const name = PAYMENT_METHOD_NAMES[method] || method
   return t ? t(name) : name
-}
-
-/**
- * Format timestamp to readable date string
- */
-export function formatTimestamp(timestamp: number): string {
-  return formatTimestampToDate(timestamp)
 }

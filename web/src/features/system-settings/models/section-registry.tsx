@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { IoNetDeploymentSettingsSection } from '../integrations/ionet-deployment-settings-section'
 import type { ModelSettings } from '../types'
+import { formatJsonForEditor as formatJsonForEditorShared } from '../utils/json-parser'
 import { createSectionRegistry } from '../utils/section-registry'
 import { ClaudeSettingsCard } from './claude-settings-card'
 import { GeminiSettingsCard } from './gemini-settings-card'
@@ -25,13 +26,10 @@ import { GlobalSettingsCard } from './global-settings-card'
 import { GrokSettingsCard } from './grok-settings-card'
 
 function formatJsonForEditor(value: string, fallback: string) {
-  const raw = (value ?? '').toString().trim()
-  if (!raw) return fallback
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2)
-  } catch {
-    return fallback
-  }
+  return formatJsonForEditorShared((value ?? '').toString(), {
+    emptyFallback: fallback,
+    errorFallback: fallback,
+  })
 }
 
 const MODELS_SECTIONS = [

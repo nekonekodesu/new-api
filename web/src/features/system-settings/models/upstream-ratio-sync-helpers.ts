@@ -28,6 +28,7 @@ import {
   splitBillingExprAndRequestRules,
 } from '@/features/pricing/lib/billing-expr'
 import { tryParseVisualConfig } from '@/features/pricing/lib/tier-expr'
+import { formatNumber } from '@/lib/format'
 
 import type { PricingSyncValues } from '../types'
 import {
@@ -188,7 +189,7 @@ export function getSyncExpressionPricing(
       condition: tier.conditions
         .map(
           (condition) =>
-            `${conditionLabels[condition.var]} ${condition.op} ${Number(condition.value).toLocaleString()}`
+            `${conditionLabels[condition.var]} ${condition.op} ${formatNumber(Number(condition.value))}`
         )
         .join(' ∧ '),
       lines: fields.flatMap((field) =>

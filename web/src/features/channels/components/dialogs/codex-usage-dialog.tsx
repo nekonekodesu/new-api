@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import {
-  Copy,
   Check,
   RefreshCw,
   ChevronDown,
@@ -47,6 +46,7 @@ import { type ReactNode, useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { CopyButton } from '@/components/copy-button'
 import { Dialog } from '@/components/dialog'
 import { StatusBadge, type StatusBadgeProps } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -73,7 +73,6 @@ import {
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import dayjs from '@/lib/dayjs'
 import { formatDateTimeStr, formatTimestampToDate } from '@/lib/format'
 import { createServerError, getServerMessage } from '@/lib/server-error-message'
@@ -608,9 +607,7 @@ function InfoField(props: {
   className?: string
 }) {
   const { t } = useTranslation()
-  const { copyToClipboard, copiedText } = useCopyToClipboard({ notify: false })
   const text = props.value?.trim() || ''
-  const hasCopied = copiedText === text
 
   return (
     <div
@@ -632,15 +629,7 @@ function InfoField(props: {
           {text || '-'}
         </span>
         {props.copyable !== false && text ? (
-          <Button
-            type='button'
-            variant='ghost'
-            size='icon-xs'
-            aria-label={t('Copy')}
-            onClick={() => copyToClipboard(text)}
-          >
-            {hasCopied ? <Check className='text-success' /> : <Copy />}
-          </Button>
+          <CopyButton value={text} size='icon-xs' aria-label={t('Copy')} />
         ) : null}
       </div>
     </div>
@@ -913,7 +902,6 @@ export function CodexUsageDialog({
   isRefreshing,
 }: CodexUsageDialogProps) {
   const { t } = useTranslation()
-  const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const [showRawJson, setShowRawJson] = useState(false)
   const [showResetCredits, setShowResetCredits] = useState(false)
   const [resetCreditsResponse, setResetCreditsResponse] =
@@ -1298,20 +1286,14 @@ export function CodexUsageDialog({
           <CollapsibleContent>
             <>
               <div className='flex justify-end border-t px-3 py-2'>
-                <Button
-                  type='button'
+                <CopyButton
+                  value={rawJsonText}
                   variant='outline'
                   size='sm'
-                  onClick={() => copyToClipboard(rawJsonText)}
                   disabled={!rawJsonText}
                 >
-                  {copiedText === rawJsonText ? (
-                    <Check data-icon='inline-start' className='text-success' />
-                  ) : (
-                    <Copy data-icon='inline-start' />
-                  )}
                   {t('Copy')}
-                </Button>
+                </CopyButton>
               </div>
               <ScrollArea className='max-h-[50vh]'>
                 <pre className='bg-muted/30 m-0 p-3 text-xs break-words whitespace-pre-wrap'>

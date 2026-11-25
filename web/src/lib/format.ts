@@ -31,12 +31,14 @@ import {
 
 export function formatNumber(
   value: number | null | undefined,
-  locales?: Intl.LocalesArgument
+  locales?: Intl.LocalesArgument,
+  options?: Intl.NumberFormatOptions
 ): string {
   if (value == null || Number.isNaN(value as number)) return '-'
-  return Intl.NumberFormat(locales, { maximumFractionDigits: 2 }).format(
-    value as number
-  )
+  return Intl.NumberFormat(locales, {
+    maximumFractionDigits: 2,
+    ...options,
+  }).format(value as number)
 }
 
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -53,6 +55,23 @@ export function formatBytes(
     unit += 1
   }
   return `${Intl.NumberFormat(locales, { maximumFractionDigits: 1 }).format(value)} ${BYTE_UNITS[unit]}`
+}
+
+/** Format a byte count in binary (1024-based) units, e.g. 1.5 MB. */
+export function formatBinaryBytes(
+  bytes?: number | null,
+  decimals = 2
+): string {
+  if (bytes == null || !Number.isFinite(bytes)) return '-'
+  if (bytes === 0) return '0 B'
+  if (bytes < 0) return `-${formatBinaryBytes(-bytes, decimals)}`
+  const k = 1024
+  const dm = decimals < 0 ? 0 : decimals
+  const i = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(k)),
+    BYTE_UNITS.length - 1
+  )
+  return `${Number.parseFloat((bytes / k ** i).toFixed(dm))} ${BYTE_UNITS[i]}`
 }
 
 export function formatCompactNumber(

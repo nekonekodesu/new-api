@@ -25,9 +25,13 @@ import {
   useSystemConfigStore,
 } from '@/stores/system-config-store'
 
+import { getSitePricingCurrency } from '@/features/model-pricing/currency'
 import {
   formatAmount,
+  formatBillingAmountUSD,
+  formatBillingUnitCostUSD,
   formatCurrencyFromUSD,
+  formatRawUpstreamAmount,
   getCurrencyDisplay,
 } from '../currency'
 import { mapStatusDataToConfig } from '../status-query'
@@ -136,5 +140,79 @@ describe('multi-currency exchange rates and formatting', () => {
       symbol: '€',
       rate: 0.91,
     })
+  })
+
+  it('normalizes legacy CNY TWD-per-CNY rate <= 5.8 in getSitePricingCurrency', () => {
+    expect(
+      getSitePricingCurrency({
+        ...DEFAULT_CURRENCY_CONFIG,
+        quotaDisplayType: 'CNY',
+        ntdExchangeRate: 32,
+        currencyRates: {
+          ...DEFAULT_CURRENCY_RATES,
+          CNY: { symbol: '¥', rate: 4.75 },
+          TWD: { symbol: 'NT$', rate: 32 },
+        },
+      })
+    ).toEqual({
+      label: 'CNY',
+      symbol: '¥',
+      exchangeRate: 32 / 4.75,
+    })
+
+    expect(
+      getSitePricingCurrency({
+        ...DEFAULT_CURRENCY_CONFIG,
+        quotaDisplayType: 'CNY',
+        currencyRates: {
+          ...DEFAULT_CURRENCY_RATES,
+          CNY: { symbol: '¥', rate: 7.2 },
+        },
+      })
+    ).toEqual({
+      label: 'CNY',
+      symbol: '¥',
+      exchangeRate: 7.2,
+    })
+
+    expect(
+      getSitePricingCurrency({
+        ...DEFAULT_CURRENCY_CONFIG,
+        quotaDisplayType: 'USD',
+      })
+    ).toBeNull()
+
+    expect(
+      getSitePricingCurrency({
+        ...DEFAULT_CURRENCY_CONFIG,
+        quotaDisplayType: 'TOKENS',
+      })
+    ).toBeNull()
+  })
+
+  it('formats billing amounts, unit costs, and raw upstream amounts consistently', () => {
+    useSystemConfigStore.getState().setConfig({
+      currency: {
+        ...DEFAULT_CURRENCY_CONFIG,
+        quotaDisplayType: 'USD',
+      },
+    })
+
+    expect(formatBillingAmountUSD(undefined, 'en-US')).toBe('-')
+    expect(formatBillingAmountUSD(Number.NaN, 'en-US', '0')).toBe('$0')
+    expect(formatBillingAmountUSD(12.345, 'en-US')).toBe('$12.35')
+
+    expect(formatBillingUnitCostUSD(0, 'en-US')).toBe('$0')
+    expect(formatBillingUnitCostUSD(0.12345, 'en-US')).toBe('$0.1235')
+
+    expect(formatRawUpstreamAmount(undefined, 'CNY')).toBe('')
+    expect(formatRawUpstreamAmount(0, 'CNY')).toBe('')
+    expect(formatRawUpstreamAmount(1.23456, 'CNY')).toBe('¥1.2346')
+    expect(
+      formatRawUpstreamAmount(1.23456, 'TWD', { includeCode: true })
+    ).toBe('NT$1.2346 TWD')
+    expect(
+      formatRawUpstreamAmount(1.5, 'AUTO', { includeCode: true })
+    ).toBe('')
   })
 })

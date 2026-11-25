@@ -114,7 +114,7 @@ type ResolvedCurrencyFormatOptions = Omit<
   locale: Intl.LocalesArgument | undefined
 }
 
-type DisplayMeta =
+export type DisplayMeta =
   | {
       kind: 'currency'
       symbol: string
@@ -454,6 +454,13 @@ function formatCurrencyValue(
  * This is primarily for internal use. Most consumers should use the
  * higher-level formatting functions instead.
  */
+export function resolveCurrencyDisplayMeta(
+  code: string,
+  config: CurrencyConfig
+): DisplayMeta {
+  return resolveDisplayMetaForCode(code, config)
+}
+
 export function getCurrencyDisplay() {
   const config = getConfig()
   const meta = getDisplayMeta(config)
@@ -828,4 +835,72 @@ export function formatAmount(
   }
 
   return formatCurrencyValue(amountUSD * meta.exchangeRate, merged, meta)
+}
+
+export function formatBillingAmountUSD(
+  val: number | null | undefined,
+  locale?: Intl.LocalesArgument,
+  invalidFallback = '-'
+): string {
+  if (typeof val !== 'number' || !Number.isFinite(val)) {
+    if (invalidFallback === '0') {
+      return formatBillingCurrencyFromUSD(0, {
+        digitsLarge: 2,
+        digitsSmall: 4,
+        abbreviate: false,
+        locale,
+      })
+    }
+    return invalidFallback
+  }
+  return formatBillingCurrencyFromUSD(val, {
+    digitsLarge: 2,
+    digitsSmall: 4,
+    abbreviate: false,
+    locale,
+  })
+}
+
+export function formatBillingUnitCostUSD(
+  val: number | null | undefined,
+  locale?: Intl.LocalesArgument
+): string {
+  if (typeof val !== 'number' || !Number.isFinite(val) || val <= 0) {
+    return formatBillingCurrencyFromUSD(0, {
+      digitsLarge: 2,
+      digitsSmall: 4,
+      abbreviate: false,
+      locale,
+    })
+  }
+  return formatBillingCurrencyFromUSD(val, {
+    digitsLarge: 4,
+    digitsSmall: 4,
+    abbreviate: false,
+    locale,
+  })
+}
+
+export function getUpstreamCurrencySymbol(curr: string | undefined): string {
+  const c = (curr || '').toUpperCase().trim()
+  if (c === 'CNY') return '¥'
+  if (c === 'TWD' || c === 'NTD') return 'NT$'
+  return '$'
+}
+
+export function formatRawUpstreamAmount(
+  val: number | undefined,
+  curr: string | undefined,
+  options?: { includeCode?: boolean }
+): string {
+  if (typeof val !== 'number' || !Number.isFinite(val) || val <= 0) {
+    return ''
+  }
+  const code = (curr || '').toUpperCase().trim()
+  if (options?.includeCode && (!code || code === 'AUTO')) {
+    return ''
+  }
+  const sym = getUpstreamCurrencySymbol(code)
+  const formatted = `${sym}${Number(val.toFixed(4))}`
+  return options?.includeCode ? `${formatted} ${code}` : formatted
 }

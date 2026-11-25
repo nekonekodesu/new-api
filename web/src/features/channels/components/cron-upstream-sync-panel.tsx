@@ -46,9 +46,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { useMediaQuery } from '@/hooks'
+import { useIsCompactScreen } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
-import { formatBillingCurrencyFromUSD } from '@/lib/currency'
+import { formatBillingAmountUSD } from '@/lib/currency'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
@@ -61,7 +61,8 @@ import {
   runCronSyncNow,
   updateCronSyncConfig,
 } from '../api'
-import { CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OPTIONS } from '../constants'
+import { CHANNEL_TYPE_NEW_API } from '../constants'
+import { getChannelTypeLabel } from '../lib'
 import { ChannelTypeLogo } from './channel-type-badge'
 
 const DEFAULT_SYNC_CFG: ModelPriceSyncConfig = {
@@ -87,7 +88,7 @@ const DEFAULT_SYNC_CFG: ModelPriceSyncConfig = {
 export function CronUpstreamSyncPanel() {
   const { t, i18n } = useTranslation()
   const queryClient = useQueryClient()
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
   const intlLocale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   useSystemConfigStore((state) => state.config.currency)
 
@@ -222,22 +223,6 @@ export function CronUpstreamSyncPanel() {
         [channelId]: Number.isFinite(mult) && mult > 0 ? mult : 1,
       },
     }))
-  }
-
-  const getChannelTypeLabel = (type: number) =>
-    CHANNEL_TYPE_OPTIONS.find((item) => item.value === type)?.label ??
-    `#${type}`
-
-  const formatBalanceUSD = (val: number | undefined): string => {
-    if (typeof val !== 'number' || !Number.isFinite(val)) {
-      return '-'
-    }
-    return formatBillingCurrencyFromUSD(val, {
-      digitsLarge: 2,
-      digitsSmall: 4,
-      abbreviate: false,
-      locale: intlLocale,
-    })
   }
 
   if (cronQuery.isLoading) {
@@ -458,7 +443,7 @@ export function CronUpstreamSyncPanel() {
                           className='gap-1 px-1.5 py-0 font-mono text-[10px] text-emerald-600 dark:text-emerald-400'
                         >
                           <Wallet aria-hidden='true' className='size-3' />
-                          {formatBalanceUSD(syncRes?.balance ?? ch.balance)}
+                          {formatBillingAmountUSD(syncRes?.balance ?? ch.balance, intlLocale)}
                         </Badge>
                       ) : null}
                       <ChannelTypeLogo type={ch.type} size={14} />
@@ -676,8 +661,9 @@ export function CronUpstreamSyncPanel() {
                           className='gap-1 px-2 py-0.5 font-mono text-xs text-emerald-600 dark:text-emerald-400'
                         >
                           <Wallet aria-hidden='true' className='size-3' />
-                          {formatBalanceUSD(
-                            syncRes?.balance ?? ch.balance ?? 0
+                          {formatBillingAmountUSD(
+                            syncRes?.balance ?? ch.balance ?? 0,
+                            intlLocale
                           )}
                         </Badge>
                       </TableCell>

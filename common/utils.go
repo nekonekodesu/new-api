@@ -5,11 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
 	"log"
+	"math"
 	"math/big"
 	"math/rand"
 	"net"
@@ -187,14 +187,6 @@ func UnescapeHTML(x string) any {
 	return template.HTML(x)
 }
 
-func IntMax(a int, b int) int {
-	if a >= b {
-		return a
-	} else {
-		return b
-	}
-}
-
 func GetUUID() string {
 	code := uuid.New().String()
 	code = strings.Replace(code, "-", "", -1)
@@ -257,14 +249,6 @@ func NewRequestId() string {
 	return GetTimeString() + requestIdPrefix + GetRandomString(8)
 }
 
-func Max(a int, b int) int {
-	if a >= b {
-		return a
-	} else {
-		return b
-	}
-}
-
 func MessageWithRequestId(message string, id string) string {
 	return fmt.Sprintf("%s (request id: %s)", message, id)
 }
@@ -278,14 +262,58 @@ func GetPointer[T any](v T) *T {
 	return &v
 }
 
+// EqualPtr reports whether two pointers are both nil or point to equal values.
+func EqualPtr[T comparable](a, b *T) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+// ClonePtr returns a shallow copy of v, or nil when v is nil.
+func ClonePtr[T any](v *T) *T {
+	if v == nil {
+		return nil
+	}
+	cp := *v
+	return &cp
+}
+
+// RoundFloat6 rounds v to 6 decimal places, returning 0 for non-finite values.
+func RoundFloat6(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return math.Round(v*1e6) / 1e6
+}
+
+// RoundNonNegativeFloat6 rounds v to 6 decimal places and clamps negative or non-finite values to 0.
+func RoundNonNegativeFloat6(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0
+	}
+	return math.Round(v*1e6) / 1e6
+}
+
+// RoundFloat2 rounds v to 2 decimal places, returning 0 for non-finite values.
+func RoundFloat2(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return math.Round(v*100) / 100
+}
+
 func Any2Type[T any](data any) (T, error) {
 	var zero T
-	bytes, err := json.Marshal(data)
+	bytes, err := Marshal(data)
 	if err != nil {
 		return zero, err
 	}
 	var res T
-	err = json.Unmarshal(bytes, &res)
+	err = Unmarshal(bytes, &res)
 	if err != nil {
 		return zero, err
 	}

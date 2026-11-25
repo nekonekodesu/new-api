@@ -724,7 +724,7 @@ func buildDifferences(localData map[string]any, successfulChannels []struct {
 						// 转换为float64进行比较
 						modelRatioFloat, modelRatioOK := asFloat64(modelRatioVal)
 						completionRatioFloat, completionRatioOK := asFloat64(completionRatioVal)
-						if modelRatioOK && completionRatioOK && nearlyEqual(modelRatioFloat, 37.5) && nearlyEqual(completionRatioFloat, 1.0) {
+						if modelRatioOK && completionRatioOK && model.IsDefaultUnconfiguredModelRatio(modelName, 0, modelRatioFloat, completionRatioFloat) {
 							confidenceMap[channel.name][modelName] = false
 						}
 					}
@@ -855,10 +855,6 @@ func buildDifferences(localData map[string]any, successfulChannels []struct {
 	return differences
 }
 
-func roundRatioValue(value float64) float64 {
-	return math.Round(value*1e6) / 1e6
-}
-
 func isModelsDevAPIEndpoint(rawURL string) bool {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
@@ -934,19 +930,16 @@ func convertOpenRouterToRatioData(reader io.Reader) (map[string]any, error) {
 		}
 
 		// Normal case: promptPrice > 0
-		ratio := promptPrice * 1000 * ratio_setting.USD
-		ratio = roundRatioValue(ratio)
+		ratio := common.RoundNonNegativeFloat6(promptPrice * 1000 * ratio_setting.USD)
 		modelRatioMap[m.ID] = ratio
 
-		compRatio := completionPrice / promptPrice
-		compRatio = roundRatioValue(compRatio)
+		compRatio := common.RoundNonNegativeFloat6(completionPrice / promptPrice)
 		completionRatioMap[m.ID] = compRatio
 
 		// Convert input_cache_read to cache_ratio (= cache_read_price / prompt_price)
 		if m.Pricing.InputCacheRead != "" {
 			if cachePrice, err := strconv.ParseFloat(m.Pricing.InputCacheRead, 64); err == nil && cachePrice >= 0 {
-				cacheRatio := cachePrice / promptPrice
-				cacheRatio = roundRatioValue(cacheRatio)
+				cacheRatio := common.RoundNonNegativeFloat6(cachePrice / promptPrice)
 				cacheRatioMap[m.ID] = cacheRatio
 			}
 		}
@@ -987,14 +980,6 @@ type modelsDevCandidate struct {
 	CacheRead *float64
 }
 
-func cloneFloatPtr(v *float64) *float64 {
-	if v == nil {
-		return nil
-	}
-	out := *v
-	return &out
-}
-
 func isValidNonNegativeCost(v float64) bool {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return false
@@ -1017,7 +1002,7 @@ func buildModelsDevCandidate(provider string, cost modelsDevCost) (modelsDevCand
 		if !isValidNonNegativeCost(*cost.Output) {
 			return modelsDevCandidate{}, false
 		}
-		output = cloneFloatPtr(cost.Output)
+		output = common.ClonePtr(cost.Output)
 	}
 
 	// input=0/output>0 cannot be transformed into local ratio.
@@ -1027,7 +1012,7 @@ func buildModelsDevCandidate(provider string, cost modelsDevCost) (modelsDevCand
 
 	var cacheRead *float64
 	if cost.CacheRead != nil && isValidNonNegativeCost(*cost.CacheRead) {
-		cacheRead = cloneFloatPtr(cost.CacheRead)
+		cacheRead = common.ClonePtr(cost.CacheRead)
 	}
 
 	return modelsDevCandidate{
@@ -1118,16 +1103,16 @@ func convertModelsDevToRatioData(reader io.Reader) (map[string]any, error) {
 		}
 
 		modelRatio := candidate.Input * float64(ratio_setting.USD) / modelsDevInputCostRatioBase
-		modelRatioMap[modelName] = roundRatioValue(modelRatio)
+		modelRatioMap[modelName] = common.RoundNonNegativeFloat6(modelRatio)
 
 		if candidate.Output != nil {
 			completionRatio := *candidate.Output / candidate.Input
-			completionRatioMap[modelName] = roundRatioValue(completionRatio)
+			completionRatioMap[modelName] = common.RoundNonNegativeFloat6(completionRatio)
 		}
 
 		if candidate.CacheRead != nil {
 			cacheRatio := *candidate.CacheRead / candidate.Input
-			cacheRatioMap[modelName] = roundRatioValue(cacheRatio)
+			cacheRatioMap[modelName] = common.RoundNonNegativeFloat6(cacheRatio)
 		}
 	}
 

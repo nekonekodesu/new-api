@@ -129,11 +129,11 @@ func planChannelPriorityMove(items []ChannelPriority, move ChannelPriorityMove) 
 			if !ok || seen[change.ID] || (change.Priority != nil && (*change.Priority < -maxSortablePriority || *change.Priority > maxSortablePriority)) {
 				return nil, ErrChannelPriorityInvalid
 			}
-			if !equalPriority(item.Priority, change.Previous) {
+			if !common.EqualPtr(item.Priority, change.Previous) {
 				return nil, ErrChannelPriorityConflict
 			}
 			seen[change.ID] = true
-			if !equalPriority(item.Priority, change.Priority) {
+			if !common.EqualPtr(item.Priority, change.Priority) {
 				changes = append(changes, change)
 			}
 		}
@@ -237,11 +237,4 @@ func planChannelPriorityMove(items []ChannelPriority, move ChannelPriorityMove) 
 		}
 	}
 	return changes, nil
-}
-
-func equalPriority(a, b *int64) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
 }

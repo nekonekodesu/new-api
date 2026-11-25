@@ -18,7 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import * as React from 'react'
 
+import { useMediaQuery } from './use-media-query'
+
 const MOBILE_BREAKPOINT = 768
+const COMPACT_SCREEN_MEDIA_QUERY = '(max-width: 640px)'
 
 export function useIsMobile() {
   const [isMobile, setIsMobile] = React.useState<boolean | undefined>(undefined)
@@ -34,4 +37,8 @@ export function useIsMobile() {
   }, [])
 
   return !!isMobile
+}
+
+export function useIsCompactScreen(): boolean {
+  return useMediaQuery(COMPACT_SCREEN_MEDIA_QUERY)
 }

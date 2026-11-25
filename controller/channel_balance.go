@@ -32,10 +32,6 @@ const balanceUpdateConcurrency = 4
 // maxBalanceErrorRunes bounds the failure message a balance detail keeps.
 const maxBalanceErrorRunes = 512
 
-func usdBalance(result jsplugin.BalanceResult) (float64, bool) {
-	return service.PluginBalanceUSD(result)
-}
-
 // emptyBalance reports a definite balance that is used up: a finite amount of
 // 0 or less, not unlimited.
 func emptyBalance(result jsplugin.BalanceResult) bool {

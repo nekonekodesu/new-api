@@ -43,10 +43,12 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { toIntlLocale } from '@/i18n/languages'
 import {
   getAvailableDisplayCurrencies,
   setDisplayCurrency,
 } from '@/lib/currency'
+import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
@@ -86,7 +88,8 @@ export interface PricingToolbarProps {
 }
 
 export function PricingToolbar(props: PricingToolbarProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const intlLocale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const sortLabels = getSortLabels(t)
   const currencyConfig = useSystemConfigStore((s) => s.config.currency)
@@ -127,13 +130,13 @@ export function PricingToolbar(props: PricingToolbarProps) {
 
           <div className='text-muted-foreground flex items-baseline gap-1 text-sm'>
             <span className='text-foreground font-semibold tabular-nums'>
-              {props.filteredCount.toLocaleString()}
+              {formatNumber(props.filteredCount, intlLocale)}
             </span>
             <span>{props.filteredCount === 1 ? t('model') : t('models')}</span>
             {props.totalCount != null &&
               props.filteredCount !== props.totalCount && (
                 <span className='text-muted-foreground/60 text-xs'>
-                  / {props.totalCount.toLocaleString()}
+                  / {formatNumber(props.totalCount, intlLocale)}
                 </span>
               )}
           </div>

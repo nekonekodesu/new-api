@@ -106,6 +106,7 @@ var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodPost, path: "/upstream_updates/detect_all", permission: authz.ChannelOperate, handler: controller.DetectAllChannelUpstreamModelUpdates},
 	{method: http.MethodGet, path: "/group_scheduling", permission: authz.ChannelRead, handler: controller.GetGroupScheduling},
 	{method: http.MethodPut, path: "/group_scheduling", permission: authz.ChannelWrite, handler: controller.UpdateGroupScheduling},
+	{method: http.MethodGet, path: "/telemetry", permission: authz.ChannelRead, handler: controller.GetChannelTelemetry},
 	{method: http.MethodGet, path: "/model_price_table", permission: authz.ChannelRead, handler: controller.GetModelPriceTable},
 	{method: http.MethodPost, path: "/model_price_table/apply", permission: authz.ChannelWrite, handler: controller.ApplyModelPriceTable},
 	{method: http.MethodGet, path: "/cron_sync_config", permission: authz.ChannelRead, handler: controller.GetCronSyncConfig},

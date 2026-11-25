@@ -57,7 +57,11 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { toIntlLocale } from '@/i18n/languages'
-import { formatTimestampRelative, formatTimestampToDate } from '@/lib/format'
+import {
+  formatBinaryBytes,
+  formatTimestampRelative,
+  formatTimestampToDate,
+} from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { createServerError } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
@@ -126,22 +130,6 @@ function formatPercent(value?: number) {
   return `${new Intl.NumberFormat(undefined, {
     maximumFractionDigits: 1,
   }).format(value)}%`
-}
-
-function formatBytes(bytes?: number): string {
-  if (typeof bytes !== 'number' || Number.isNaN(bytes)) return '-'
-  if (bytes === 0) return '0 B'
-  if (bytes < 0) return `-${formatBytes(-bytes)}`
-
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const index = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1
-  )
-  const value = bytes / 1024 ** index
-  return `${new Intl.NumberFormat(undefined, {
-    maximumFractionDigits: index === 0 ? 0 : 1,
-  }).format(value)} ${units[index]}`
 }
 
 function ringColorClass(percent: number | null) {
@@ -502,19 +490,19 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
                               {t('Used')}
                             </span>
                             <span className='font-mono'>
-                              {formatBytes(storage.used_bytes)}
+                              {formatBinaryBytes(storage.used_bytes, 1)}
                             </span>
                             <span className='text-muted-foreground'>
                               {t('Free')}
                             </span>
                             <span className='font-mono'>
-                              {formatBytes(storage.free_bytes)}
+                              {formatBinaryBytes(storage.free_bytes, 1)}
                             </span>
                             <span className='text-muted-foreground'>
                               {t('Total')}
                             </span>
                             <span className='font-mono'>
-                              {formatBytes(storage.total_bytes)}
+                              {formatBinaryBytes(storage.total_bytes, 1)}
                             </span>
                           </div>
                         </div>

@@ -72,9 +72,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { useMediaQuery } from '@/hooks'
+import { useIsCompactScreen } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
-import { formatBillingCurrencyFromUSD } from '@/lib/currency'
+import { formatBillingAmountUSD } from '@/lib/currency'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { useSystemConfigStore } from '@/stores/system-config-store'
@@ -127,21 +127,9 @@ function createDefaultAccountForm(): Partial<UpstreamAccountSource> {
   }
 }
 
-function formatBalanceUSD(val: number | undefined, locale?: string): string {
-  if (typeof val !== 'number' || !Number.isFinite(val)) {
-    return '-'
-  }
-  return formatBillingCurrencyFromUSD(val, {
-    digitsLarge: 2,
-    digitsSmall: 4,
-    abbreviate: false,
-    locale,
-  })
-}
-
 export function UpstreamAccountSyncPanel() {
   const { t, i18n } = useTranslation()
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
   const intlLocale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const queryClient = useQueryClient()
   useSystemConfigStore((state) => state.config.currency)
@@ -379,7 +367,7 @@ export function UpstreamAccountSyncPanel() {
                                     className='size-3'
                                   />
                                   {t('Balance')}:{' '}
-                                  {formatBalanceUSD(acc.balance_usd)}
+                                  {formatBillingAmountUSD(acc.balance_usd, intlLocale)}
                                 </Badge>
                               ) : null}
                             </div>
@@ -529,7 +517,7 @@ export function UpstreamAccountSyncPanel() {
                               acc.used_quota_usd > 0 ? (
                                 <span className='text-muted-foreground font-mono text-[10px]'>
                                   {t('Used:')}{' '}
-                                  {formatBalanceUSD(acc.used_quota_usd)}
+                                  {formatBillingAmountUSD(acc.used_quota_usd, intlLocale)}
                                 </span>
                               ) : null}
                             </div>
@@ -571,7 +559,7 @@ export function UpstreamAccountSyncPanel() {
                                       </span>
                                     </div>
                                     <span className='shrink-0 font-semibold text-emerald-600 dark:text-emerald-400'>
-                                      {formatBalanceUSD(chMeta.balance ?? 0)}
+                                      {formatBillingAmountUSD(chMeta.balance ?? 0, intlLocale)}
                                     </span>
                                   </div>
                                 ))}
@@ -774,7 +762,7 @@ export function UpstreamAccountSyncPanel() {
                                       className='size-3'
                                     />
                                     {t('Balance')}:{' '}
-                                    {formatBalanceUSD(acc.balance_usd)}
+                                    {formatBillingAmountUSD(acc.balance_usd, intlLocale)}
                                   </Badge>
                                 ) : null}
                                 {typeof acc.used_quota_usd === 'number' &&
@@ -784,7 +772,7 @@ export function UpstreamAccountSyncPanel() {
                                     className='font-mono text-[10px]'
                                   >
                                     {t('Used:')}{' '}
-                                    {formatBalanceUSD(acc.used_quota_usd)}
+                                    {formatBillingAmountUSD(acc.used_quota_usd, intlLocale)}
                                   </Badge>
                                 ) : null}
                               </div>
@@ -1023,7 +1011,7 @@ export function UpstreamAccountSyncPanel() {
                                         </span>
                                       </div>
                                       <span className='shrink-0 font-semibold text-emerald-600 dark:text-emerald-400'>
-                                        {formatBalanceUSD(chMeta.balance ?? 0)}
+                                        {formatBillingAmountUSD(chMeta.balance ?? 0, intlLocale)}
                                       </span>
                                     </div>
                                   ))}
@@ -1075,7 +1063,7 @@ export function UpstreamAccountSyncPanel() {
                   <span className='text-muted-foreground'>|</span>
                   <span className='flex items-center gap-1 font-semibold text-emerald-600 dark:text-emerald-400'>
                     <Wallet aria-hidden='true' className='size-3' />
-                    {formatBalanceUSD(meta.balance ?? 0)}
+                    {formatBillingAmountUSD(meta.balance ?? 0, intlLocale)}
                   </span>
                 </Badge>
               ))}

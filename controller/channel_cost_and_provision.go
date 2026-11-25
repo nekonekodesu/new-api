@@ -8,8 +8,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -20,7 +18,6 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
-	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 )
@@ -52,53 +49,6 @@ func isAutoUpstreamGroup(groupName string, ratioRaw string) bool {
 		return true
 	}
 	return false
-}
-
-func isLumiyaSyncMode(syncMode string, name string, baseURL string) bool {
-	if strings.EqualFold(strings.TrimSpace(syncMode), model.UpstreamSyncModeLumiya) {
-		return true
-	}
-	if strings.TrimSpace(syncMode) != "" {
-		return false
-	}
-	nl := strings.ToLower(name)
-	bl := strings.ToLower(baseURL)
-	return strings.Contains(nl, "lumiya") ||
-		strings.Contains(bl, "lumiya") ||
-		strings.Contains(bl, "xn--1ys141f4ks") ||
-		strings.Contains(baseURL, "露米娅") ||
-		strings.Contains(baseURL, "露米婭")
-}
-
-func cleanUpstreamAPIBaseURL(raw string, syncMode string) string {
-	s := strings.TrimSpace(raw)
-	s = strings.Trim(s, `"'`)
-	if s == "" {
-		return ""
-	}
-	s = strings.ReplaceAll(s, "露米娅.com", "lumiya.vip")
-	s = strings.ReplaceAll(s, "露米婭.com", "lumiya.vip")
-	if !strings.HasPrefix(strings.ToLower(s), "http://") && !strings.HasPrefix(strings.ToLower(s), "https://") {
-		s = "https://" + s
-	}
-	if parsed, err := url.Parse(s); err == nil && parsed.Host != "" {
-		scheme := strings.ToLower(parsed.Scheme)
-		host := strings.ToLower(parsed.Host)
-		if host == "xn--1ys141f4ks.com" || host == "www.lumiya.vip" {
-			host = "lumiya.vip"
-		}
-		if strings.Contains(host, "lumiya.vip") || (strings.EqualFold(syncMode, model.UpstreamSyncModeLumiya) && !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost")) {
-			scheme = "https"
-		}
-		return scheme + "://" + host
-	}
-	s = strings.TrimRight(s, "/")
-	for _, suffix := range []string{"/v1", "/api", "/console", "/pricing", "/panel", "/token", "/personal"} {
-		if strings.HasSuffix(strings.ToLower(s), suffix) {
-			s = s[:len(s)-len(suffix)]
-		}
-	}
-	return strings.TrimRight(s, "/")
 }
 
 func checkNotHTMLBody(body []byte, endpointName string) error {
@@ -201,16 +151,12 @@ func setUpstreamAuthHeaders(req *http.Request, accessToken string, userID string
 	}
 }
 
-func normalizeUpstreamBaseURL(raw string) string {
-	return strings.ToLower(cleanUpstreamAPIBaseURL(raw, ""))
-}
-
 func fetchUpstreamPricingByURL(ctx context.Context, baseURL string, accessToken string, userID string, syncMode ...string) (*newAPIUpstreamPricingResponse, error) {
 	mode := ""
 	if len(syncMode) > 0 {
 		mode = syncMode[0]
 	}
-	cleanBase := cleanUpstreamAPIBaseURL(baseURL, mode)
+	cleanBase := model.CleanUpstreamAPIBaseURL(baseURL, mode)
 	endpoint := cleanBase + "/api/pricing"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -242,7 +188,7 @@ func fetchUpstreamPricingByURL(ctx context.Context, baseURL string, accessToken 
 }
 
 func fetchUpstreamModelsFromV1(ctx context.Context, baseURL string, skKey string) ([]string, error) {
-	cleanBase := cleanUpstreamAPIBaseURL(baseURL, "")
+	cleanBase := model.CleanUpstreamAPIBaseURL(baseURL, "")
 	endpoint := cleanBase + "/v1/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -290,7 +236,7 @@ func fetchUpstreamSelfGroups(ctx context.Context, baseURL string, accessToken st
 	if len(syncMode) > 0 {
 		mode = syncMode[0]
 	}
-	cleanBase := cleanUpstreamAPIBaseURL(baseURL, mode)
+	cleanBase := model.CleanUpstreamAPIBaseURL(baseURL, mode)
 	endpoint := cleanBase + "/api/user/self/groups"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -382,18 +328,10 @@ type upstreamSelfQuotaInfo struct {
 	HasValidQuota bool
 }
 
-func resolveEffectiveUpstreamExchangeRate(currency string, exchangeRate float64) float64 {
-	return model.ResolveEffectiveChannelExchangeRate(currency, exchangeRate)
-}
-
-func resolveUpstreamUnitToLocalUnitMultiplier(currency string, exchangeRate float64) float64 {
-	return model.ResolveUpstreamToQuotaUnitMultiplier(currency, exchangeRate)
-}
-
 func fetchUpstreamSelfBalance(ctx context.Context, baseURL string, accessToken string, userID string, syncMode string, currency string, exchangeRate float64) upstreamSelfQuotaInfo {
 	var info upstreamSelfQuotaInfo
 	mode := syncMode
-	cleanBase := cleanUpstreamAPIBaseURL(baseURL, mode)
+	cleanBase := model.CleanUpstreamAPIBaseURL(baseURL, mode)
 	if cleanBase == "" || strings.TrimSpace(accessToken) == "" {
 		return info
 	}
@@ -440,7 +378,7 @@ func fetchUpstreamSelfBalance(ctx context.Context, baseURL string, accessToken s
 			UsedQuota int64 `json:"used_quota"`
 		} `json:"data"`
 	}
-	unitMult := resolveUpstreamUnitToLocalUnitMultiplier(currency, exchangeRate)
+	unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(currency, exchangeRate)
 	if err := common.Unmarshal(body, &selfEnv); err == nil && selfEnv.Success {
 		info.Quota = selfEnv.Data.Quota
 		info.UsedQuota = selfEnv.Data.UsedQuota
@@ -484,7 +422,7 @@ func fetchUpstreamTokensList(ctx context.Context, baseURL string, accessToken st
 	if len(syncMode) > 0 {
 		mode = syncMode[0]
 	}
-	base := cleanUpstreamAPIBaseURL(baseURL, mode)
+	base := model.CleanUpstreamAPIBaseURL(baseURL, mode)
 	client := &http.Client{Timeout: 15 * time.Second}
 	allTokens := make([]upstreamTokenRecord, 0)
 	seenIDs := make(map[int]struct{})
@@ -582,7 +520,7 @@ func createUpstreamTokenForGroup(ctx context.Context, baseURL string, accessToke
 	if len(syncMode) > 0 {
 		mode = syncMode[0]
 	}
-	cleanBase := cleanUpstreamAPIBaseURL(baseURL, mode)
+	cleanBase := model.CleanUpstreamAPIBaseURL(baseURL, mode)
 	endpoint := cleanBase + "/api/token/"
 	var payload map[string]any
 	if strings.EqualFold(mode, model.UpstreamSyncModeLumiya) {
@@ -651,7 +589,7 @@ func fetchUpstreamTokenBatchKeys(ctx context.Context, baseURL string, accessToke
 	if len(syncMode) > 0 {
 		mode = syncMode[0]
 	}
-	base := cleanUpstreamAPIBaseURL(baseURL, mode)
+	base := model.CleanUpstreamAPIBaseURL(baseURL, mode)
 	endpoint := base + "/api/token/batch/keys"
 	bodyBytes, err := common.Marshal(map[string]any{"ids": tokenIDs})
 	if err != nil {
@@ -702,7 +640,7 @@ func fetchUpstreamTokenPlainKey(ctx context.Context, baseURL string, accessToken
 		mode = syncMode[0]
 	}
 
-	base := cleanUpstreamAPIBaseURL(baseURL, mode)
+	base := model.CleanUpstreamAPIBaseURL(baseURL, mode)
 	client := &http.Client{Timeout: 15 * time.Second}
 
 	// Primary New-API endpoint: POST /api/token/:id/key
@@ -788,10 +726,10 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 			source.SyncMode = model.UpstreamSyncModeStandard
 		}
 	}
-	if strings.TrimSpace(source.AccessToken) == "uxGSJ4IdALqzBHMEbUYjicNe1qV/3Q==" && isLumiyaSyncMode(source.SyncMode, source.Name, source.BaseURL) {
+	if strings.TrimSpace(source.AccessToken) == "uxGSJ4IdALqzBHMEbUYjicNe1qV/3Q==" && model.IsLumiyaSyncMode(source.SyncMode, source.Name, source.BaseURL) {
 		source.AccessToken = "8xfOUw1xHsz/dOVmfU4vuJx8T3GsFHk="
 	}
-	source.BaseURL = cleanUpstreamAPIBaseURL(source.BaseURL, source.SyncMode)
+	source.BaseURL = model.CleanUpstreamAPIBaseURL(source.BaseURL, source.SyncMode)
 	source.UserID = strings.TrimSpace(source.UserID)
 	if source.Name == "" || source.BaseURL == "" {
 		return fmt.Errorf("upstream name and base URL are required")
@@ -968,7 +906,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 			return err
 		}
 	}
-	normSourceURL := normalizeUpstreamBaseURL(source.BaseURL)
+	normSourceURL := strings.ToLower(model.CleanUpstreamAPIBaseURL(source.BaseURL, ""))
 
 	findExistingChannelForGroup := func(g string, expectedChName string) *model.Channel {
 		// Priority 1: AutoProvisionedChannels metadata
@@ -984,7 +922,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 		}
 		// Priority 2: Same base URL + configured ChannelUpstreamGroups
 		for _, ch := range allChannels {
-			if ch == nil || normalizeUpstreamBaseURL(ch.GetBaseURL()) != normSourceURL {
+			if ch == nil || strings.ToLower(model.CleanUpstreamAPIBaseURL(ch.GetBaseURL(), "")) != normSourceURL {
 				continue
 			}
 			if cfg.ChannelUpstreamGroups[ch.Id] == g {
@@ -993,7 +931,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 		}
 		// Priority 3: Same base URL + channel name matches expected name or {source.Name}-{g}-<ratio>
 		for _, ch := range allChannels {
-			if ch == nil || normalizeUpstreamBaseURL(ch.GetBaseURL()) != normSourceURL {
+			if ch == nil || strings.ToLower(model.CleanUpstreamAPIBaseURL(ch.GetBaseURL(), "")) != normSourceURL {
 				continue
 			}
 			if strings.EqualFold(strings.TrimSpace(ch.Name), expectedChName) {
@@ -1032,9 +970,9 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 	chCurr := strings.ToUpper(strings.TrimSpace(source.Currency))
 	if chCurr != "" && chCurr != "AUTO" {
 		resolvedCurrency = chCurr
-		resolvedRate = resolveEffectiveUpstreamExchangeRate(chCurr, source.ExchangeRate)
+		resolvedRate = model.ResolveEffectiveChannelExchangeRate(chCurr, source.ExchangeRate)
 	} else {
-		resolvedRate = resolveEffectiveUpstreamExchangeRate(resolvedCurrency, source.ExchangeRate)
+		resolvedRate = model.ResolveEffectiveChannelExchangeRate(resolvedCurrency, source.ExchangeRate)
 	}
 
 	createdNames := make([]string, 0)
@@ -1086,37 +1024,9 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 				}
 				modelSet[mName] = struct{}{}
 				base := deriveUpstreamBasePricing(item)
-				effRate := resolveEffectiveUpstreamExchangeRate(resolvedCurrency, resolvedRate)
-				unitMult := resolveUpstreamUnitToLocalUnitMultiplier(resolvedCurrency, effRate)
-				cEntry := model.ChannelModelCostEntry{
-					ChannelName:      expectedChName,
-					ChannelType:      constant.ChannelTypeNewAPI,
-					Model:            mName,
-					ModelRatio:       roundRatioValue(base.ModelRatio),
-					CompletionRatio:  base.CompletionRatio,
-					CacheRatio:       base.CacheRatio,
-					CreateCacheRatio: base.CreateCacheRatio,
-					BaseMultiplier:   groupRatio,
-					Currency:         resolvedCurrency,
-					ExchangeRate:     effRate,
-					FromUpstream:     true,
-					UpdatedAt:        now,
-				}
-				if base.QuotaType == 1 && base.ModelPrice >= 0 {
-					cEntry.QuotaType = 1
-					cEntry.RawModelPrice = roundRatioValue(base.ModelPrice)
-					cEntry.ModelPrice = roundRatioValue(base.ModelPrice)
-					cEntry.RawInputCost = roundRatioValue(cEntry.RawModelPrice * groupRatio)
-					cEntry.RawOutputCost = cEntry.RawInputCost
-					cEntry.InputCost = roundRatioValue(cEntry.RawInputCost * unitMult)
-					cEntry.OutputCost = cEntry.InputCost
-					groupCostEntries[mName] = cEntry
-				} else if base.Priced && !isUnconfiguredDefaultModelRatio(mName, 0, base.ModelRatio, base.CompletionRatio) {
-					cEntry.QuotaType = 0
-					cEntry.RawInputCost = roundRatioValue(base.ModelRatio * 2.0 * groupRatio)
-					cEntry.RawOutputCost = roundRatioValue(cEntry.RawInputCost * base.CompletionRatio)
-					cEntry.InputCost = roundRatioValue(cEntry.RawInputCost * unitMult)
-					cEntry.OutputCost = roundRatioValue(cEntry.InputCost * base.CompletionRatio)
+				effRate := model.ResolveEffectiveChannelExchangeRate(resolvedCurrency, resolvedRate)
+				unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(resolvedCurrency, effRate)
+				if cEntry, ok := buildUpstreamChannelModelCostEntry(0, expectedChName, constant.ChannelTypeNewAPI, mName, base, groupRatio, resolvedCurrency, effRate, unitMult, now); ok {
 					groupCostEntries[mName] = cEntry
 				}
 			}
@@ -1326,7 +1236,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 					belongsToSource = true
 					isAutoCreated = meta.AutoCreated
 					upGroup = strings.TrimSpace(meta.UpstreamGroup)
-				} else if normalizeUpstreamBaseURL(ch.GetBaseURL()) == normSourceURL {
+				} else if strings.ToLower(model.CleanUpstreamAPIBaseURL(ch.GetBaseURL(), "")) == normSourceURL {
 					chTag := strings.TrimSpace(ch.GetTag())
 					if chTag != "" && (strings.EqualFold(chTag, tagVal) || strings.EqualFold(chTag, "auto:"+source.Name)) {
 						belongsToSource = true
@@ -1350,16 +1260,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 					removedNames = append(removedNames, ch.Name)
 					_ = ch.Delete()
 					delete(validChannelIDs, ch.Id)
-					delete(cfg.AutoProvisionedChannels, ch.Id)
-					delete(cfg.ChannelUpstreamGroups, ch.Id)
-					delete(cfg.ChannelCurrencies, ch.Id)
-					delete(cfg.ChannelExchangeRates, ch.Id)
-					delete(cfg.ChannelTopupMultipliers, ch.Id)
-					for mName, prefID := range cfg.PreferredChannels {
-						if prefID == ch.Id {
-							delete(cfg.PreferredChannels, mName)
-						}
-					}
+					model.RemoveChannelIDsFromSyncConfig(cfg, map[int]struct{}{ch.Id: {}})
 				}
 			}
 			model.PruneOrphanChannelsFromSyncConfig(cfg, validChannelIDs)
@@ -1528,12 +1429,12 @@ func SaveUpstreamAccount(c *gin.Context) {
 		} else {
 			req.SyncMode = model.UpstreamSyncModeStandard
 		}
-	} else if isLumiyaSyncMode(req.SyncMode, req.Name, req.BaseURL) {
+	} else if model.IsLumiyaSyncMode(req.SyncMode, req.Name, req.BaseURL) {
 		req.SyncMode = model.UpstreamSyncModeLumiya
 	} else {
 		req.SyncMode = model.UpstreamSyncModeStandard
 	}
-	req.BaseURL = cleanUpstreamAPIBaseURL(req.BaseURL, req.SyncMode)
+	req.BaseURL = model.CleanUpstreamAPIBaseURL(req.BaseURL, req.SyncMode)
 	req.UserID = strings.TrimSpace(req.UserID)
 	if req.Name == "" || req.BaseURL == "" {
 		common.ApiError(c, common.NewMessage("Upstream name and base URL cannot be empty"))
@@ -1960,177 +1861,6 @@ type UserCostAnalysisRow struct {
 	ModelBreakdowns  []UserModelChannelCostDetail `json:"model_breakdowns"`
 }
 
-func roundMoney6(v float64) float64 {
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0
-	}
-	return math.Round(v*1e6) / 1e6
-}
-
-func roundPct2(v float64) float64 {
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0
-	}
-	return math.Round(v*100) / 100
-}
-
-func resolveBasePricingForModel(modelName string) (quotaType int, billingMode string, inputPrice float64, outputPrice float64, modelRatio float64, completionRatio float64) {
-	if price, ok := ratio_setting.GetModelPrice(modelName, false); ok && price > 0 {
-		return 1, "fixed", roundMoney6(price), roundMoney6(price), 0, 1.0
-	}
-	if billing_setting.GetBillingMode(modelName) == billing_setting.BillingModeTieredExpr {
-		if expr, hasExpr := billing_setting.GetBillingExpr(modelName); hasExpr && strings.TrimSpace(expr) != "" {
-			if unitPrice, ok := extractUpstreamExprUnitPrice(expr); ok && unitPrice > 0 {
-				return 1, "tiered_expr", roundMoney6(unitPrice), roundMoney6(unitPrice), 0, 1.0
-			}
-			tiersRaw := extractBillingExprTierArgs(expr)
-			tiers := make([]map[string]float64, 0, len(tiersRaw))
-			for _, arg := range tiersRaw {
-				tiers = append(tiers, parseBillingExprTierCoefficients(arg))
-			}
-			if base := chooseUpstreamBaseTier(tiers); base != nil {
-				p := base["p"]
-				mr := roundMoney6(p / 2.0)
-				cr := 1.0
-				if cVal, ok := base["c"]; ok && cVal > 0 {
-					cr = roundMoney6(cVal / p)
-				}
-				inPrice := roundMoney6(mr * 2.0)
-				outPrice := roundMoney6(inPrice * cr)
-				return 0, "tiered_expr", inPrice, outPrice, mr, cr
-			}
-		}
-	}
-	mr, hasRatio, _ := ratio_setting.GetModelRatio(modelName)
-	cr := ratio_setting.GetCompletionRatio(modelName)
-	if cr <= 0 {
-		cr = 1.0
-	}
-	if !hasRatio || isUnconfiguredDefaultModelRatio(modelName, 0, mr, cr) {
-		return 0, "token", 0, 0, 0, cr
-	}
-	inPrice := roundMoney6(mr * 2.0)
-	outPrice := roundMoney6(inPrice * cr)
-	return 0, "token", inPrice, outPrice, mr, cr
-}
-
-func effectiveEntryCostsUSD(entry model.ChannelModelCostEntry, syncCfg model.ModelPriceSyncConfig) (inUSD float64, outUSD float64, rawIn float64, rawOut float64, curr string, rate float64) {
-	curr = strings.ToUpper(strings.TrimSpace(entry.Currency))
-	rate = entry.ExchangeRate
-	if chCurr, ok := syncCfg.ChannelCurrencies[entry.ChannelID]; ok && strings.TrimSpace(chCurr) != "" {
-		curr = strings.ToUpper(strings.TrimSpace(chCurr))
-	}
-	if chRate, ok := syncCfg.ChannelExchangeRates[entry.ChannelID]; ok && chRate > 0 {
-		rate = chRate
-	}
-	if curr == "" {
-		curr = "USD"
-	}
-	effRate := resolveEffectiveUpstreamExchangeRate(curr, rate)
-	unitMult := resolveUpstreamUnitToLocalUnitMultiplier(curr, effRate)
-	rate = effRate
-
-	rawIn = entry.RawInputCost
-	rawOut = entry.RawOutputCost
-	if rawIn <= 0 {
-		mult := entry.BaseMultiplier
-		if mult <= 0 {
-			mult = 1.0
-		}
-		if entry.QuotaType == 1 && entry.ModelPrice > 0 {
-			rawIn = roundMoney6(entry.ModelPrice * mult)
-			rawOut = rawIn
-		} else if entry.ModelRatio > 0 {
-			rawIn = roundMoney6(entry.ModelRatio * 2.0 * mult)
-			rawOut = roundMoney6(rawIn * max(entry.CompletionRatio, 1.0))
-		} else if entry.InputCost > 0 {
-			rawIn = entry.InputCost
-			rawOut = entry.OutputCost
-		}
-	}
-	if (entry.FromUpstream || entry.ChannelType == constant.ChannelTypeNewAPI) && rawIn > 0 {
-		inUSD = roundMoney6(rawIn * unitMult)
-		outUSD = roundMoney6(rawOut * unitMult)
-		return inUSD, outUSD, rawIn, rawOut, curr, rate
-	}
-	inUSD = entry.InputCost
-	outUSD = entry.OutputCost
-	if entry.BaseMultiplier <= 0 || math.Abs(entry.BaseMultiplier-1.0) < 1e-6 {
-		if inferred, ok := model.InferChannelTrailingMultiplier(entry.ChannelName); ok && inferred > 0 && inferred != 1.0 {
-			inUSD = roundMoney6(inUSD * inferred)
-			outUSD = roundMoney6(outUSD * inferred)
-		}
-	}
-	return inUSD, outUSD, rawIn, rawOut, curr, rate
-}
-
-func calculateUsageUpstreamCostUSD(entry model.ChannelModelCostEntry, hasEntry bool, baseQuotaType int, baseInputPrice float64, baseOutputPrice float64, callCount int64, promptTokens int64, completionTokens int64, cacheTokens ...int64) float64 {
-	if callCount <= 0 && promptTokens <= 0 && completionTokens <= 0 {
-		return 0
-	}
-	var cacheRead, cacheWrite int64
-	if len(cacheTokens) > 0 {
-		cacheRead = max(cacheTokens[0], 0)
-	}
-	if len(cacheTokens) > 1 {
-		cacheWrite = max(cacheTokens[1], 0)
-	}
-	computeTokenCost := func(inUnitPrice float64, outUnitPrice float64, cacheReadRatio float64, cacheWriteRatio float64) float64 {
-		nonCachedPrompt := max(promptTokens-cacheRead-cacheWrite, 0)
-		inCost := (float64(nonCachedPrompt) / 1_000_000.0) * inUnitPrice
-		if cacheRead > 0 {
-			r := cacheReadRatio
-			if r <= 0 {
-				if sysCacheR, ok := ratio_setting.GetCacheRatio(entry.Model); ok && sysCacheR > 0 {
-					r = sysCacheR
-				} else {
-					r = 1.0
-				}
-			}
-			inCost += (float64(cacheRead) / 1_000_000.0) * inUnitPrice * r
-		}
-		if cacheWrite > 0 {
-			w := cacheWriteRatio
-			if w <= 0 {
-				if sysCreateR, ok := ratio_setting.GetCreateCacheRatio(entry.Model); ok && sysCreateR > 0 {
-					w = sysCreateR
-				} else {
-					w = 1.0
-				}
-			}
-			inCost += (float64(cacheWrite) / 1_000_000.0) * inUnitPrice * w
-		}
-		outCost := (float64(completionTokens) / 1_000_000.0) * outUnitPrice
-		return roundMoney6(inCost + outCost)
-	}
-	if hasEntry {
-		inCostUSD := entry.InputCost
-		outCostUSD := entry.OutputCost
-		if entry.FromUpstream || entry.ChannelType == constant.ChannelTypeNewAPI {
-			unitMult := resolveUpstreamUnitToLocalUnitMultiplier(entry.Currency, entry.ExchangeRate)
-			if entry.RawInputCost > 0 {
-				inCostUSD = roundMoney6(entry.RawInputCost * unitMult)
-				outCostUSD = roundMoney6(entry.RawOutputCost * unitMult)
-			}
-		} else if entry.BaseMultiplier <= 0 || math.Abs(entry.BaseMultiplier-1.0) < 1e-6 {
-			if inferred, ok := model.InferChannelTrailingMultiplier(entry.ChannelName); ok && inferred > 0 && inferred != 1.0 {
-				inCostUSD = roundMoney6(inCostUSD * inferred)
-				outCostUSD = roundMoney6(outCostUSD * inferred)
-			}
-		}
-		if entry.QuotaType == 1 && inCostUSD > 0 {
-			return roundMoney6(float64(callCount) * inCostUSD)
-		}
-		if inCostUSD > 0 || outCostUSD > 0 {
-			return computeTokenCost(inCostUSD, outCostUSD, entry.CacheRatio, entry.CreateCacheRatio)
-		}
-	}
-	if baseQuotaType == 1 && baseInputPrice > 0 {
-		return roundMoney6(float64(callCount) * baseInputPrice)
-	}
-	return computeTokenCost(baseInputPrice, baseOutputPrice, entry.CacheRatio, entry.CreateCacheRatio)
-}
-
 func GetModelCostAnalysis(c *gin.Context) {
 	startTs, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
 	endTs, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
@@ -2154,7 +1884,7 @@ func GetModelCostAnalysis(c *gin.Context) {
 	}
 	syncCfg := model.GetModelPriceSyncConfig()
 	groupRatioMap := ratio_setting.GetGroupRatioCopy()
-	usableGroups := settingUsableGroupsSnapshot()
+	usableGroups := setting.GetUserUsableGroupsCopy()
 
 	logStats, err := model.AggregateModelChannelGroupUsage(startTs, endTs)
 	if err != nil {
@@ -2231,7 +1961,7 @@ func GetModelCostAnalysis(c *gin.Context) {
 			continue
 		}
 
-		quotaType, billingMode, baseIn, baseOut, mr, cr := resolveBasePricingForModel(modelName)
+		quotaType, billingMode, baseIn, baseOut, mr, cr, _, _ := model.ResolveBaseModelPricingUSD(modelName)
 
 		// Collect channels that support or have called this model
 		channelIDSet := make(map[int]struct{})
@@ -2253,13 +1983,13 @@ func GetModelCostAnalysis(c *gin.Context) {
 				if entry, ok := costMap[chID][modelName]; ok && entry.InputCost > 0 {
 					quotaType = entry.QuotaType
 					if entry.QuotaType == 1 && entry.ModelPrice > 0 {
-						baseIn = roundMoney6(entry.ModelPrice)
-						baseOut = roundMoney6(entry.ModelPrice)
+						baseIn = common.RoundNonNegativeFloat6(entry.ModelPrice)
+						baseOut = common.RoundNonNegativeFloat6(entry.ModelPrice)
 					} else if entry.ModelRatio > 0 {
 						mr = entry.ModelRatio
 						cr = max(entry.CompletionRatio, 1.0)
-						baseIn = roundMoney6(mr * 2.0)
-						baseOut = roundMoney6(baseIn * cr)
+						baseIn = common.RoundNonNegativeFloat6(mr * 2.0)
+						baseOut = common.RoundNonNegativeFloat6(baseIn * cr)
 					} else {
 						baseIn = entry.InputCost
 						baseOut = entry.OutputCost
@@ -2310,7 +2040,7 @@ func GetModelCostAnalysis(c *gin.Context) {
 			curr := "USD"
 			exRate := 1.0
 			if hasEntry {
-				inCost, outCost, rawInCost, rawOutCost, curr, exRate = effectiveEntryCostsUSD(entry, syncCfg)
+				inCost, outCost, rawInCost, rawOutCost, curr, exRate = model.ResolveEffectiveEntryCostsUSD(entry, syncCfg)
 				chQuotaType = entry.QuotaType
 				if entry.BaseMultiplier > 0 {
 					baseMult = entry.BaseMultiplier
@@ -2327,15 +2057,15 @@ func GetModelCostAnalysis(c *gin.Context) {
 					costScale = baseMult
 				}
 				if ch.Type == constant.ChannelTypeNewAPI {
-					unitMult := resolveUpstreamUnitToLocalUnitMultiplier(curr, exRate)
+					unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(curr, exRate)
 					if unitMult > 0 {
-						costScale = roundMoney6(costScale * unitMult)
+						costScale = common.RoundNonNegativeFloat6(costScale * unitMult)
 					}
 				}
-				inCost = roundMoney6(baseIn * costScale)
-				outCost = roundMoney6(baseOut * costScale)
-				rawInCost = roundMoney6(baseIn * baseMult)
-				rawOutCost = roundMoney6(baseOut * baseMult)
+				inCost = common.RoundNonNegativeFloat6(baseIn * costScale)
+				outCost = common.RoundNonNegativeFloat6(baseOut * costScale)
+				rawInCost = common.RoundNonNegativeFloat6(baseIn * baseMult)
+				rawOutCost = common.RoundNonNegativeFloat6(baseOut * baseMult)
 			} else if hasArchivedSnap {
 				curr = archivedSnap.Currency
 				if curr == "" {
@@ -2351,15 +2081,15 @@ func GetModelCostAnalysis(c *gin.Context) {
 				}
 				costScale := baseMult
 				if archivedSnap.ChannelType == constant.ChannelTypeNewAPI {
-					unitMult := resolveUpstreamUnitToLocalUnitMultiplier(curr, exRate)
+					unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(curr, exRate)
 					if unitMult > 0 {
-						costScale = roundMoney6(costScale * unitMult)
+						costScale = common.RoundNonNegativeFloat6(costScale * unitMult)
 					}
 				}
-				inCost = roundMoney6(baseIn * costScale)
-				outCost = roundMoney6(baseOut * costScale)
-				rawInCost = roundMoney6(baseIn * baseMult)
-				rawOutCost = roundMoney6(baseOut * baseMult)
+				inCost = common.RoundNonNegativeFloat6(baseIn * costScale)
+				outCost = common.RoundNonNegativeFloat6(baseOut * costScale)
+				rawInCost = common.RoundNonNegativeFloat6(baseIn * baseMult)
+				rawOutCost = common.RoundNonNegativeFloat6(baseOut * baseMult)
 			}
 			topupMult := 1.0
 			if ch != nil {
@@ -2373,8 +2103,8 @@ func GetModelCostAnalysis(c *gin.Context) {
 				topupMult = 1.0
 			}
 			if math.Abs(topupMult-1.0) > 1e-6 {
-				inCost = roundMoney6(inCost / topupMult)
-				outCost = roundMoney6(outCost / topupMult)
+				inCost = common.RoundNonNegativeFloat6(inCost / topupMult)
+				outCost = common.RoundNonNegativeFloat6(outCost / topupMult)
 			}
 			if inCost > 0 {
 				if !hasCostBounds || inCost < minInCost {
@@ -2425,8 +2155,8 @@ func GetModelCostAnalysis(c *gin.Context) {
 				Description: usableGroups[g],
 				GroupRatio:  gRatio,
 				QuotaType:   quotaType,
-				InputPrice:  roundMoney6(baseIn * gRatio),
-				OutputPrice: roundMoney6(baseOut * gRatio),
+				InputPrice:  common.RoundNonNegativeFloat6(baseIn * gRatio),
+				OutputPrice: common.RoundNonNegativeFloat6(baseOut * gRatio),
 			}
 		}
 
@@ -2434,10 +2164,10 @@ func GetModelCostAnalysis(c *gin.Context) {
 		var totalRev, totalCost float64
 
 		for _, st := range mStats {
-			rev := roundMoney6(float64(st.TotalQuota) / quotaUnit)
+			rev := common.RoundNonNegativeFloat6(float64(st.TotalQuota) / quotaUnit)
 			var cost float64
 			if st.FrozenCallCount >= st.CallCount && st.FrozenCallCount > 0 {
-				cost = roundMoney6(st.FrozenCostUSD)
+				cost = common.RoundNonNegativeFloat6(st.FrozenCostUSD)
 			} else {
 				remCalls := max(st.CallCount-st.FrozenCallCount, 0)
 				remPrompt := max(st.PromptTokens-st.FrozenPromptTokens, 0)
@@ -2465,6 +2195,7 @@ func GetModelCostAnalysis(c *gin.Context) {
 				}
 				effBaseIn := baseIn
 				effBaseOut := baseOut
+				topupMult := 0.0
 				usedPreDividedDetail := false
 				if !hasEntry {
 					if chDetail, ok := chStatMap[st.ChannelID]; ok && (chDetail.InputCost > 0 || chDetail.OutputCost > 0) {
@@ -2473,19 +2204,15 @@ func GetModelCostAnalysis(c *gin.Context) {
 						usedPreDividedDetail = true
 					}
 				}
-				remCost := calculateUsageUpstreamCostUSD(entry, hasEntry, quotaType, effBaseIn, effBaseOut, remCalls, remPrompt, remComp, remCache, remCacheWrite)
 				if !usedPreDividedDetail {
-					topupMult := 1.0
 					if chDetail, ok := chStatMap[st.ChannelID]; ok && chDetail.TopupMultiplier > 0 {
 						topupMult = chDetail.TopupMultiplier
 					} else {
 						topupMult = model.ResolveChannelTopupMultiplier(st.ChannelID, chByID[st.ChannelID], syncCfg)
 					}
-					if topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
-						remCost = roundMoney6(remCost / topupMult)
-					}
 				}
-				cost = roundMoney6(st.FrozenCostUSD + remCost)
+				remCost := model.CalculateEntryOrFallbackUsageCostUSD(entry, hasEntry, syncCfg, quotaType, effBaseIn, effBaseOut, topupMult, remCalls, remPrompt, remComp, remCache, remCacheWrite)
+				cost = common.RoundNonNegativeFloat6(st.FrozenCostUSD + remCost)
 			}
 
 			totalCalls += st.CallCount
@@ -2499,8 +2226,8 @@ func GetModelCostAnalysis(c *gin.Context) {
 				chDetail.PromptTokens += st.PromptTokens
 				chDetail.CompletionTokens += st.CompletionTokens
 				chDetail.TotalTokens += st.PromptTokens + st.CompletionTokens
-				chDetail.RevenueUSD = roundMoney6(chDetail.RevenueUSD + rev)
-				chDetail.CostUSD = roundMoney6(chDetail.CostUSD + cost)
+				chDetail.RevenueUSD = common.RoundNonNegativeFloat6(chDetail.RevenueUSD + rev)
+				chDetail.CostUSD = common.RoundNonNegativeFloat6(chDetail.CostUSD + cost)
 			}
 
 			gName := strings.TrimSpace(st.UserGroup)
@@ -2518,8 +2245,8 @@ func GetModelCostAnalysis(c *gin.Context) {
 					Description: usableGroups[gName],
 					GroupRatio:  gRatio,
 					QuotaType:   quotaType,
-					InputPrice:  roundMoney6(baseIn * gRatio),
-					OutputPrice: roundMoney6(baseOut * gRatio),
+					InputPrice:  common.RoundNonNegativeFloat6(baseIn * gRatio),
+					OutputPrice: common.RoundNonNegativeFloat6(baseOut * gRatio),
 				}
 				grpStatMap[gName] = grpDetail
 			}
@@ -2527,15 +2254,15 @@ func GetModelCostAnalysis(c *gin.Context) {
 			grpDetail.PromptTokens += st.PromptTokens
 			grpDetail.CompletionTokens += st.CompletionTokens
 			grpDetail.TotalTokens += st.PromptTokens + st.CompletionTokens
-			grpDetail.RevenueUSD = roundMoney6(grpDetail.RevenueUSD + rev)
-			grpDetail.CostUSD = roundMoney6(grpDetail.CostUSD + cost)
+			grpDetail.RevenueUSD = common.RoundNonNegativeFloat6(grpDetail.RevenueUSD + rev)
+			grpDetail.CostUSD = common.RoundNonNegativeFloat6(grpDetail.CostUSD + cost)
 		}
 
 		channelUsages := make([]ModelChannelUsageDetail, 0, len(chStatMap))
 		for _, chD := range chStatMap {
-			chD.ProfitUSD = roundMoney6(chD.RevenueUSD - chD.CostUSD)
+			chD.ProfitUSD = common.RoundFloat6(chD.RevenueUSD - chD.CostUSD)
 			if chD.RevenueUSD > 0 {
-				chD.MarginPct = roundPct2((chD.ProfitUSD / chD.RevenueUSD) * 100.0)
+				chD.MarginPct = common.RoundFloat2((chD.ProfitUSD / chD.RevenueUSD) * 100.0)
 			}
 			channelUsages = append(channelUsages, *chD)
 		}
@@ -2551,9 +2278,9 @@ func GetModelCostAnalysis(c *gin.Context) {
 
 		groupPrices := make([]ModelGroupPriceDetail, 0, len(grpStatMap))
 		for _, gD := range grpStatMap {
-			gD.ProfitUSD = roundMoney6(gD.RevenueUSD - gD.CostUSD)
+			gD.ProfitUSD = common.RoundFloat6(gD.RevenueUSD - gD.CostUSD)
 			if gD.RevenueUSD > 0 {
-				gD.MarginPct = roundPct2((gD.ProfitUSD / gD.RevenueUSD) * 100.0)
+				gD.MarginPct = common.RoundFloat2((gD.ProfitUSD / gD.RevenueUSD) * 100.0)
 			}
 			groupPrices = append(groupPrices, *gD)
 		}
@@ -2570,12 +2297,12 @@ func GetModelCostAnalysis(c *gin.Context) {
 			return groupPrices[i].Group < groupPrices[j].Group
 		})
 
-		totalRev = roundMoney6(totalRev)
-		totalCost = roundMoney6(totalCost)
-		profit := roundMoney6(totalRev - totalCost)
+		totalRev = common.RoundNonNegativeFloat6(totalRev)
+		totalCost = common.RoundNonNegativeFloat6(totalCost)
+		profit := common.RoundFloat6(totalRev - totalCost)
 		marginPct := 0.0
 		if totalRev > 0 {
-			marginPct = roundPct2((profit / totalRev) * 100.0)
+			marginPct = common.RoundFloat2((profit / totalRev) * 100.0)
 		}
 
 		summaryCalls += totalCalls
@@ -2618,10 +2345,10 @@ func GetModelCostAnalysis(c *gin.Context) {
 		return rows[i].Model < rows[j].Model
 	})
 
-	summaryProfit := roundMoney6(summaryRevenue - summaryCost)
+	summaryProfit := common.RoundFloat6(summaryRevenue - summaryCost)
 	summaryMargin := 0.0
 	if summaryRevenue > 0 {
-		summaryMargin = roundPct2((summaryProfit / summaryRevenue) * 100.0)
+		summaryMargin = common.RoundFloat2((summaryProfit / summaryRevenue) * 100.0)
 	}
 
 	common.ApiSuccess(c, gin.H{
@@ -2630,20 +2357,12 @@ func GetModelCostAnalysis(c *gin.Context) {
 			"model_count":   len(rows),
 			"total_calls":   summaryCalls,
 			"total_tokens":  summaryTokens,
-			"total_revenue": roundMoney6(summaryRevenue),
-			"total_cost":    roundMoney6(summaryCost),
+			"total_revenue": common.RoundFloat6(summaryRevenue),
+			"total_cost":    common.RoundFloat6(summaryCost),
 			"total_profit":  summaryProfit,
 			"margin_pct":    summaryMargin,
 		},
 	})
-}
-
-func settingUsableGroupsSnapshot() map[string]string {
-	raw := setting.GetUserUsableGroupsCopy()
-	if raw == nil {
-		return map[string]string{}
-	}
-	return raw
 }
 
 func GetUserCostAnalysis(c *gin.Context) {
@@ -2734,7 +2453,7 @@ func GetUserCostAnalysis(c *gin.Context) {
 		if cached, ok := basePriceCache[mName]; ok {
 			return cached
 		}
-		qt, _, inP, outP, _, _ := resolveBasePricingForModel(mName)
+		qt, _, inP, outP, _, _, _, _ := model.ResolveBaseModelPricingUSD(mName)
 		res := baseModelPricing{quotaType: qt, inPrice: inP, outPrice: outP}
 		basePriceCache[mName] = res
 		return res
@@ -2759,8 +2478,8 @@ func GetUserCostAnalysis(c *gin.Context) {
 				uGroup = strings.TrimSpace(u.Group)
 			}
 			uStatus = u.Status
-			remainUSD = roundMoney6(float64(u.Quota) / quotaUnit)
-			lifetimeUsedUSD = roundMoney6(float64(u.UsedQuota) / quotaUnit)
+			remainUSD = common.RoundNonNegativeFloat6(float64(u.Quota) / quotaUnit)
+			lifetimeUsedUSD = common.RoundNonNegativeFloat6(float64(u.UsedQuota) / quotaUnit)
 		}
 
 		uLogs := consumeByUser[uid]
@@ -2778,14 +2497,14 @@ func GetUserCostAnalysis(c *gin.Context) {
 		}
 
 		onlineStat := onlineMap[uid]
-		onlineTopupUSD := roundMoney6(float64(onlineStat.OnlineAmount))
-		onlinePaidMoney := roundMoney6(onlineStat.OnlineMoney)
-		systemTopupUSD := roundMoney6(float64(topupLogMap[uid]) / quotaUnit)
-		userTopupTotal := roundMoney6(onlineTopupUSD + systemTopupUSD)
+		onlineTopupUSD := common.RoundNonNegativeFloat6(float64(onlineStat.OnlineAmount))
+		onlinePaidMoney := common.RoundNonNegativeFloat6(onlineStat.OnlineMoney)
+		systemTopupUSD := common.RoundNonNegativeFloat6(float64(topupLogMap[uid]) / quotaUnit)
+		userTopupTotal := common.RoundNonNegativeFloat6(onlineTopupUSD + systemTopupUSD)
 		// If no period filter is active and user's lifetime balance (remain + used) exceeds logged topups
 		// (e.g. initial quota or direct DB edits), ensure topup_total reflects at least remain + used when logs are empty
 		if startTs == 0 && endTs == 0 && userTopupTotal == 0 && (remainUSD+lifetimeUsedUSD) > 0 {
-			userTopupTotal = roundMoney6(remainUSD + lifetimeUsedUSD)
+			userTopupTotal = common.RoundNonNegativeFloat6(remainUSD + lifetimeUsedUSD)
 		}
 
 		var uCalls, uPrompt, uComp int64
@@ -2793,10 +2512,10 @@ func GetUserCostAnalysis(c *gin.Context) {
 		breakdowns := make([]UserModelChannelCostDetail, 0, len(uLogs))
 
 		for _, st := range uLogs {
-			rev := roundMoney6(float64(st.TotalQuota) / quotaUnit)
+			rev := common.RoundNonNegativeFloat6(float64(st.TotalQuota) / quotaUnit)
 			var cost float64
 			if st.FrozenCallCount >= st.CallCount && st.FrozenCallCount > 0 {
-				cost = roundMoney6(st.FrozenCostUSD)
+				cost = common.RoundNonNegativeFloat6(st.FrozenCostUSD)
 			} else {
 				remCalls := max(st.CallCount-st.FrozenCallCount, 0)
 				remPrompt := max(st.PromptTokens-st.FrozenPromptTokens, 0)
@@ -2830,29 +2549,28 @@ func GetUserCostAnalysis(c *gin.Context) {
 							costScale = baseMult
 						}
 						if ch.Type == constant.ChannelTypeNewAPI {
-							unitMult := resolveUpstreamUnitToLocalUnitMultiplier(curr, exRate)
+							unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(curr, exRate)
 							if unitMult > 0 {
-								costScale = roundMoney6(costScale * unitMult)
+								costScale = common.RoundNonNegativeFloat6(costScale * unitMult)
 							}
 						}
-						effIn = roundMoney6(bp.inPrice * costScale)
-						effOut = roundMoney6(bp.outPrice * costScale)
+						effIn = common.RoundNonNegativeFloat6(bp.inPrice * costScale)
+						effOut = common.RoundNonNegativeFloat6(bp.outPrice * costScale)
 					} else if hasArchivedSnap {
 						costScale := 1.0
 						if archivedSnap.BaseMultiplier > 0 && archivedSnap.BaseMultiplier != 1.0 {
 							costScale = archivedSnap.BaseMultiplier
 						}
 						if archivedSnap.ChannelType == constant.ChannelTypeNewAPI {
-							unitMult := resolveUpstreamUnitToLocalUnitMultiplier(archivedSnap.Currency, archivedSnap.ExchangeRate)
+							unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(archivedSnap.Currency, archivedSnap.ExchangeRate)
 							if unitMult > 0 {
-								costScale = roundMoney6(costScale * unitMult)
+								costScale = common.RoundNonNegativeFloat6(costScale * unitMult)
 							}
 						}
-						effIn = roundMoney6(bp.inPrice * costScale)
-						effOut = roundMoney6(bp.outPrice * costScale)
+						effIn = common.RoundNonNegativeFloat6(bp.inPrice * costScale)
+						effOut = common.RoundNonNegativeFloat6(bp.outPrice * costScale)
 					}
 				}
-				remCost := calculateUsageUpstreamCostUSD(entry, hasEntry, bp.quotaType, effIn, effOut, remCalls, remPrompt, remComp, remCache, remCacheWrite)
 				topupMult := 1.0
 				if chByID[st.ChannelID] != nil {
 					topupMult = model.ResolveChannelTopupMultiplier(st.ChannelID, chByID[st.ChannelID], syncCfg)
@@ -2861,15 +2579,13 @@ func GetUserCostAnalysis(c *gin.Context) {
 				} else {
 					topupMult = model.ResolveChannelTopupMultiplier(st.ChannelID, nil, syncCfg)
 				}
-				if topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
-					remCost = roundMoney6(remCost / topupMult)
-				}
-				cost = roundMoney6(st.FrozenCostUSD + remCost)
+				remCost := model.CalculateEntryOrFallbackUsageCostUSD(entry, hasEntry, syncCfg, bp.quotaType, effIn, effOut, topupMult, remCalls, remPrompt, remComp, remCache, remCacheWrite)
+				cost = common.RoundNonNegativeFloat6(st.FrozenCostUSD + remCost)
 			}
-			prof := roundMoney6(rev - cost)
+			prof := common.RoundFloat6(rev - cost)
 			mPct := 0.0
 			if rev > 0 {
-				mPct = roundPct2((prof / rev) * 100.0)
+				mPct = common.RoundFloat2((prof / rev) * 100.0)
 			}
 
 			chName := chNameByID[st.ChannelID]
@@ -2909,17 +2625,17 @@ func GetUserCostAnalysis(c *gin.Context) {
 			return breakdowns[i].CallCount > breakdowns[j].CallCount
 		})
 
-		uRev = roundMoney6(uRev)
-		uCost = roundMoney6(uCost)
+		uRev = common.RoundNonNegativeFloat6(uRev)
+		uCost = common.RoundNonNegativeFloat6(uCost)
 		consumedUSD := uRev
 		if startTs == 0 && endTs == 0 && consumedUSD == 0 && lifetimeUsedUSD > 0 {
 			consumedUSD = lifetimeUsedUSD
 			uRev = lifetimeUsedUSD
 		}
-		uProfit := roundMoney6(uRev - uCost)
+		uProfit := common.RoundFloat6(uRev - uCost)
 		uMargin := 0.0
 		if uRev > 0 {
-			uMargin = roundPct2((uProfit / uRev) * 100.0)
+			uMargin = common.RoundFloat2((uProfit / uRev) * 100.0)
 		}
 
 		totalTopupUSD += userTopupTotal
@@ -2966,37 +2682,23 @@ func GetUserCostAnalysis(c *gin.Context) {
 
 	overallMargin := 0.0
 	if totalConsumedUSD > 0 {
-		overallMargin = roundPct2(((totalConsumedUSD - totalCostUSD) / totalConsumedUSD) * 100.0)
+		overallMargin = common.RoundFloat2(((totalConsumedUSD - totalCostUSD) / totalConsumedUSD) * 100.0)
 	}
 
 	common.ApiSuccess(c, gin.H{
 		"users": rows,
 		"summary": gin.H{
 			"user_count":         len(rows),
-			"total_topup_usd":    roundMoney6(totalTopupUSD),
-			"total_consumed_usd": roundMoney6(totalConsumedUSD),
-			"total_revenue_usd":  roundMoney6(totalConsumedUSD),
-			"total_cost_usd":     roundMoney6(totalCostUSD),
-			"total_profit_usd":   roundMoney6(totalConsumedUSD - totalCostUSD),
+			"total_topup_usd":    common.RoundNonNegativeFloat6(totalTopupUSD),
+			"total_consumed_usd": common.RoundNonNegativeFloat6(totalConsumedUSD),
+			"total_revenue_usd":  common.RoundNonNegativeFloat6(totalConsumedUSD),
+			"total_cost_usd":     common.RoundNonNegativeFloat6(totalCostUSD),
+			"total_profit_usd":   common.RoundFloat6(totalConsumedUSD - totalCostUSD),
 			"overall_margin_pct": overallMargin,
 			"total_calls":        totalCalls,
 			"total_tokens":       totalTokens,
 		},
 	})
-}
-
-var logFrtMsRegex = regexp.MustCompile(`"frt"\s*:\s*([0-9]+(?:\.[0-9]+)?)`)
-
-func parseLogFrtMs(other string) float64 {
-	if !strings.Contains(other, `"frt"`) {
-		return 0
-	}
-	if m := logFrtMsRegex.FindStringSubmatch(other); len(m) == 2 {
-		if val, err := strconv.ParseFloat(m[1], 64); err == nil && val > 0 && !math.IsNaN(val) && !math.IsInf(val, 0) {
-			return val
-		}
-	}
-	return 0
 }
 
 type HealthPercentiles struct {
@@ -3063,11 +2765,11 @@ func computeHealthDistribution(samples []float64) HealthPercentiles {
 
 	return HealthPercentiles{
 		SampleCount: n,
-		P5Low:       roundPct2(p5),
-		Median:      roundPct2(median),
-		Trimmed90:   roundPct2(trimmedMean),
-		P95High:     roundPct2(p95),
-		Mean:        roundPct2(meanAll),
+		P5Low:       common.RoundFloat2(p5),
+		Median:      common.RoundFloat2(median),
+		Trimmed90:   common.RoundFloat2(trimmedMean),
+		P95High:     common.RoundFloat2(p95),
+		Mean:        common.RoundFloat2(meanAll),
 	}
 }
 
@@ -3358,7 +3060,7 @@ func GetModelHealthAnalysis(c *gin.Context) {
 			globalCollector.errorCount++
 			continue
 		}
-		frtMs := parseLogFrtMs(row.Other)
+		frtMs := model.ParseLogOtherFrtMs(row.Other)
 		pc.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs)
 		mc.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs)
 		cc.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs)
@@ -3417,13 +3119,13 @@ func GetModelHealthAnalysis(c *gin.Context) {
 		reqCount := hc.successCount + hc.errorCount
 		avail := 100.0
 		if reqCount > 0 {
-			avail = roundPct2((float64(hc.successCount) / float64(reqCount)) * 100.0)
+			avail = common.RoundFloat2((float64(hc.successCount) / float64(reqCount)) * 100.0)
 		}
 		avgPrompt := 0.0
 		avgOutput := 0.0
 		if hc.successCount > 0 {
-			avgPrompt = roundPct2(float64(hc.promptSum) / float64(hc.successCount))
-			avgOutput = roundPct2(float64(hc.outputSum) / float64(hc.successCount))
+			avgPrompt = common.RoundFloat2(float64(hc.promptSum) / float64(hc.successCount))
+			avgOutput = common.RoundFloat2(float64(hc.outputSum) / float64(hc.successCount))
 		}
 		ttftDist := computeHealthDistribution(hc.ttftSec)
 		prefillDist := computeHealthDistribution(hc.prefillTps)

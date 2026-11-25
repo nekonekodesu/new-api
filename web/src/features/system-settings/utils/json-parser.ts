@@ -34,19 +34,32 @@ export interface SafeJsonParseWithValidationOptions<T> {
   silent?: boolean
 }
 
-interface JsonErrorPosition {
+export interface JsonErrorPosition {
   line?: number
   column?: number
   position?: number
+  missingCommaLine?: number
 }
 
-function extractErrorPosition(
+export function extractJsonErrorPosition(
   error: unknown,
   jsonString: string
 ): JsonErrorPosition {
   if (!(error instanceof Error)) return {}
 
   const message = error.message
+  const isMissingCommaError =
+    message.includes("Expected ','") ||
+    message.includes('Expected property name') ||
+    message.includes('Unexpected string')
+
+  const withHint = (pos: JsonErrorPosition): JsonErrorPosition => ({
+    ...pos,
+    missingCommaLine:
+      isMissingCommaError && pos.line && pos.line > 1
+        ? pos.line - 1
+        : undefined,
+  })
 
   // Try to extract position from error message
   // Format 1: "Unexpected token } in JSON at position 15"
@@ -54,16 +67,16 @@ function extractErrorPosition(
   if (positionMatch) {
     const position = parseInt(positionMatch[1], 10)
     const { line, column } = getLineAndColumn(jsonString, position)
-    return { line, column, position }
+    return withHint({ line, column, position })
   }
 
   // Format 2: "JSON.parse: ... at line 2 column 3"
   const lineColMatch = message.match(/at line (\d+) column (\d+)/i)
   if (lineColMatch) {
-    return {
+    return withHint({
       line: parseInt(lineColMatch[1], 10),
       column: parseInt(lineColMatch[2], 10),
-    }
+    })
   }
 
   return {}
@@ -80,26 +93,19 @@ function getLineAndColumn(
   }
 }
 
-function formatErrorDescription(
+export function formatJsonErrorDescription(
   error: unknown,
   jsonString: string
 ): string | undefined {
   if (!(error instanceof Error)) return undefined
 
-  const position = extractErrorPosition(error, jsonString)
+  const position = extractJsonErrorPosition(error, jsonString)
   const message = error.message
 
-  // Check if it's a "missing comma" type error
-  const isMissingCommaError =
-    message.includes("Expected ','") ||
-    message.includes('Expected property name') ||
-    message.includes('Unexpected string')
-
   if (position.line && position.column) {
-    let hint = ''
-    if (isMissingCommaError && position.line > 1) {
-      hint = ` (check line ${position.line - 1} for missing comma)`
-    }
+    const hint = position.missingCommaLine
+      ? ` (check line ${position.missingCommaLine} for missing comma)`
+      : ''
     return `Error at line ${position.line}, column ${position.column}: ${message}${hint}`
   }
 
@@ -108,6 +114,49 @@ function formatErrorDescription(
   }
 
   return message
+}
+
+export function formatJsonForEditor(
+  value: string,
+  options: {
+    emptyFallback?: string
+    errorFallback?: string
+    trimOnError?: boolean
+    compact?: boolean
+  } = {}
+): string {
+  const raw = value ?? ''
+  const trimmed = raw.trim()
+  const target = trimmed || options.emptyFallback || ''
+  if (!target) {
+    return ''
+  }
+  try {
+    const parsed = JSON.parse(target)
+    return options.compact
+      ? JSON.stringify(parsed)
+      : JSON.stringify(parsed, null, 2)
+  } catch {
+    if (options.errorFallback !== undefined) {
+      return options.errorFallback
+    }
+    if (trimmed) {
+      return options.trimOnError ? trimmed : raw
+    }
+    return options.trimOnError ? target.trim() : target
+  }
+}
+
+export function normalizeJsonString(
+  value: string,
+  emptyFallback = '',
+  trimOnError = true
+): string {
+  return formatJsonForEditor(value, {
+    emptyFallback,
+    trimOnError,
+    compact: true,
+  })
 }
 
 export function safeJsonParse<T = unknown>(
@@ -130,7 +179,7 @@ export function safeJsonParse<T = unknown>(
       const message = context
         ? `Failed to parse ${context}`
         : 'Invalid JSON format'
-      const description = formatErrorDescription(error, trimmedValue)
+      const description = formatJsonErrorDescription(error, trimmedValue)
       // eslint-disable-next-line no-console
       console.error(`[JSON Parse Error] ${message}:`, description)
     }

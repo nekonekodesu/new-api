@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import i18next from 'i18next'
+
 import { getServerMessage } from '@/lib/server-error-message'
 
 import {
@@ -44,6 +46,25 @@ export function getPaymentErrorTranslation(
     return undefined
   }
   return getServerMessage(body)
+}
+
+/**
+ * Resolve a user-facing error title from a Waffo / Waffo Pancake API response.
+ */
+export function getWaffoResponseErrorMessage(response: {
+  message?: string
+  data?: unknown
+}): string {
+  const translated = getPaymentErrorTranslation(response)
+  if (translated) return translated
+  if (typeof response.data === 'string' && response.data.trim()) {
+    return response.data
+  }
+  return (
+    (response.message && response.message !== 'success'
+      ? response.message
+      : undefined) || i18next.t('Payment request failed')
+  )
 }
 
 /**

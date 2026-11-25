@@ -45,7 +45,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { useMediaQuery } from '@/hooks'
+import { useIsCompactScreen } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import { hasPermission } from '@/lib/admin-permissions'
 import { requireServerSuccess } from '@/lib/server-error-message'
@@ -113,7 +113,7 @@ export function ChannelsTable() {
     setSensitiveVisible,
     priorityActionContainer,
   } = useChannels()
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
 
   const idSort = sorting[0]?.id === 'id'
 

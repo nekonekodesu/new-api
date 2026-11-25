@@ -4,7 +4,6 @@ import (
 	"errors"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
@@ -278,30 +277,34 @@ func identityFilterRequiresKey(filters []dto.ChannelFilter) bool {
 	return false
 }
 
-func (channel *Channel) AddAbilities(tx *gorm.DB) error {
-	models_ := strings.Split(channel.Models, ",")
-	groups_ := strings.Split(channel.Group, ",")
-	abilitySet := make(map[string]struct{})
-	abilities := make([]Ability, 0, len(models_))
-	for _, model := range models_ {
-		for _, group := range groups_ {
-			key := group + "|" + model
+func (channel *Channel) buildAbilities() []Ability {
+	models_ := channel.GetModels()
+	groups_ := channel.GetGroups()
+	abilitySet := make(map[string]struct{}, len(models_)*len(groups_))
+	abilities := make([]Ability, 0, len(models_)*max(len(groups_), 1))
+	for _, m := range models_ {
+		for _, g := range groups_ {
+			key := g + "|" + m
 			if _, exists := abilitySet[key]; exists {
 				continue
 			}
 			abilitySet[key] = struct{}{}
-			ability := Ability{
-				Group:     group,
-				Model:     model,
+			abilities = append(abilities, Ability{
+				Group:     g,
+				Model:     m,
 				ChannelId: channel.Id,
 				Enabled:   channel.Status == common.ChannelStatusEnabled,
 				Priority:  channel.Priority,
 				Weight:    uint(channel.GetWeight()),
 				Tag:       channel.Tag,
-			}
-			abilities = append(abilities, ability)
+			})
 		}
 	}
+	return abilities
+}
+
+func (channel *Channel) AddAbilities(tx *gorm.DB) error {
+	abilities := channel.buildAbilities()
 	if len(abilities) == 0 {
 		return nil
 	}
@@ -351,29 +354,7 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 	}
 
 	// Then add new abilities
-	models_ := channel.GetModels()
-	groups_ := strings.Split(channel.Group, ",")
-	abilitySet := make(map[string]struct{})
-	abilities := make([]Ability, 0, len(models_))
-	for _, model := range models_ {
-		for _, group := range groups_ {
-			key := group + "|" + model
-			if _, exists := abilitySet[key]; exists {
-				continue
-			}
-			abilitySet[key] = struct{}{}
-			ability := Ability{
-				Group:     group,
-				Model:     model,
-				ChannelId: channel.Id,
-				Enabled:   channel.Status == common.ChannelStatusEnabled,
-				Priority:  channel.Priority,
-				Weight:    uint(channel.GetWeight()),
-				Tag:       channel.Tag,
-			}
-			abilities = append(abilities, ability)
-		}
-	}
+	abilities := channel.buildAbilities()
 
 	if len(abilities) > 0 {
 		for _, chunk := range lo.Chunk(abilities, 50) {

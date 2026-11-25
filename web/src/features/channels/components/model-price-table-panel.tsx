@@ -37,10 +37,11 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { useMediaQuery } from '@/hooks'
+import { useIsCompactScreen } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
 import {
-  formatBillingCurrencyFromUSD,
+  formatBillingUnitCostUSD,
+  formatRawUpstreamAmount,
   getAvailableDisplayCurrencies,
   setDisplayCurrency,
 } from '@/lib/currency'
@@ -52,11 +53,21 @@ import { useSystemConfigStore } from '@/stores/system-config-store'
 import { applyModelPriceTable, getModelPriceTable } from '../api'
 import { ChannelTypeLogo } from './channel-type-badge'
 
+function getAvailabilityColorClass(availability: number): string {
+  if (availability >= 99) {
+    return 'text-emerald-600 dark:text-emerald-400'
+  }
+  if (availability >= 90) {
+    return 'text-amber-600 dark:text-amber-400'
+  }
+  return 'text-rose-600 dark:text-rose-400'
+}
+
 export function ModelPriceTablePanel() {
   const { t, i18n } = useTranslation()
   const queryClient = useQueryClient()
   const [searchModel, setSearchModel] = useState('')
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
   const intlLocale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const currencyConfig = useSystemConfigStore((state) => state.config.currency)
   const currencyOptions = getAvailableDisplayCurrencies(currencyConfig).slice(
@@ -73,29 +84,6 @@ export function ModelPriceTablePanel() {
   )
     ? normalizedDisplayType
     : 'USD'
-
-  const formatCost = (val: number) =>
-    formatBillingCurrencyFromUSD(val, {
-      digitsLarge: 4,
-      digitsSmall: 4,
-      abbreviate: false,
-      locale: intlLocale,
-    })
-
-  const formatRawCurrency = (rawVal: number | undefined, curr: string) => {
-    if (typeof rawVal !== 'number' || !Number.isFinite(rawVal) || rawVal <= 0) {
-      return null
-    }
-    const c = (curr || '').toUpperCase().trim()
-    if (!c || c === 'AUTO') return null
-    let sym = '$'
-    if (c === 'CNY') {
-      sym = '¥'
-    } else if (c === 'TWD' || c === 'NTD') {
-      sym = 'NT$'
-    }
-    return `${sym}${Number(rawVal.toFixed(4))} ${c}`
-  }
 
   const formatExchangeFormula = (rate: number, curr: string) => {
     if (!(rate > 0) || Math.abs(rate - 1) <= 1e-4) return ''
@@ -331,11 +319,11 @@ export function ModelPriceTablePanel() {
                       {t('Input Cost')} (/1M)
                     </div>
                     <div className='font-mono font-semibold'>
-                      {formatCost(row.input_cost)}
+                      {formatBillingUnitCostUSD(row.input_cost, intlLocale)}
                     </div>
-                    {formatRawCurrency(row.raw_input_cost, row.currency) ? (
+                    {formatRawUpstreamAmount(row.raw_input_cost, row.currency, { includeCode: true }) ? (
                       <div className='text-muted-foreground font-mono text-[10px]'>
-                        {formatRawCurrency(row.raw_input_cost, row.currency)}
+                        {formatRawUpstreamAmount(row.raw_input_cost, row.currency, { includeCode: true })}
                         {formatExchangeFormula(row.exchange_rate, row.currency)}
                       </div>
                     ) : null}
@@ -345,11 +333,11 @@ export function ModelPriceTablePanel() {
                       {t('Output Cost')} (/1M)
                     </div>
                     <div className='font-mono font-semibold'>
-                      {formatCost(row.output_cost)}
+                      {formatBillingUnitCostUSD(row.output_cost, intlLocale)}
                     </div>
-                    {formatRawCurrency(row.raw_output_cost, row.currency) ? (
+                    {formatRawUpstreamAmount(row.raw_output_cost, row.currency, { includeCode: true }) ? (
                       <div className='text-muted-foreground font-mono text-[10px]'>
-                        {formatRawCurrency(row.raw_output_cost, row.currency)}
+                        {formatRawUpstreamAmount(row.raw_output_cost, row.currency, { includeCode: true })}
                         {formatExchangeFormula(row.exchange_rate, row.currency)}
                       </div>
                     ) : null}
@@ -376,11 +364,8 @@ export function ModelPriceTablePanel() {
                     </div>
                     <div
                       className={cn(
-                        'font-mono font-semibold text-rose-600 dark:text-rose-400',
-                        row.availability >= 90 &&
-                          'text-amber-600 dark:text-amber-400',
-                        row.availability >= 99 &&
-                          'text-emerald-600 dark:text-emerald-400'
+                        'font-mono font-semibold',
+                        getAvailabilityColorClass(row.availability)
                       )}
                     >
                       {row.availability.toFixed(2)}%
@@ -479,15 +464,17 @@ export function ModelPriceTablePanel() {
                       </TableCell>
                       <TableCell className='text-right font-mono text-xs'>
                         <div className='flex flex-col items-end'>
-                          <span>{formatCost(row.input_cost)}</span>
-                          {formatRawCurrency(
+                          <span>{formatBillingUnitCostUSD(row.input_cost, intlLocale)}</span>
+                          {formatRawUpstreamAmount(
                             row.raw_input_cost,
-                            row.currency
+                            row.currency,
+                            { includeCode: true }
                           ) ? (
                             <span className='text-muted-foreground text-[10px]'>
-                              {formatRawCurrency(
+                              {formatRawUpstreamAmount(
                                 row.raw_input_cost,
-                                row.currency
+                                row.currency,
+                                { includeCode: true }
                               )}
                               {formatExchangeFormula(
                                 row.exchange_rate,
@@ -499,15 +486,17 @@ export function ModelPriceTablePanel() {
                       </TableCell>
                       <TableCell className='text-right font-mono text-xs'>
                         <div className='flex flex-col items-end'>
-                          <span>{formatCost(row.output_cost)}</span>
-                          {formatRawCurrency(
+                          <span>{formatBillingUnitCostUSD(row.output_cost, intlLocale)}</span>
+                          {formatRawUpstreamAmount(
                             row.raw_output_cost,
-                            row.currency
+                            row.currency,
+                            { includeCode: true }
                           ) ? (
                             <span className='text-muted-foreground text-[10px]'>
-                              {formatRawCurrency(
+                              {formatRawUpstreamAmount(
                                 row.raw_output_cost,
-                                row.currency
+                                row.currency,
+                                { includeCode: true }
                               )}
                               {formatExchangeFormula(
                                 row.exchange_rate,
@@ -530,27 +519,14 @@ export function ModelPriceTablePanel() {
                           : '-'}
                       </TableCell>
                       <TableCell className='text-right font-mono text-xs'>
-                        {(() => {
-                          if (row.availability >= 99) {
-                            return (
-                              <span className='font-semibold text-emerald-600 dark:text-emerald-400'>
-                                {row.availability.toFixed(2)}%
-                              </span>
-                            )
-                          }
-                          if (row.availability >= 90) {
-                            return (
-                              <span className='font-semibold text-amber-600 dark:text-amber-400'>
-                                {row.availability.toFixed(2)}%
-                              </span>
-                            )
-                          }
-                          return (
-                            <span className='font-semibold text-rose-600 dark:text-rose-400'>
-                              {row.availability.toFixed(2)}%
-                            </span>
-                          )
-                        })()}
+                        <span
+                          className={cn(
+                            'font-semibold',
+                            getAvailabilityColorClass(row.availability)
+                          )}
+                        >
+                          {row.availability.toFixed(2)}%
+                        </span>
                       </TableCell>
                       <TableCell className='text-right font-mono text-xs'>
                         {row.tps_min > 0 ? row.tps_min.toFixed(0) : '-'}

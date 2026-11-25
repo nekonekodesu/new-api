@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 // ----------------------------------------------------------------------------
 // Rankings formatting helpers
 // ----------------------------------------------------------------------------
+import { formatNumber } from '@/lib/format'
 
 /** Format a token count as `1.2B`, `42M`, `980K`, or `512`. */
 export function formatTokens(value: number): string {
@@ -31,7 +32,7 @@ export function formatTokens(value: number): string {
     return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 1 : 2)}M`
   if (value >= 1_000)
     return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`
-  return value.toLocaleString()
+  return formatNumber(value)
 }
 
 /** Format a 0..1 share as a percentage with two decimals. */

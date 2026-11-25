@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -135,37 +134,15 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 	}
 	relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 
-	jsonData, err := common.Marshal(convertedRequest)
-	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
-	}
-
-	jsonData, err = relaycommon.RemoveDisabledFields(jsonData, info.ChannelOtherSettings, info.ChannelSetting.PassThroughBodyEnabled)
-	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
-	}
-	if !outboundApplied {
-		var apiErr *types.NewAPIError
-		if jsonData, apiErr = requestplugin.Outbound(c, info, jsonData); apiErr != nil {
-			return nil, apiErr
-		}
-		if len(info.ParamOverride) > 0 {
-			jsonData, err = relaycommon.ApplyParamOverrideWithRelayInfo(jsonData, info)
-			if err != nil {
-				return nil, newAPIErrorFromParamOverride(err)
-			}
-		}
-	}
-	if apiErr := requestplugin.Egress(c, info, jsonData); apiErr != nil {
+	body, closer, apiErr := buildOutboundJSONRequestBody(c, info, convertedRequest, outboundJSONOptions{
+		removeDisabledFields: true,
+		skipOutbound:         outboundApplied,
+		finalizerAdaptor:     adaptor,
+	})
+	if apiErr != nil {
 		return nil, apiErr
 	}
-
-	body, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
-	if err != nil {
-		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
-	}
 	defer closer.Close()
-	jsonData = nil
 	var requestBody io.Reader = body
 
 	var httpResp *http.Response
@@ -213,8 +190,4 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 		return nil, newApiErr
 	}
 	return usage, nil
-}
-
-func isResponsesEventStreamContentType(contentType string) bool {
-	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
 }

@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { formatPricingNumber } from '@/features/system-settings/models/pricing-format'
+import { resolveCurrencyDisplayMeta } from '@/lib/currency'
 import type { CurrencyConfig } from '@/stores/system-config-store'
 
 export type PricingCurrency = {
@@ -34,29 +35,23 @@ export const USD_PRICING_CURRENCY: PricingCurrency = {
 export function getSitePricingCurrency(
   config: CurrencyConfig
 ): PricingCurrency | null {
-  if (config.quotaDisplayType === 'CNY') {
+  const rawType = config.quotaDisplayType?.trim().toUpperCase()
+  if (!rawType || rawType === 'USD' || rawType === 'TOKENS') {
+    return null
+  }
+  const meta = resolveCurrencyDisplayMeta(rawType, config)
+  if (meta.kind === 'custom') {
     return {
-      label: 'CNY',
-      symbol: config.currencyRates?.CNY?.symbol || '¥',
-      exchangeRate: config.currencyRates?.CNY?.rate || config.usdExchangeRate,
+      label: meta.symbol,
+      symbol: meta.symbol,
+      exchangeRate: meta.exchangeRate,
     }
   }
-  if (config.quotaDisplayType === 'NTD' || config.quotaDisplayType === 'TWD') {
+  if (meta.kind === 'currency' && meta.currencyCode !== 'USD') {
     return {
-      label: config.quotaDisplayType,
-      symbol: config.currencyRates?.TWD?.symbol || 'NT$',
-      exchangeRate:
-        config.currencyRates?.TWD?.rate ||
-        config.ntdExchangeRate ||
-        config.usdExchangeRate,
-    }
-  }
-  if (config.quotaDisplayType === 'CUSTOM') {
-    const symbol = config.customCurrencySymbol?.trim() || '¤'
-    return {
-      label: symbol,
-      symbol,
-      exchangeRate: config.customCurrencyExchangeRate,
+      label: rawType === 'NTD' ? 'NTD' : meta.currencyCode,
+      symbol: meta.symbol,
+      exchangeRate: meta.exchangeRate,
     }
   }
   return null

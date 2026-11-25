@@ -61,11 +61,16 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { useMediaQuery } from '@/hooks'
+import { useIsCompactScreen } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
-import { formatBillingCurrencyFromUSD } from '@/lib/currency'
+import {
+  formatBillingAmountUSD,
+  formatBillingUnitCostUSD,
+  formatRawUpstreamAmount,
+} from '@/lib/currency'
 import { formatNumber } from '@/lib/format'
 import { requireServerSuccess } from '@/lib/server-error-message'
+import { computeStartTimestamp, type TimeRangeKey } from '@/lib/time'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
@@ -74,77 +79,6 @@ import {
   type ModelCostAnalysisRow,
   type UserCostAnalysisRow,
 } from '../api'
-
-type TimeRangeKey = 'all' | '1d' | '7d' | '30d' | '90d'
-
-function computeStartTimestamp(range: TimeRangeKey): number | undefined {
-  const nowSec = Math.floor(Date.now() / 1000)
-  switch (range) {
-    case '1d':
-      return nowSec - 86400
-    case '7d':
-      return nowSec - 7 * 86400
-    case '30d':
-      return nowSec - 30 * 86400
-    case '90d':
-      return nowSec - 90 * 86400
-    case 'all':
-    default:
-      return undefined
-  }
-}
-
-function formatUSD(val: number, locale?: string): string {
-  if (!Number.isFinite(val)) {
-    return formatBillingCurrencyFromUSD(0, {
-      digitsLarge: 2,
-      digitsSmall: 4,
-      abbreviate: false,
-      locale,
-    })
-  }
-  return formatBillingCurrencyFromUSD(val, {
-    digitsLarge: 2,
-    digitsSmall: 4,
-    abbreviate: false,
-    locale,
-  })
-}
-
-function formatUnitUSD(val: number, locale?: string): string {
-  if (!Number.isFinite(val) || val <= 0) {
-    return formatBillingCurrencyFromUSD(0, {
-      digitsLarge: 2,
-      digitsSmall: 4,
-      abbreviate: false,
-      locale,
-    })
-  }
-  return formatBillingCurrencyFromUSD(val, {
-    digitsLarge: 4,
-    digitsSmall: 4,
-    abbreviate: false,
-    locale,
-  })
-}
-
-function getUpstreamCurrencySymbol(curr: string | undefined): string {
-  const c = (curr || '').toUpperCase().trim()
-  if (c === 'CNY') return '¥'
-  if (c === 'TWD' || c === 'NTD') return 'NT$'
-  return '$'
-}
-
-function formatRawUpstreamAmount(
-  val: number | undefined,
-  curr: string | undefined
-): string {
-  if (typeof val !== 'number' || !Number.isFinite(val) || val <= 0) {
-    return ''
-  }
-  const sym = getUpstreamCurrencySymbol(curr)
-  return `${sym}${Number(val.toFixed(4))}`
-}
 
 function getMarginBadgeVariant(
   marginPct: number
@@ -164,7 +98,7 @@ export interface CostManagementPanelProps {
 
 export function CostManagementPanel(props: CostManagementPanelProps) {
   const { t, i18n } = useTranslation()
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
   const intlLocale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   // Subscribe to currency config so switching display currency re-renders immediately
   useSystemConfigStore((state) => state.config.currency)
@@ -284,7 +218,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                 />
               </CardDescription>
               <CardTitle className='text-xl font-bold text-emerald-600 dark:text-emerald-400'>
-                {formatUSD(summary?.total_revenue ?? 0)}
+                {formatBillingAmountUSD(summary?.total_revenue ?? 0, intlLocale, '0')}
               </CardTitle>
             </CardHeader>
           </Card>
@@ -299,7 +233,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                 />
               </CardDescription>
               <CardTitle className='flex items-baseline gap-2 text-xl font-bold'>
-                <span>{formatUSD(summary?.total_cost ?? 0)}</span>
+                <span>{formatBillingAmountUSD(summary?.total_cost ?? 0, intlLocale, '0')}</span>
                 <Badge
                   variant={getMarginBadgeVariant(summary?.margin_pct ?? 0)}
                   className='text-xs'
@@ -398,12 +332,12 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                       row.quota_type === 1 ? `/${t('call')}` : '/1M'
                     const costRangeIn =
                       row.min_input_cost === row.max_input_cost
-                        ? `${formatUnitUSD(row.min_input_cost)}`
-                        : `${formatUnitUSD(row.min_input_cost)}~${formatUnitUSD(row.max_input_cost)}`
+                        ? `${formatBillingUnitCostUSD(row.min_input_cost, intlLocale)}`
+                        : `${formatBillingUnitCostUSD(row.min_input_cost, intlLocale)}~${formatBillingUnitCostUSD(row.max_input_cost, intlLocale)}`
                     const costRangeOut =
                       row.min_output_cost === row.max_output_cost
-                        ? `${formatUnitUSD(row.min_output_cost)}`
-                        : `${formatUnitUSD(row.min_output_cost)}~${formatUnitUSD(row.max_output_cost)}`
+                        ? `${formatBillingUnitCostUSD(row.min_output_cost, intlLocale)}`
+                        : `${formatBillingUnitCostUSD(row.min_output_cost, intlLocale)}~${formatBillingUnitCostUSD(row.max_output_cost, intlLocale)}`
 
                     return (
                       <div
@@ -442,7 +376,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                           </div>
                           <div className='flex shrink-0 items-center gap-1 font-mono text-xs'>
                             <span className='font-semibold'>
-                              {formatUSD(row.profit_usd)}
+                              {formatBillingAmountUSD(row.profit_usd, intlLocale, '0')}
                             </span>
                             <Badge
                               variant={getMarginBadgeVariant(row.margin_pct)}
@@ -460,8 +394,8 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                             </span>
                             <span className='font-mono text-[11px]'>
                               {row.quota_type === 1
-                                ? `${formatUnitUSD(row.base_input_price)}${unitSuffix}`
-                                : `${formatUnitUSD(row.base_input_price)} / ${formatUnitUSD(row.base_output_price)} (/1M)`}
+                                ? `${formatBillingUnitCostUSD(row.base_input_price, intlLocale)}${unitSuffix}`
+                                : `${formatBillingUnitCostUSD(row.base_input_price, intlLocale)} / ${formatBillingUnitCostUSD(row.base_output_price, intlLocale)} (/1M)`}
                             </span>
                           </div>
                           <div className='flex flex-col gap-0.5'>
@@ -490,9 +424,9 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                             </span>
                             <span className='font-mono text-[11px]'>
                               <span className='text-emerald-600 dark:text-emerald-400'>
-                                {formatUSD(row.revenue_usd)}
+                                {formatBillingAmountUSD(row.revenue_usd, intlLocale, '0')}
                               </span>{' '}
-                              / <span>{formatUSD(row.cost_usd)}</span>
+                              / <span>{formatBillingAmountUSD(row.cost_usd, intlLocale, '0')}</span>
                             </span>
                           </div>
                         </div>
@@ -528,8 +462,8 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                       </Badge>
                                       <span className='text-muted-foreground text-[11px]'>
                                         {gp.quota_type === 1
-                                          ? `${formatUnitUSD(gp.input_price)}/${t('call')}`
-                                          : `${formatUnitUSD(gp.input_price)} / ${formatUnitUSD(gp.output_price)}`}
+                                          ? `${formatBillingUnitCostUSD(gp.input_price, intlLocale)}/${t('call')}`
+                                          : `${formatBillingUnitCostUSD(gp.input_price, intlLocale)} / ${formatBillingUnitCostUSD(gp.output_price, intlLocale)}`}
                                       </span>
                                     </div>
                                     <div className='flex items-center gap-2 font-mono text-[11px]'>
@@ -542,9 +476,9 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                       </span>
                                       <span>
                                         <span className='text-emerald-600 dark:text-emerald-400'>
-                                          {formatUSD(gp.revenue_usd)}
+                                          {formatBillingAmountUSD(gp.revenue_usd, intlLocale, '0')}
                                         </span>{' '}
-                                        / {formatUSD(gp.cost_usd)}
+                                        / {formatBillingAmountUSD(gp.cost_usd, intlLocale, '0')}
                                       </span>
                                     </div>
                                   </div>
@@ -585,8 +519,8 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                     <div className='text-muted-foreground flex flex-wrap items-center justify-between gap-2 font-mono text-[11px]'>
                                       <span>
                                         {cu.quota_type === 1
-                                          ? `${formatUnitUSD(cu.input_cost)}/${t('call')}`
-                                          : `${formatUnitUSD(cu.input_cost)} / ${formatUnitUSD(cu.output_cost)}`}
+                                          ? `${formatBillingUnitCostUSD(cu.input_cost, intlLocale)}/${t('call')}`
+                                          : `${formatBillingUnitCostUSD(cu.input_cost, intlLocale)} / ${formatBillingUnitCostUSD(cu.output_cost, intlLocale)}`}
                                         {cu.currency &&
                                         cu.raw_input_cost &&
                                         cu.raw_input_cost > 0 ? (
@@ -614,9 +548,9 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                         )}{' '}
                                         {t('calls')} ·{' '}
                                         <span className='text-emerald-600 dark:text-emerald-400'>
-                                          {formatUSD(cu.revenue_usd)}
+                                          {formatBillingAmountUSD(cu.revenue_usd, intlLocale, '0')}
                                         </span>{' '}
-                                        / {formatUSD(cu.cost_usd)}
+                                        / {formatBillingAmountUSD(cu.cost_usd, intlLocale, '0')}
                                       </span>
                                     </div>
                                   </div>
@@ -678,12 +612,12 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                           row.quota_type === 1 ? `/${t('call')}` : '/1M'
                         const costRangeIn =
                           row.min_input_cost === row.max_input_cost
-                            ? `${formatUnitUSD(row.min_input_cost)}`
-                            : `${formatUnitUSD(row.min_input_cost)}~${formatUnitUSD(row.max_input_cost)}`
+                            ? `${formatBillingUnitCostUSD(row.min_input_cost, intlLocale)}`
+                            : `${formatBillingUnitCostUSD(row.min_input_cost, intlLocale)}~${formatBillingUnitCostUSD(row.max_input_cost, intlLocale)}`
                         const costRangeOut =
                           row.min_output_cost === row.max_output_cost
-                            ? `${formatUnitUSD(row.min_output_cost)}`
-                            : `${formatUnitUSD(row.min_output_cost)}~${formatUnitUSD(row.max_output_cost)}`
+                            ? `${formatBillingUnitCostUSD(row.min_output_cost, intlLocale)}`
+                            : `${formatBillingUnitCostUSD(row.min_output_cost, intlLocale)}~${formatBillingUnitCostUSD(row.max_output_cost, intlLocale)}`
 
                         return (
                           <Fragment key={row.model}>
@@ -730,13 +664,13 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                               <TableCell className='font-mono text-xs'>
                                 {row.quota_type === 1 ? (
                                   <span>
-                                    {formatUnitUSD(row.base_input_price)}
+                                    {formatBillingUnitCostUSD(row.base_input_price, intlLocale)}
                                     {unitSuffix}
                                   </span>
                                 ) : (
                                   <span>
-                                    {formatUnitUSD(row.base_input_price)} /{' '}
-                                    {formatUnitUSD(row.base_output_price)}{' '}
+                                    {formatBillingUnitCostUSD(row.base_input_price, intlLocale)} /{' '}
+                                    {formatBillingUnitCostUSD(row.base_output_price, intlLocale)}{' '}
                                     <span className='text-muted-foreground text-[10px]'>
                                       (/1M)
                                     </span>
@@ -780,14 +714,14 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                 </div>
                               </TableCell>
                               <TableCell className='text-right font-mono text-xs font-medium text-emerald-600 dark:text-emerald-400'>
-                                {formatUSD(row.revenue_usd)}
+                                {formatBillingAmountUSD(row.revenue_usd, intlLocale, '0')}
                               </TableCell>
                               <TableCell className='text-right font-mono text-xs font-medium'>
-                                {formatUSD(row.cost_usd)}
+                                {formatBillingAmountUSD(row.cost_usd, intlLocale, '0')}
                               </TableCell>
                               <TableCell className='text-right'>
                                 <div className='flex items-center justify-end gap-1.5 font-mono text-xs'>
-                                  <span>{formatUSD(row.profit_usd)}</span>
+                                  <span>{formatBillingAmountUSD(row.profit_usd, intlLocale, '0')}</span>
                                   <Badge
                                     variant={getMarginBadgeVariant(
                                       row.margin_pct
@@ -852,8 +786,8 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                               </TableCell>
                                               <TableCell className='py-1.5 font-mono text-xs'>
                                                 {gp.quota_type === 1
-                                                  ? `${formatUnitUSD(gp.input_price)}/${t('call')}`
-                                                  : `${formatUnitUSD(gp.input_price)} / ${formatUnitUSD(gp.output_price)}`}
+                                                  ? `${formatBillingUnitCostUSD(gp.input_price, intlLocale)}/${t('call')}`
+                                                  : `${formatBillingUnitCostUSD(gp.input_price, intlLocale)} / ${formatBillingUnitCostUSD(gp.output_price, intlLocale)}`}
                                               </TableCell>
                                               <TableCell className='py-1.5 text-right font-mono text-xs'>
                                                 {formatNumber(
@@ -869,11 +803,11 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                               </TableCell>
                                               <TableCell className='py-1.5 text-right font-mono text-xs'>
                                                 <span className='text-emerald-600 dark:text-emerald-400'>
-                                                  {formatUSD(gp.revenue_usd)}
+                                                  {formatBillingAmountUSD(gp.revenue_usd, intlLocale, '0')}
                                                 </span>{' '}
                                                 /{' '}
                                                 <span>
-                                                  {formatUSD(gp.cost_usd)}
+                                                  {formatBillingAmountUSD(gp.cost_usd, intlLocale, '0')}
                                                 </span>
                                               </TableCell>
                                             </TableRow>
@@ -954,8 +888,8 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                                 <div className='flex flex-col'>
                                                   <span>
                                                     {cu.quota_type === 1
-                                                      ? `${formatUnitUSD(cu.input_cost)}/${t('call')}`
-                                                      : `${formatUnitUSD(cu.input_cost)} / ${formatUnitUSD(cu.output_cost)}`}
+                                                      ? `${formatBillingUnitCostUSD(cu.input_cost, intlLocale)}/${t('call')}`
+                                                      : `${formatBillingUnitCostUSD(cu.input_cost, intlLocale)} / ${formatBillingUnitCostUSD(cu.output_cost, intlLocale)}`}
                                                   </span>
                                                   {(cu.from_upstream ||
                                                     cu.channel_type === 60) &&
@@ -994,11 +928,11 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                               </TableCell>
                                               <TableCell className='py-1.5 text-right font-mono text-xs'>
                                                 <span className='text-emerald-600 dark:text-emerald-400'>
-                                                  {formatUSD(cu.revenue_usd)}
+                                                  {formatBillingAmountUSD(cu.revenue_usd, intlLocale, '0')}
                                                 </span>{' '}
                                                 /{' '}
                                                 <span>
-                                                  {formatUSD(cu.cost_usd)}
+                                                  {formatBillingAmountUSD(cu.cost_usd, intlLocale, '0')}
                                                 </span>
                                               </TableCell>
                                               <TableCell className='py-1.5 text-right font-mono text-xs'>
@@ -1068,7 +1002,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
               />
             </CardDescription>
             <CardTitle className='text-xl font-bold'>
-              {formatUSD(userSummary?.total_topup_usd ?? 0)}
+              {formatBillingAmountUSD(userSummary?.total_topup_usd ?? 0, intlLocale, '0')}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -1080,7 +1014,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
               <Coins aria-hidden='true' className='size-4 text-emerald-500' />
             </CardDescription>
             <CardTitle className='text-xl font-bold text-emerald-600 dark:text-emerald-400'>
-              {formatUSD(userSummary?.total_consumed_usd ?? 0)}
+              {formatBillingAmountUSD(userSummary?.total_consumed_usd ?? 0, intlLocale, '0')}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -1095,7 +1029,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
               />
             </CardDescription>
             <CardTitle className='text-xl font-bold'>
-              {formatUSD(userSummary?.total_cost_usd ?? 0)}
+              {formatBillingAmountUSD(userSummary?.total_cost_usd ?? 0, intlLocale, '0')}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -1107,7 +1041,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
               <TrendingUp aria-hidden='true' className='text-primary size-4' />
             </CardDescription>
             <CardTitle className='text-xl font-bold'>
-              {formatUSD(userSummary?.total_profit_usd ?? 0)}
+              {formatBillingAmountUSD(userSummary?.total_profit_usd ?? 0, intlLocale, '0')}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -1272,9 +1206,9 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                           </span>
                           <span className='font-mono text-[11px]'>
                             <span className='font-semibold'>
-                              {formatUSD(u.topup_total_usd)}
+                              {formatBillingAmountUSD(u.topup_total_usd, intlLocale, '0')}
                             </span>{' '}
-                            / {formatUSD(u.remain_quota_usd)}
+                            / {formatBillingAmountUSD(u.remain_quota_usd, intlLocale, '0')}
                           </span>
                         </div>
                         <div className='flex flex-col gap-0.5'>
@@ -1294,9 +1228,9 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                           </span>
                           <span className='font-mono text-[11px]'>
                             <span className='text-emerald-600 dark:text-emerald-400'>
-                              {formatUSD(u.revenue_usd)}
+                              {formatBillingAmountUSD(u.revenue_usd, intlLocale, '0')}
                             </span>{' '}
-                            / {formatUSD(u.cost_usd)}
+                            / {formatBillingAmountUSD(u.cost_usd, intlLocale, '0')}
                           </span>
                         </div>
                         <div className='flex flex-col gap-0.5'>
@@ -1304,7 +1238,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                             {t('Gross Profit')}
                           </span>
                           <span className='font-mono text-[11px] font-semibold'>
-                            {formatUSD(u.gross_profit_usd)}
+                            {formatBillingAmountUSD(u.gross_profit_usd, intlLocale, '0')}
                           </span>
                         </div>
                       </div>
@@ -1318,7 +1252,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                             </span>
                             <span className='text-muted-foreground font-mono text-[11px]'>
                               {t('Lifetime Consumed')}:{' '}
-                              {formatUSD(u.lifetime_used_usd)}
+                              {formatBillingAmountUSD(u.lifetime_used_usd, intlLocale, '0')}
                             </span>
                           </div>
                           {u.model_breakdowns.length === 0 ? (
@@ -1339,7 +1273,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                       {bd.model}
                                     </span>
                                     <div className='flex items-center gap-1 font-mono'>
-                                      <span>{formatUSD(bd.profit_usd)}</span>
+                                      <span>{formatBillingAmountUSD(bd.profit_usd, intlLocale, '0')}</span>
                                       <Badge
                                         variant={getMarginBadgeVariant(
                                           bd.margin_pct
@@ -1358,9 +1292,9 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                       {formatNumber(bd.call_count, intlLocale)}{' '}
                                       {t('calls')} ·{' '}
                                       <span className='text-emerald-600 dark:text-emerald-400'>
-                                        {formatUSD(bd.revenue_usd)}
+                                        {formatBillingAmountUSD(bd.revenue_usd, intlLocale, '0')}
                                       </span>{' '}
-                                      / {formatUSD(bd.cost_usd)}
+                                      / {formatBillingAmountUSD(bd.cost_usd, intlLocale, '0')}
                                     </span>
                                   </div>
                                 </div>
@@ -1470,21 +1404,21 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                             <TableCell className='text-right font-mono text-xs'>
                               <div className='flex flex-col items-end'>
                                 <span className='font-semibold'>
-                                  {formatUSD(u.topup_total_usd)}
+                                  {formatBillingAmountUSD(u.topup_total_usd, intlLocale, '0')}
                                 </span>
                                 {u.online_topup_usd > 0 ||
                                 u.system_topup_usd > 0 ? (
                                   <span className='text-muted-foreground text-[10px]'>
                                     {t('Online')}:{' '}
-                                    {formatUSD(u.online_topup_usd)} |{' '}
+                                    {formatBillingAmountUSD(u.online_topup_usd, intlLocale, '0')} |{' '}
                                     {t('Redeem/Admin')}:{' '}
-                                    {formatUSD(u.system_topup_usd)}
+                                    {formatBillingAmountUSD(u.system_topup_usd, intlLocale, '0')}
                                   </span>
                                 ) : null}
                               </div>
                             </TableCell>
                             <TableCell className='text-right font-mono text-xs'>
-                              {formatUSD(u.remain_quota_usd)}
+                              {formatBillingAmountUSD(u.remain_quota_usd, intlLocale, '0')}
                             </TableCell>
                             <TableCell className='text-right font-mono text-xs'>
                               <div className='flex flex-col items-end'>
@@ -1499,13 +1433,13 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                               </div>
                             </TableCell>
                             <TableCell className='text-right font-mono text-xs font-medium text-emerald-600 dark:text-emerald-400'>
-                              {formatUSD(u.revenue_usd)}
+                              {formatBillingAmountUSD(u.revenue_usd, intlLocale, '0')}
                             </TableCell>
                             <TableCell className='text-right font-mono text-xs font-medium'>
-                              {formatUSD(u.cost_usd)}
+                              {formatBillingAmountUSD(u.cost_usd, intlLocale, '0')}
                             </TableCell>
                             <TableCell className='text-right font-mono text-xs font-medium'>
-                              {formatUSD(u.gross_profit_usd)}
+                              {formatBillingAmountUSD(u.gross_profit_usd, intlLocale, '0')}
                             </TableCell>
                             <TableCell className='text-right'>
                               <Badge
@@ -1532,7 +1466,7 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                     </span>
                                     <span className='text-muted-foreground font-mono text-[11px]'>
                                       {t('Lifetime Consumed')}:{' '}
-                                      {formatUSD(u.lifetime_used_usd)}
+                                      {formatBillingAmountUSD(u.lifetime_used_usd, intlLocale, '0')}
                                     </span>
                                   </div>
                                   {u.model_breakdowns.length === 0 ? (
@@ -1597,14 +1531,14 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                                               )}
                                             </TableCell>
                                             <TableCell className='py-1.5 text-right font-mono text-xs text-emerald-600 dark:text-emerald-400'>
-                                              {formatUSD(bd.revenue_usd)}
+                                              {formatBillingAmountUSD(bd.revenue_usd, intlLocale, '0')}
                                             </TableCell>
                                             <TableCell className='py-1.5 text-right font-mono text-xs'>
-                                              {formatUSD(bd.cost_usd)}
+                                              {formatBillingAmountUSD(bd.cost_usd, intlLocale, '0')}
                                             </TableCell>
                                             <TableCell className='py-1.5 text-right font-mono text-xs'>
                                               <span className='me-1.5'>
-                                                {formatUSD(bd.profit_usd)}
+                                                {formatBillingAmountUSD(bd.profit_usd, intlLocale, '0')}
                                               </span>
                                               <Badge
                                                 variant={getMarginBadgeVariant(

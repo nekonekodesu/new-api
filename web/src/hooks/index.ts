@@ -30,3 +30,4 @@ export { useDebounce } from './use-debounce'
 
 // Media Query
 export { useMediaQuery } from './use-media-query'
+export { useIsMobile, useIsCompactScreen } from './use-mobile'

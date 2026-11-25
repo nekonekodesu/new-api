@@ -74,31 +74,14 @@ import {
   type ModelHealthAnalysisRow,
 } from '@/features/channels/api'
 import { ChannelTypeLogo } from '@/features/channels/components/channel-type-badge'
-import { useMediaQuery } from '@/hooks'
+import { useIsCompactScreen } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatCompactNumber, formatNumber } from '@/lib/format'
 import { requireServerSuccess } from '@/lib/server-error-message'
+import { computeStartTimestamp, type TimeRangeKey } from '@/lib/time'
 import { cn } from '@/lib/utils'
 
-type TimeRangeKey = 'all' | '1d' | '7d' | '30d' | '90d'
 type ViewMode = 'models' | 'channels'
-
-function computeStartTimestamp(range: TimeRangeKey): number | undefined {
-  const nowSec = Math.floor(Date.now() / 1000)
-  switch (range) {
-    case '1d':
-      return nowSec - 86400
-    case '7d':
-      return nowSec - 7 * 86400
-    case '30d':
-      return nowSec - 30 * 86400
-    case '90d':
-      return nowSec - 90 * 86400
-    case 'all':
-    default:
-      return undefined
-  }
-}
 
 function formatTpsValue(val: number): string {
   if (!Number.isFinite(val) || val <= 0) {
@@ -187,7 +170,7 @@ function TpsDistributionBar(props: {
 
 export function ModelHealthPanel() {
   const { t, i18n } = useTranslation()
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
   const intlLocale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
 
   const [viewMode, setViewMode] = useState<ViewMode>('models')

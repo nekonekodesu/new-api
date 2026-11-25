@@ -48,7 +48,7 @@ import {
   SheetDescription,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
-import { formatQuota } from '@/lib/format'
+import { formatQuota, formatTimestampToDate } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { getServerMessage } from '@/lib/server-error-message'
 
@@ -60,7 +60,6 @@ import {
   deleteUserSubscription,
   resetUserSubscriptionsByPlan,
 } from '../../api'
-import { formatTimestamp } from '../../lib'
 import type { PlanRecord, UserSubscriptionRecord } from '../../types'
 
 interface Props {
@@ -323,10 +322,10 @@ export function UserSubscriptionsDialog(props: Props) {
                     return (
                       <div className='text-sm'>
                         <div>
-                          {t('Start')}: {formatTimestamp(sub.start_time)}
+                          {t('Start')}: {formatTimestampToDate(sub.start_time)}
                         </div>
                         <div>
-                          {t('End')}: {formatTimestamp(sub.end_time)}
+                          {t('End')}: {formatTimestampToDate(sub.end_time)}
                         </div>
                       </div>
                     )

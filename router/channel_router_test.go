@@ -45,6 +45,7 @@ func TestChannelStatusRoutesUseExpectedPermissions(t *testing.T) {
 	assertChannelRoutePermission(t, http.MethodPut, "/", authz.ChannelWrite, controller.UpdateChannel)
 	assertChannelRoutePermission(t, http.MethodGet, "/group_scheduling", authz.ChannelRead, controller.GetGroupScheduling)
 	assertChannelRoutePermission(t, http.MethodPut, "/group_scheduling", authz.ChannelWrite, controller.UpdateGroupScheduling)
+	assertChannelRoutePermission(t, http.MethodGet, "/telemetry", authz.ChannelRead, controller.GetChannelTelemetry)
 	assertChannelRoutePermission(t, http.MethodGet, "/model_price_table", authz.ChannelRead, controller.GetModelPriceTable)
 	assertChannelRoutePermission(t, http.MethodPost, "/model_price_table/apply", authz.ChannelWrite, controller.ApplyModelPriceTable)
 	assertChannelRoutePermission(t, http.MethodGet, "/cost_management/models", authz.ChannelRead, controller.GetModelCostAnalysis)
@@ -336,4 +337,22 @@ func TestChannelAndManagementAPIRoutesEndToEnd(t *testing.T) {
 	}))
 	assertOKSuccess("GET /api/network-security/bans", doAuthJSON(http.MethodGet, "/api/network-security/bans", nil))
 	assertOKSuccess("DELETE /api/network-security/bans", doAuthJSON(http.MethodDelete, "/api/network-security/bans", nil))
+
+	// 9. Read-only in-memory channel telemetry inspection endpoint (/api/channel/telemetry)
+	model.RecordChannelModelTelemetry(ch1.Id, "claude-sonnet-4-5", true, 0, false, 60, 30)
+	telRec := doAuthJSON(http.MethodGet, "/api/channel/telemetry?channel_id="+strconv.Itoa(ch1.Id)+"&model=claude-sonnet-4-5", nil)
+	require.Equal(t, http.StatusOK, telRec.Code)
+	var telResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Items []controller.ChannelTelemetryItem `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(telRec.Body.Bytes(), &telResp))
+	require.True(t, telResp.Success)
+	require.Len(t, telResp.Data.Items, 1)
+	assert.Equal(t, ch1.Id, telResp.Data.Items[0].ChannelID)
+	assert.Greater(t, telResp.Data.Items[0].EmaLatencyMs, 0.0)
+	assert.Greater(t, telResp.Data.Items[0].EmaTps, 0.0)
+	assert.Greater(t, telResp.Data.Items[0].Scores[model.SchedulingModeSpeed], 0.0)
 }

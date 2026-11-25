@@ -40,6 +40,7 @@ import {
   stringifyAdvancedCustomConfig,
   validateAdvancedCustomConfig,
 } from './advanced-custom'
+import { parseCommaSeparatedList } from './channel-utils'
 import { readTaskExtendPluginKeys } from './channel-plugin-extensions'
 import { supportsResponsesWebSocket } from './responses-websocket'
 
@@ -1058,24 +1059,12 @@ export function validateModelMapping(value: string): boolean {
 /**
  * Parse models string to array
  */
-export function parseModels(models: string): string[] {
-  if (!models) return []
-  return models
-    .split(',')
-    .map((m) => m.trim())
-    .filter((m) => m.length > 0)
-}
+export const parseModels = parseCommaSeparatedList
 
 /**
  * Parse groups string to array
  */
-export function parseGroups(groups: string): string[] {
-  if (!groups) return []
-  return groups
-    .split(',')
-    .map((g) => g.trim())
-    .filter((g) => g.length > 0)
-}
+export const parseGroups = parseCommaSeparatedList
 
 /**
  * Format models array to string

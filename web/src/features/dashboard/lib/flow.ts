@@ -32,6 +32,7 @@ import type {
   FlowSummary,
   ProcessedFlowData,
 } from '@/features/dashboard/types'
+import { formatNumber as formatIntlNumber } from '@/lib/format'
 
 import { getDashboardChartColors } from './charts'
 
@@ -833,9 +834,7 @@ function buildFlowGraph(
 }
 
 function formatNumber(value: number): string {
-  return Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(
-    value
-  )
+  return formatIntlNumber(value, undefined, { maximumFractionDigits: 0 })
 }
 
 function buildUserFilterOptions(

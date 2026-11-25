@@ -208,7 +208,7 @@ func loadPricingAdvancedCustomConfigs(enableAbilities []AbilityWithChannel) map[
 }
 
 func appendPricingEndpoint(endpoints []string, endpoint string) []string {
-	if endpoint == "" || common.StringsContains(endpoints, endpoint) {
+	if endpoint == "" || slices.Contains(endpoints, endpoint) {
 		return endpoints
 	}
 	return append(endpoints, endpoint)
@@ -283,7 +283,7 @@ func updatePricing() {
 		endpoints := modelSupportEndpointsStr[ability.Model]
 		channelTypes := getPricingEndpointTypesForAbility(ability, advancedCustomConfigs)
 		for _, channelType := range channelTypes {
-			if !common.StringsContains(endpoints, string(channelType)) {
+			if !slices.Contains(endpoints, string(channelType)) {
 				endpoints = append(endpoints, string(channelType))
 			}
 		}
@@ -385,7 +385,7 @@ func updatePricing() {
 		} else {
 			modelRatio, hasRatio, _ := ratio_setting.GetModelRatio(model)
 			completionRatio := ratio_setting.GetCompletionRatio(model)
-			if !hasRatio || isDefaultUnconfiguredModelRatio(model, 0, modelRatio, completionRatio) {
+			if !hasRatio || IsDefaultUnconfiguredModelRatio(model, 0, modelRatio, completionRatio) {
 				qt, mp, mr, cr, cacheR, createCacheR := ResolveAuthoritativeModelPricingUSD(model)
 				if qt == 1 && mp > 0 {
 					pricing.ModelPrice = mp

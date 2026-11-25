@@ -156,33 +156,42 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if !ok {
 		return nil, fmt.Errorf("expected Anthropic Messages request, got %T", result.Value)
 	}
-	if info != nil && info.ChannelSetting.SystemPrompt != "" {
-		if claudeRequest.System == nil {
-			claudeRequest.SetStringSystem(info.ChannelSetting.SystemPrompt)
-		} else if info.ChannelSetting.SystemPromptOverride {
-			if c != nil {
-				common.SetContextKey(c, constant.ContextKeySystemPromptOverride, true)
-			}
-			if claudeRequest.IsStringSystem() {
-				existing := strings.TrimSpace(claudeRequest.GetStringSystem())
-				if existing == "" {
-					claudeRequest.SetStringSystem(info.ChannelSetting.SystemPrompt)
-				} else {
-					claudeRequest.SetStringSystem(info.ChannelSetting.SystemPrompt + "\n" + existing)
-				}
-			} else {
-				systemContents := claudeRequest.ParseSystem()
-				newSystem := dto.ClaudeMediaMessage{Type: dto.ContentTypeText}
-				newSystem.SetText(info.ChannelSetting.SystemPrompt)
-				if len(systemContents) == 0 {
-					claudeRequest.System = []dto.ClaudeMediaMessage{newSystem}
-				} else {
-					claudeRequest.System = append([]dto.ClaudeMediaMessage{newSystem}, systemContents...)
-				}
-			}
-		}
-	}
+	ApplyClaudeSystemPrompt(c, info, claudeRequest)
 	return claudeRequest, nil
+}
+
+// ApplyClaudeSystemPrompt injects or prepends ChannelSetting.SystemPrompt onto a Claude request.
+func ApplyClaudeSystemPrompt(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) {
+	if info == nil || request == nil || info.ChannelSetting.SystemPrompt == "" {
+		return
+	}
+	if request.System == nil {
+		request.SetStringSystem(info.ChannelSetting.SystemPrompt)
+		return
+	}
+	if !info.ChannelSetting.SystemPromptOverride {
+		return
+	}
+	if c != nil {
+		common.SetContextKey(c, constant.ContextKeySystemPromptOverride, true)
+	}
+	if request.IsStringSystem() {
+		existing := strings.TrimSpace(request.GetStringSystem())
+		if existing == "" {
+			request.SetStringSystem(info.ChannelSetting.SystemPrompt)
+		} else {
+			request.SetStringSystem(info.ChannelSetting.SystemPrompt + "\n" + existing)
+		}
+		return
+	}
+	systemContents := request.ParseSystem()
+	newSystem := dto.ClaudeMediaMessage{Type: dto.ContentTypeText}
+	newSystem.SetText(info.ChannelSetting.SystemPrompt)
+	if len(systemContents) == 0 {
+		request.System = []dto.ClaudeMediaMessage{newSystem}
+	} else {
+		request.System = append([]dto.ClaudeMediaMessage{newSystem}, systemContents...)
+	}
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {

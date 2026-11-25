@@ -38,7 +38,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { toIntlLocale } from '@/i18n/languages'
 import {
-  formatBillingCurrencyFromUSD,
+  formatBillingAmountUSD,
   getCurrencyDisplay,
 } from '@/lib/currency'
 import { formatNumber } from '@/lib/format'
@@ -101,14 +101,6 @@ export function CostControlProfitPolicyCard(props: {
   const { t, i18n } = useTranslation()
   const intlLocale = toIntlLocale(i18n.resolvedLanguage ?? i18n.language)
   const currencyMeta = getBillingCurrencyMeta()
-
-  const formatMoney = (usdVal: number) =>
-    formatBillingCurrencyFromUSD(usdVal, {
-      digitsLarge: 2,
-      digitsSmall: 4,
-      abbreviate: false,
-      locale: intlLocale,
-    })
 
   const live = useMemo(
     () => evaluateRealtimeProfitWithPolicy(props.snapshot, props.policy),
@@ -208,7 +200,7 @@ export function CostControlProfitPolicyCard(props: {
             />
           </div>
           <div className='font-mono text-lg font-bold'>
-            {formatMoney(live.revenueUSD)}
+            {formatBillingAmountUSD(live.revenueUSD, intlLocale)}
           </div>
           <div className='text-muted-foreground flex items-center justify-between text-[11px]'>
             <span>
@@ -227,7 +219,7 @@ export function CostControlProfitPolicyCard(props: {
           </div>
           <div className='flex items-baseline justify-between gap-2'>
             <span className='font-mono text-lg font-bold'>
-              {formatMoney(live.costUSD)}
+              {formatBillingAmountUSD(live.costUSD, intlLocale)}
             </span>
             <span className='text-muted-foreground font-mono text-xs'>
               {live.costRatioPct.toFixed(1)}% / {props.policy.max_cost_ratio_pct}%
@@ -261,7 +253,7 @@ export function CostControlProfitPolicyCard(props: {
           </div>
           <div className={cn('font-mono text-lg font-bold', profitColorClass)}>
             {live.netProfitUSD > 0 ? '+' : ''}
-            {formatMoney(live.netProfitUSD)}
+            {formatBillingAmountUSD(live.netProfitUSD, intlLocale)}
           </div>
           <div className='flex items-center justify-between text-[11px]'>
             <span className='text-muted-foreground'>{t('Net Margin')}</span>
@@ -284,7 +276,7 @@ export function CostControlProfitPolicyCard(props: {
           </div>
           <div className={cn('font-mono text-lg font-bold', cushionColorClass)}>
             {live.profitCushionUSD > 0 ? '+' : ''}
-            {formatMoney(live.profitCushionUSD)}
+            {formatBillingAmountUSD(live.profitCushionUSD, intlLocale)}
           </div>
           <div className='text-muted-foreground truncate text-[11px]'>
             {live.isOverCost
@@ -292,7 +284,7 @@ export function CostControlProfitPolicyCard(props: {
                   pct: live.divertProbPct.toFixed(0),
                 })
               : t('Allowed Cost: {{amount}}', {
-                  amount: formatMoney(live.allowedCostUSD),
+                  amount: formatBillingAmountUSD(live.allowedCostUSD, intlLocale),
                 })}
           </div>
         </div>
@@ -490,14 +482,6 @@ export function CostControlUpstreamAllocationCard(props: {
     [props.enabledChannelIds]
   )
 
-  const formatMoney = (usdVal: number) =>
-    formatBillingCurrencyFromUSD(usdVal, {
-      digitsLarge: 2,
-      digitsSmall: 4,
-      abbreviate: false,
-      locale: intlLocale,
-    })
-
   const upstreamRows = useMemo(() => {
     const countsByUpstream = new Map<
       string,
@@ -689,7 +673,7 @@ export function CostControlUpstreamAllocationCard(props: {
                         variant='outline'
                         className='px-1.5 py-0 font-mono text-[10px]'
                       >
-                        {t('Bal')}: {formatMoney(row.src.balance_usd)}
+                        {t('Bal')}: {formatBillingAmountUSD(row.src.balance_usd, intlLocale)}
                       </Badge>
                     )}
                   </div>
@@ -757,7 +741,7 @@ export function CostControlUpstreamAllocationCard(props: {
                   </span>
                   <span className={cn('font-mono font-semibold', profitClass)}>
                     {row.netProfitUSD > 0 ? '+' : ''}
-                    {formatMoney(row.netProfitUSD)}
+                    {formatBillingAmountUSD(row.netProfitUSD, intlLocale)}
                   </span>
                 </div>
               </div>

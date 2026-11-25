@@ -16,6 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import {
+  formatJsonErrorDescription,
+  formatJsonForEditor as formatJsonForEditorShared,
+  normalizeJsonString,
+} from '../utils/json-parser'
+
 export function removeTrailingSlash(value: string) {
   const trimmed = value.trim()
   if (!trimmed) return ''
@@ -23,74 +29,11 @@ export function removeTrailingSlash(value: string) {
 }
 
 export function formatJsonForEditor(value: string) {
-  const trimmed = value.trim()
-  if (!trimmed) return ''
-  try {
-    return JSON.stringify(JSON.parse(trimmed), null, 2)
-  } catch {
-    return trimmed
-  }
+  return formatJsonForEditorShared(value, { trimOnError: true })
 }
 
 export function normalizeJsonForComparison(value: string) {
-  const trimmed = value.trim()
-  if (!trimmed) return ''
-  try {
-    return JSON.stringify(JSON.parse(trimmed))
-  } catch {
-    return trimmed
-  }
-}
-
-function extractErrorPosition(
-  error: unknown,
-  jsonString: string
-): { line?: number; column?: number } {
-  if (!(error instanceof Error)) return {}
-
-  const message = error.message
-  const positionMatch = message.match(/at position (\d+)/i)
-
-  if (positionMatch) {
-    const position = parseInt(positionMatch[1], 10)
-    const lines = jsonString.substring(0, position).split('\n')
-    return {
-      line: lines.length,
-      column: lines[lines.length - 1].length + 1,
-    }
-  }
-
-  const lineColMatch = message.match(/at line (\d+) column (\d+)/i)
-  if (lineColMatch) {
-    return {
-      line: parseInt(lineColMatch[1], 10),
-      column: parseInt(lineColMatch[2], 10),
-    }
-  }
-
-  return {}
-}
-
-function formatJsonError(error: unknown, jsonString: string): string {
-  if (!(error instanceof Error)) return 'Invalid JSON'
-
-  const position = extractErrorPosition(error, jsonString)
-  const message = error.message
-
-  const isMissingCommaError =
-    message.includes("Expected ','") ||
-    message.includes('Expected property name') ||
-    message.includes('Unexpected string')
-
-  if (position.line && position.column) {
-    let hint = ''
-    if (isMissingCommaError && position.line > 1) {
-      hint = ` (check line ${position.line - 1} for missing comma)`
-    }
-    return `Error at line ${position.line}, column ${position.column}: ${message}${hint}`
-  }
-
-  return message
+  return normalizeJsonString(value)
 }
 
 export function isValidJson(
@@ -123,6 +66,6 @@ export function getJsonError(
     }
     return null
   } catch (error) {
-    return formatJsonError(error, trimmed)
+    return formatJsonErrorDescription(error, trimmed) ?? 'Invalid JSON'
   }
 }

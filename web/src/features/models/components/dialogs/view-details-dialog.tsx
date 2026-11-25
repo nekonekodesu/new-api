@@ -48,7 +48,7 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { Separator } from '@/components/ui/separator'
-import { handleServerError } from '@/lib/handle-server-error'
+import { copyToClipboard } from '@/lib/copy-to-clipboard'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { getDeployment, listDeploymentContainers } from '../../api'
@@ -120,11 +120,10 @@ export function ViewDetailsDialog({
     if (deploymentId === null || deploymentId === undefined) {
       return
     }
-    try {
-      await navigator.clipboard.writeText(String(deploymentId))
+    if (await copyToClipboard(String(deploymentId))) {
       toast.success(t('Copied'))
-    } catch (error) {
-      handleServerError(error, t('Copy failed'))
+    } else {
+      toast.error(t('Copy failed'))
     }
   }
 

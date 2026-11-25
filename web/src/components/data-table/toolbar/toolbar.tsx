@@ -24,7 +24,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useDebounce, useMediaQuery } from '@/hooks'
+import { useDebounce, useIsCompactScreen } from '@/hooks'
 import { cn } from '@/lib/utils'
 
 import { DataTableFacetedFilter } from './faceted-filter'
@@ -160,7 +160,7 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [isSearchComposing, setIsSearchComposing] = useState(false)
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
 
   const filters = props.filters ?? []
   const hasExpandable = props.expandable != null

@@ -968,26 +968,29 @@ export async function updateGroupScheduling(payload: {
   return res.data
 }
 
-export interface ModelPriceTableRow {
+export interface ChannelUpstreamPricingBase {
   channel_id: number
   channel_name: string
   channel_type: number
-  channel_status: number
-  model: string
+  base_multiplier: number
+  currency: string
+  exchange_rate: number
   input_cost: number
   output_cost: number
   raw_input_cost?: number
   raw_output_cost?: number
+  quota_type: number
+}
+
+export interface ModelPriceTableRow extends ChannelUpstreamPricingBase {
+  channel_status: number
+  model: string
   model_ratio: number
   completion_ratio: number
   cache_ratio: number
   create_cache_ratio: number
   model_price: number
   raw_model_price?: number
-  quota_type: number
-  base_multiplier: number
-  currency: string
-  exchange_rate: number
   from_upstream: boolean
   availability: number
   tps_min: number
@@ -1450,21 +1453,10 @@ export interface ModelGroupPriceDetail {
   margin_pct: number
 }
 
-export interface ModelChannelUsageDetail {
-  channel_id: number
-  channel_name: string
-  channel_type: number
+export interface ModelChannelUsageDetail extends ChannelUpstreamPricingBase {
   upstream_group?: string
-  base_multiplier: number
   topup_multiplier?: number
-  currency: string
-  exchange_rate: number
   from_upstream?: boolean
-  quota_type: number
-  input_cost: number
-  output_cost: number
-  raw_input_cost?: number
-  raw_output_cost?: number
   call_count: number
   prompt_tokens: number
   completion_tokens: number

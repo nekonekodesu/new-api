@@ -27,6 +27,7 @@ import { Button } from '@/components/ui/button'
 import { IconBadge } from '@/components/ui/icon-badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
+import { copyToClipboard } from '@/lib/copy-to-clipboard'
 
 import type { AudioClip } from '../../types'
 
@@ -111,9 +112,10 @@ function AudioClipCard({ clip }: { clip: AudioClip }) {
               variant='outline'
               size='sm'
               className='h-7 gap-1 text-xs'
-              onClick={() => {
-                navigator.clipboard.writeText(audioUrl)
-                toast.success(t('Copied'))
+              onClick={async () => {
+                if (await copyToClipboard(audioUrl)) {
+                  toast.success(t('Copied'))
+                }
               }}
             >
               <Copy className='h-3 w-3' />

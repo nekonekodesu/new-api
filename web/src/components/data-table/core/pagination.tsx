@@ -34,6 +34,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatNumber } from '@/lib/format'
 import { cn, getPageNumbers } from '@/lib/utils'
 
 type DataTablePaginationProps<TData> = {
@@ -51,7 +53,8 @@ export function DataTablePagination<TData>({
   table,
   compact = false,
 }: DataTablePaginationProps<TData>) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const intlLocale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const pagination = table.getState().pagination
   const currentPage = pagination.pageIndex + 1
   const pageSize = pagination.pageSize
@@ -70,7 +73,7 @@ export function DataTablePagination<TData>({
         className='flex w-full min-w-0 flex-wrap items-center justify-between gap-2 text-sm'
       >
         <span className='text-muted-foreground min-w-0 [overflow-wrap:anywhere]'>
-          {t('Total:')} {totalRows.toLocaleString()}
+          {t('Total:')} {formatNumber(totalRows, intlLocale)}
         </span>
         <div className='flex items-center gap-2'>
           <Button
@@ -112,7 +115,7 @@ export function DataTablePagination<TData>({
         <div className='flex shrink-0 items-baseline gap-1.5 text-xs font-medium whitespace-nowrap sm:text-sm'>
           <span className='text-muted-foreground/80'>{t('Total:')}</span>
           <span className='text-foreground tabular-nums'>
-            {totalRows.toLocaleString()}
+            {formatNumber(totalRows, intlLocale)}
           </span>
         </div>
 

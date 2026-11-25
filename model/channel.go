@@ -208,14 +208,12 @@ func (c *ChannelInfo) Scan(value any) error {
 	return common.Unmarshal(jsonScanBytes(value), c)
 }
 
-func (channel *Channel) GetKeys() []string {
-	if channel.Key == "" {
+// ParseChannelKeys splits a stored channel key string supporting both JSON arrays and newline lists.
+func ParseChannelKeys(keyStr string) []string {
+	if keyStr == "" {
 		return []string{}
 	}
-	if len(channel.Keys) > 0 {
-		return channel.Keys
-	}
-	trimmed := strings.TrimSpace(channel.Key)
+	trimmed := strings.TrimSpace(keyStr)
 	// If the key starts with '[', try to parse it as a JSON array (e.g., for Vertex AI scenarios)
 	if strings.HasPrefix(trimmed, "[") {
 		var arr []json.RawMessage
@@ -227,9 +225,17 @@ func (channel *Channel) GetKeys() []string {
 			return res
 		}
 	}
-	// Otherwise, fall back to splitting by newline
-	keys := strings.Split(strings.Trim(channel.Key, "\n"), "\n")
-	return keys
+	return strings.Split(strings.Trim(keyStr, "\n"), "\n")
+}
+
+func (channel *Channel) GetKeys() []string {
+	if channel.Key == "" {
+		return []string{}
+	}
+	if len(channel.Keys) > 0 {
+		return channel.Keys
+	}
+	return ParseChannelKeys(channel.Key)
 }
 
 func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
@@ -352,7 +358,7 @@ func (channel *Channel) GetOtherInfo() map[string]any {
 }
 
 func (channel *Channel) SetOtherInfo(otherInfo map[string]any) {
-	otherInfoBytes, err := json.Marshal(otherInfo)
+	otherInfoBytes, err := common.Marshal(otherInfo)
 	if err != nil {
 		common.SysLog(common.LogText("failed to marshal other info: channel_id=%d, tag=%s, name=%s, error=%v", channel.Id, channel.GetTag(), channel.Name, err))
 		return
@@ -645,23 +651,7 @@ func (channel *Channel) Update() error {
 		if existing, err := GetChannelById(channel.Id, true); err == nil {
 			keyStr = existing.Key
 		}
-		// Parse the key list (supports newline separation or JSON array)
-		keys := []string{}
-		if keyStr != "" {
-			trimmed := strings.TrimSpace(keyStr)
-			if strings.HasPrefix(trimmed, "[") {
-				var arr []json.RawMessage
-				if err := common.Unmarshal([]byte(trimmed), &arr); err == nil {
-					keys = make([]string, len(arr))
-					for i, v := range arr {
-						keys[i] = string(v)
-					}
-				}
-			}
-			if len(keys) == 0 { // fallback to newline split
-				keys = strings.Split(strings.Trim(keyStr, "\n"), "\n")
-			}
-		}
+		keys := ParseChannelKeys(keyStr)
 		channel.ChannelInfo.MultiKeySize = len(keys)
 		// Clean up status data that exceeds the new key count to prevent index out of range
 		if channel.ChannelInfo.MultiKeyStatusList != nil {

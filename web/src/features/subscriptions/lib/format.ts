@@ -18,8 +18,6 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { TFunction } from 'i18next'
 
-import dayjs from '@/lib/dayjs'
-
 import type { SubscriptionPlan } from '../types'
 
 export function formatDuration(
@@ -60,9 +58,4 @@ export function formatResetPeriod(
     return `${seconds} ${t('seconds')}`
   }
   return t('No Reset')
-}
-
-export function formatTimestamp(ts: number): string {
-  if (!ts) return '-'
-  return dayjs(ts * 1000).format('YYYY-MM-DD HH:mm:ss')
 }

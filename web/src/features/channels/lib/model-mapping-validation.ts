@@ -19,18 +19,12 @@ For commercial licensing, please contact support@quantumnous.com
 // ============================================================================
 // Model Mapping Validation Utilities
 // ============================================================================
+import { parseCommaSeparatedList } from './channel-utils'
 
 /**
  * Parse models string to array
  */
-export function parseModelsString(modelsStr: string): string[] {
-  return modelsStr
-    ? modelsStr
-        .split(',')
-        .map((m) => m.trim())
-        .filter(Boolean)
-    : []
-}
+export const parseModelsString = parseCommaSeparatedList
 
 /**
  * Format models array to string

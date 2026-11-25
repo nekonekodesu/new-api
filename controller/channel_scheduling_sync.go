@@ -432,6 +432,92 @@ func UpdateGroupScheduling(c *gin.Context) {
 	GetGroupScheduling(c)
 }
 
+type ChannelTelemetryItem struct {
+	model.ChannelModelTelemetrySnapshot
+	ChannelName string             `json:"channel_name,omitempty"`
+	Scores      map[string]float64 `json:"scores,omitempty"`
+}
+
+func GetChannelTelemetry(c *gin.Context) {
+	rawChannelID := strings.TrimSpace(c.Query("channel_id"))
+	channelID := 0
+	if rawChannelID != "" {
+		parsedID, err := strconv.Atoi(rawChannelID)
+		if err != nil || parsedID <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		channelID = parsedID
+	}
+	modelName := strings.TrimSpace(c.Query("model"))
+	groupFilter := strings.TrimSpace(c.Query("group"))
+
+	chByID := make(map[int]*model.Channel)
+	if model.DB != nil {
+		var channels []*model.Channel
+		if err := model.DB.Omit("key").Order("id ASC").Find(&channels).Error; err == nil {
+			for _, ch := range channels {
+				if ch != nil {
+					chByID[ch.Id] = ch
+				}
+			}
+		}
+	}
+
+	snapshots := model.ListChannelModelTelemetry(channelID, modelName)
+	if channelID > 0 && modelName != "" && len(snapshots) == 0 {
+		snapshots = []model.ChannelModelTelemetrySnapshot{
+			model.GetChannelModelTelemetry(channelID, modelName),
+		}
+	}
+
+	items := make([]ChannelTelemetryItem, 0, len(snapshots))
+	for _, snap := range snapshots {
+		ch := chByID[snap.ChannelID]
+		if groupFilter != "" && ch != nil {
+			inGroup := false
+			for g := range strings.SplitSeq(ch.Group, ",") {
+				if strings.TrimSpace(g) == groupFilter {
+					inGroup = true
+					break
+				}
+			}
+			if !inGroup {
+				continue
+			}
+		} else if groupFilter != "" && ch == nil {
+			continue
+		}
+
+		evalCh := ch
+		if evalCh == nil {
+			evalCh = &model.Channel{Id: snap.ChannelID}
+		}
+		item := ChannelTelemetryItem{
+			ChannelModelTelemetrySnapshot: snap,
+			Scores: map[string]float64{
+				model.SchedulingModeSpeed:        model.ScoreChannelForSchedule(model.SchedulingModeSpeed, evalCh, snap.Model),
+				model.SchedulingModeBBR:          model.ScoreChannelForSchedule(model.SchedulingModeBBR, evalCh, snap.Model),
+				model.SchedulingModeAvailability: model.ScoreChannelForSchedule(model.SchedulingModeAvailability, evalCh, snap.Model),
+				model.SchedulingModeLowerCost:    model.ScoreChannelForSchedule(model.SchedulingModeLowerCost, evalCh, snap.Model),
+			},
+		}
+		if ch != nil {
+			item.ChannelName = ch.Name
+		}
+		items = append(items, item)
+	}
+
+	resp := gin.H{
+		"items": items,
+	}
+	if groupFilter != "" {
+		resp["group"] = groupFilter
+		resp["mode"] = model.GetGroupSchedulingMode(groupFilter)
+	}
+	common.ApiSuccess(c, resp)
+}
+
 func buildModelPriceTableRows(keyword string) ([]ModelPriceTableRow, model.ModelPriceSyncConfig, error) {
 	var channels []*model.Channel
 	if err := model.DB.Omit("key").Order("id ASC").Find(&channels).Error; err != nil {
@@ -477,7 +563,7 @@ func buildModelPriceTableRows(keyword string) ([]ModelPriceTableRow, model.Model
 			}
 			telemetry := model.GetChannelModelTelemetry(ch.Id, m)
 
-			_, _, rawInCost, rawOutCost, effCurr, effRate := effectiveEntryCostsUSD(costEntry, cfg)
+			_, _, rawInCost, rawOutCost, effCurr, effRate := model.ResolveEffectiveEntryCostsUSD(costEntry, cfg)
 			unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(effCurr, effRate)
 
 			// Only synced upstream prices compete first for the selected price,
@@ -487,19 +573,19 @@ func buildModelPriceTableRows(keyword string) ([]ModelPriceTableRow, model.Model
 			if mult <= 0 {
 				mult = 1.0
 			}
-			baseRawIn := roundMoney6(rawInCost / mult)
-			baseRawOut := roundMoney6(rawOutCost / mult)
-			baseInUSD := roundMoney6(baseRawIn * unitMult)
-			baseOutUSD := roundMoney6(baseRawOut * unitMult)
+			baseRawIn := common.RoundNonNegativeFloat6(rawInCost / mult)
+			baseRawOut := common.RoundNonNegativeFloat6(rawOutCost / mult)
+			baseInUSD := common.RoundNonNegativeFloat6(baseRawIn * unitMult)
+			baseOutUSD := common.RoundNonNegativeFloat6(baseRawOut * unitMult)
 			basePriceScore := baseInUSD + baseOutUSD
 			if costEntry.QuotaType == 1 && (costEntry.RawModelPrice > 0 || costEntry.ModelPrice > 0) {
 				rawP := costEntry.RawModelPrice
 				if rawP <= 0 {
 					rawP = costEntry.ModelPrice
 				}
-				baseRawIn = roundMoney6(rawP)
+				baseRawIn = common.RoundNonNegativeFloat6(rawP)
 				baseRawOut = baseRawIn
-				baseInUSD = roundMoney6(rawP * unitMult)
+				baseInUSD = common.RoundNonNegativeFloat6(rawP * unitMult)
 				baseOutUSD = baseInUSD
 				basePriceScore = baseInUSD
 			}
@@ -507,7 +593,7 @@ func buildModelPriceTableRows(keyword string) ([]ModelPriceTableRow, model.Model
 				highestAnyScoreByModel[m] = basePriceScore
 				highestAnyChByModel[m] = ch.Id
 			}
-			if costEntry.FromUpstream && !isUnconfiguredDefaultModelRatio(m, costEntry.QuotaType, costEntry.ModelRatio, costEntry.CompletionRatio) {
+			if costEntry.FromUpstream && !model.IsDefaultUnconfiguredModelRatio(m, costEntry.QuotaType, costEntry.ModelRatio, costEntry.CompletionRatio) {
 				if prevBest, exists := highestUpstreamScoreByModel[m]; !exists || basePriceScore > prevBest {
 					highestUpstreamScoreByModel[m] = basePriceScore
 					highestUpstreamChByModel[m] = ch.Id
@@ -574,20 +660,6 @@ func GetModelPriceTable(c *gin.Context) {
 	})
 }
 
-func isUnconfiguredDefaultModelRatio(modelName string, quotaType int, modelRatio float64, completionRatio float64) bool {
-	if quotaType != 0 {
-		return false
-	}
-	if math.Abs(modelRatio-37.5) > 1e-6 {
-		return false
-	}
-	if completionRatio != 0 && math.Abs(completionRatio-1.0) > 1e-6 {
-		return false
-	}
-	lower := strings.ToLower(strings.TrimSpace(modelName))
-	return !strings.HasPrefix(lower, "gpt-4.5")
-}
-
 func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int, error) {
 	costMap := model.GetAllChannelModelCosts()
 	if len(costMap) == 0 {
@@ -606,7 +678,7 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 		for m, entry := range chMap {
 			allSeenModels[m] = true
 			if entry.FromUpstream {
-				if isUnconfiguredDefaultModelRatio(m, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
+				if model.IsDefaultUnconfiguredModelRatio(m, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
 					continue
 				}
 				byModel[m] = append(byModel[m], entry)
@@ -629,10 +701,10 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 	// with sensible family fallbacks so GetModelRatio does not fall back to 37.5 ($75/1M).
 	defaultRatios := ratio_setting.GetDefaultModelRatioMap()
 	for m, r := range modelRatioCopy {
-		if _, inDefault := defaultRatios[m]; !inDefault && isUnconfiguredDefaultModelRatio(m, 0, r, compRatioCopy[m]) {
+		if _, inDefault := defaultRatios[m]; !inDefault && model.IsDefaultUnconfiguredModelRatio(m, 0, r, compRatioCopy[m]) {
 			mr, cr := model.InferSensibleFallbackModelPricing(m)
-			modelRatioCopy[m] = roundRatioValue(mr)
-			compRatioCopy[m] = roundRatioValue(cr)
+			modelRatioCopy[m] = common.RoundNonNegativeFloat6(mr)
+			compRatioCopy[m] = common.RoundNonNegativeFloat6(cr)
 			updatedCount++
 		}
 	}
@@ -643,10 +715,10 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 		if modelPriceCopy[m] > 0 {
 			continue
 		}
-		if r, hasR := modelRatioCopy[m]; !hasR || r <= 0 || isUnconfiguredDefaultModelRatio(m, 0, r, compRatioCopy[m]) {
+		if r, hasR := modelRatioCopy[m]; !hasR || r <= 0 || model.IsDefaultUnconfiguredModelRatio(m, 0, r, compRatioCopy[m]) {
 			mr, cr := model.InferSensibleFallbackModelPricing(m)
-			modelRatioCopy[m] = roundRatioValue(mr)
-			compRatioCopy[m] = roundRatioValue(cr)
+			modelRatioCopy[m] = common.RoundNonNegativeFloat6(mr)
+			compRatioCopy[m] = common.RoundNonNegativeFloat6(cr)
 			updatedCount++
 		}
 	}
@@ -671,7 +743,7 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 			bestIdx := 0
 			bestScore := -1.0
 			for i := range entries {
-				inUSD, outUSD, _, _, effCurr, effRate := effectiveEntryCostsUSD(entries[i], cfg)
+				inUSD, outUSD, _, _, effCurr, effRate := model.ResolveEffectiveEntryCostsUSD(entries[i], cfg)
 				unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(effCurr, effRate)
 				mult := entries[i].BaseMultiplier
 				if mult <= 0 {
@@ -696,7 +768,7 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 			continue
 		}
 		// Restore the chosen channel's price to 1x first, then multiply by the central currency multiplier.
-		_, _, rawInCost, rawOutCost, effCurr, effRate := effectiveEntryCostsUSD(*chosen, cfg)
+		_, _, rawInCost, rawOutCost, effCurr, effRate := model.ResolveEffectiveEntryCostsUSD(*chosen, cfg)
 		unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(effCurr, effRate)
 		mult := chosen.BaseMultiplier
 		if mult <= 0 {
@@ -713,32 +785,32 @@ func applyAuthoritativeModelPricesToSystem(cfg model.ModelPriceSyncConfig) (int,
 		if rawInCost > 0 {
 			baseModelRatio = rawInCost / (2.0 * mult)
 		}
-		usdBasePrice := roundRatioValue(basePrice * unitMult)
-		usdBaseModelRatio := roundRatioValue(baseModelRatio * unitMult)
+		usdBasePrice := common.RoundNonNegativeFloat6(basePrice * unitMult)
+		usdBaseModelRatio := common.RoundNonNegativeFloat6(baseModelRatio * unitMult)
 		compRatio := chosen.CompletionRatio
 		if compRatio <= 0 && rawInCost > 0 && rawOutCost > 0 {
 			compRatio = rawOutCost / rawInCost
 		}
 		if chosen.QuotaType == 1 && usdBasePrice > 0 {
 			modelPriceCopy[m] = usdBasePrice
-			if isUnconfiguredDefaultModelRatio(m, 0, modelRatioCopy[m], compRatioCopy[m]) {
+			if model.IsDefaultUnconfiguredModelRatio(m, 0, modelRatioCopy[m], compRatioCopy[m]) {
 				delete(modelRatioCopy, m)
 			}
 			updatedCount++
 		} else if chosen.QuotaType == 0 && usdBaseModelRatio > 0 {
 			modelRatioCopy[m] = usdBaseModelRatio
 			if compRatio > 0 {
-				compRatioCopy[m] = roundRatioValue(compRatio)
+				compRatioCopy[m] = common.RoundNonNegativeFloat6(compRatio)
 			}
 			delete(modelPriceCopy, m)
 			updatedCount++
 		}
 		if chosen.CacheRatio > 0 {
-			cacheRatioCopy[m] = roundRatioValue(chosen.CacheRatio)
+			cacheRatioCopy[m] = common.RoundNonNegativeFloat6(chosen.CacheRatio)
 			cacheUpdated = true
 		}
 		if chosen.CreateCacheRatio > 0 {
-			createCacheRatioCopy[m] = roundRatioValue(chosen.CreateCacheRatio)
+			createCacheRatioCopy[m] = common.RoundNonNegativeFloat6(chosen.CreateCacheRatio)
 			cacheUpdated = true
 		}
 	}
@@ -1057,9 +1129,9 @@ type newAPIUpstreamPricingResponse struct {
 }
 
 func fetchNewAPIUpstreamPricing(ctx context.Context, channel *model.Channel) (*newAPIUpstreamPricingResponse, error) {
-	baseURL := cleanUpstreamAPIBaseURL(channel.GetBaseURL(), "")
+	baseURL := model.CleanUpstreamAPIBaseURL(channel.GetBaseURL(), "")
 	if baseURL == "" {
-		baseURL = cleanUpstreamAPIBaseURL(constant.GetChannelBaseURL(channel.Type), "")
+		baseURL = model.CleanUpstreamAPIBaseURL(constant.GetChannelBaseURL(channel.Type), "")
 	}
 	if baseURL == "" {
 		return nil, fmt.Errorf("channel #%d base URL is empty", channel.Id)
@@ -1128,141 +1200,28 @@ type upstreamBasePricing struct {
 	Priced           bool
 }
 
-var (
-	billingExprVarFirstCoeffRe = regexp.MustCompile(`\b([a-z][a-z0-9_]*)\s*\*\s*(\d+(?:\.\d+)?)`)
-	billingExprVarLastCoeffRe  = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*\*\s*\b([a-z][a-z0-9_]*)`)
-	billingExprFixedPriceRe    = regexp.MustCompile(`\bfixed\(\s*(\d+(?:\.\d+)?)\s*\)`)
-	billingExprUnitVarFirstRe  = regexp.MustCompile(`(?:u\(\s*"(?:image_count|seconds|count)"\s*\)|\b(?:image_count|seconds)\b)\s*\*\s*(\d+(?:\.\d+)?)`)
-	billingExprUnitVarLastRe   = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*\*\s*(?:u\(\s*"(?:image_count|seconds|count)"\s*\)|\b(?:image_count|seconds)\b)`)
-)
-
-var billingExprPricingVars = []string{"p", "c", "cr", "cc", "cc1h"}
-
-func parseBillingExprTierCoefficients(arg string) map[string]float64 {
-	coeffs := make(map[string]float64)
-	for _, match := range billingExprVarFirstCoeffRe.FindAllStringSubmatch(arg, -1) {
-		name := match[1]
-		if !slices.Contains(billingExprPricingVars, name) {
-			continue
-		}
-		if _, exists := coeffs[name]; !exists {
-			if value, err := strconv.ParseFloat(match[2], 64); err == nil {
-				coeffs[name] = value
-			}
-		}
-	}
-	for _, match := range billingExprVarLastCoeffRe.FindAllStringSubmatch(arg, -1) {
-		name := match[2]
-		if !slices.Contains(billingExprPricingVars, name) {
-			continue
-		}
-		if _, exists := coeffs[name]; !exists {
-			if value, err := strconv.ParseFloat(match[1], 64); err == nil {
-				coeffs[name] = value
-			}
-		}
-	}
-	return coeffs
-}
-
-// extractBillingExprTierArgs returns the coefficient expression of every
-// tier("name", ...) segment inside a billing expression.
-func extractBillingExprTierArgs(expr string) []string {
-	var args []string
-	for {
-		idx := strings.Index(expr, `tier("`)
-		if idx < 0 {
-			return args
-		}
-		expr = expr[idx+len(`tier("`):]
-		nameEnd := strings.Index(expr, `"`)
-		if nameEnd < 0 {
-			return args
-		}
-		rest := strings.TrimLeft(expr[nameEnd+1:], " \t")
-		if !strings.HasPrefix(rest, ",") {
-			expr = expr[nameEnd+1:]
-			continue
-		}
-		body := rest[1:]
-		end := strings.Index(body, ")")
-		if end < 0 {
-			return args
-		}
-		args = append(args, strings.TrimSpace(body[:end]))
-		expr = body[end:]
-	}
-}
-
-func chooseUpstreamBaseTier(tiers []map[string]float64) map[string]float64 {
-	var base map[string]float64
-	for _, coeffs := range tiers {
-		if p, ok := coeffs["p"]; ok && p > 0 {
-			if base == nil || p < base["p"] {
-				base = coeffs
-			}
-		}
-	}
-	return base
-}
-
-func extractUpstreamExprUnitPrice(expr string) (float64, bool) {
-	best := 0.0
-	consider := func(raw string) {
-		if v, err := strconv.ParseFloat(raw, 64); err == nil && v > 0 {
-			if best == 0 || v < best {
-				best = v
-			}
-		}
-	}
-	for _, m := range billingExprFixedPriceRe.FindAllStringSubmatch(expr, -1) {
-		consider(m[1])
-	}
-	for _, m := range billingExprUnitVarFirstRe.FindAllStringSubmatch(expr, -1) {
-		consider(m[1])
-	}
-	for _, m := range billingExprUnitVarLastRe.FindAllStringSubmatch(expr, -1) {
-		consider(m[1])
-	}
-	return best, best > 0
-}
-
 func deriveUpstreamBasePricing(item newAPIUpstreamPricingItem) upstreamBasePricing {
 	if strings.EqualFold(strings.TrimSpace(item.BillingMode), billing_setting.BillingModeTieredExpr) {
-		tiersRaw := extractBillingExprTierArgs(item.BillingExpr)
-		tiers := make([]map[string]float64, 0, len(tiersRaw))
-		for _, arg := range tiersRaw {
-			tiers = append(tiers, parseBillingExprTierCoefficients(arg))
-		}
-		base := chooseUpstreamBaseTier(tiers)
-		if base != nil {
-			p := base["p"]
-			modelRatio := p / 2.0
-			completion := 1.0
-			if c, ok := base["c"]; ok && c > 0 {
-				completion = c / p
+		if mr, cr, cacheR, createCacheR, hasCache, hasCreateCache, ok := model.ExtractExprBaseTokenPricing(item.BillingExpr); ok {
+			if !hasCache {
+				cacheR = 1.0
 			}
-			cache := 1.0
-			if cr, ok := base["cr"]; ok {
-				cache = cr / p
-			}
-			createCache := 1.0
-			if cc, ok := base["cc"]; ok {
-				createCache = cc / p
+			if !hasCreateCache {
+				createCacheR = 1.0
 			}
 			return upstreamBasePricing{
 				QuotaType:        0,
-				ModelRatio:       roundRatioValue(modelRatio),
-				CompletionRatio:  roundRatioValue(completion),
-				CacheRatio:       roundRatioValue(cache),
-				CreateCacheRatio: roundRatioValue(createCache),
+				ModelRatio:       common.RoundNonNegativeFloat6(mr),
+				CompletionRatio:  common.RoundNonNegativeFloat6(cr),
+				CacheRatio:       common.RoundNonNegativeFloat6(cacheR),
+				CreateCacheRatio: common.RoundNonNegativeFloat6(createCacheR),
 				Priced:           true,
 			}
 		}
-		if unitPrice, ok := extractUpstreamExprUnitPrice(item.BillingExpr); ok {
+		if unitPrice, ok := model.ExtractExprUnitPrice(item.BillingExpr); ok {
 			return upstreamBasePricing{
 				QuotaType:       1,
-				ModelPrice:      roundRatioValue(unitPrice),
+				ModelPrice:      common.RoundNonNegativeFloat6(unitPrice),
 				CompletionRatio: 1.0,
 				Priced:          true,
 			}
@@ -1272,7 +1231,7 @@ func deriveUpstreamBasePricing(item newAPIUpstreamPricingItem) upstreamBasePrici
 	if item.QuotaType == 1 && item.ModelPrice != nil && *item.ModelPrice >= 0 {
 		return upstreamBasePricing{
 			QuotaType:       1,
-			ModelPrice:      roundRatioValue(*item.ModelPrice),
+			ModelPrice:      common.RoundNonNegativeFloat6(*item.ModelPrice),
 			CompletionRatio: 1.0,
 			Priced:          true,
 		}
@@ -1294,6 +1253,43 @@ func deriveUpstreamBasePricing(item newAPIUpstreamPricingItem) upstreamBasePrici
 	}
 	base.Priced = item.ModelRatio != nil
 	return base
+}
+
+func buildUpstreamChannelModelCostEntry(channelID int, channelName string, channelType int, modelName string, base upstreamBasePricing, groupRatio float64, currency string, effRate float64, unitMult float64, updatedAt int64) (model.ChannelModelCostEntry, bool) {
+	entry := model.ChannelModelCostEntry{
+		ChannelID:        channelID,
+		ChannelName:      channelName,
+		ChannelType:      channelType,
+		Model:            modelName,
+		ModelRatio:       common.RoundNonNegativeFloat6(base.ModelRatio),
+		CompletionRatio:  base.CompletionRatio,
+		CacheRatio:       base.CacheRatio,
+		CreateCacheRatio: base.CreateCacheRatio,
+		BaseMultiplier:   groupRatio,
+		Currency:         currency,
+		ExchangeRate:     effRate,
+		FromUpstream:     true,
+		UpdatedAt:        updatedAt,
+	}
+	if base.QuotaType == 1 && base.ModelPrice >= 0 {
+		entry.QuotaType = 1
+		entry.RawModelPrice = common.RoundNonNegativeFloat6(base.ModelPrice)
+		entry.ModelPrice = common.RoundNonNegativeFloat6(base.ModelPrice)
+		entry.RawInputCost = common.RoundNonNegativeFloat6(entry.RawModelPrice * groupRatio)
+		entry.RawOutputCost = entry.RawInputCost
+		entry.InputCost = common.RoundNonNegativeFloat6(entry.RawInputCost * unitMult)
+		entry.OutputCost = entry.InputCost
+		return entry, true
+	}
+	if base.Priced && !model.IsDefaultUnconfiguredModelRatio(modelName, 0, base.ModelRatio, base.CompletionRatio) {
+		entry.QuotaType = 0
+		entry.RawInputCost = common.RoundNonNegativeFloat6(base.ModelRatio * 2.0 * groupRatio)
+		entry.RawOutputCost = common.RoundNonNegativeFloat6(entry.RawInputCost * base.CompletionRatio)
+		entry.InputCost = common.RoundNonNegativeFloat6(entry.RawInputCost * unitMult)
+		entry.OutputCost = common.RoundNonNegativeFloat6(entry.InputCost * base.CompletionRatio)
+		return entry, true
+	}
+	return model.ChannelModelCostEntry{}, false
 }
 
 func derefNonNegative(value *float64) float64 {
@@ -1628,7 +1624,7 @@ func ExecuteChannelUpstreamSync(
 		if !src.Enabled || strings.TrimSpace(src.BaseURL) == "" || strings.TrimSpace(src.AccessToken) == "" {
 			continue
 		}
-		normHost := normalizeUpstreamBaseURL(src.BaseURL)
+		normHost := strings.ToLower(model.CleanUpstreamAPIBaseURL(src.BaseURL, ""))
 		if normHost == "" {
 			continue
 		}
@@ -1683,7 +1679,7 @@ func ExecuteChannelUpstreamSync(
 		confirmedEmptyNewAPIGroup := false
 
 		if ch.Type == constant.ChannelTypeNewAPI {
-			cleanHost := cleanUpstreamAPIBaseURL(ch.GetBaseURL(), "")
+			cleanHost := model.CleanUpstreamAPIBaseURL(ch.GetBaseURL(), "")
 			var pricingResp *newAPIUpstreamPricingResponse
 			var pErr error
 			if cleanHost != "" {
@@ -1711,24 +1707,21 @@ func ExecuteChannelUpstreamSync(
 				resolvedRate := 1.0
 				if chCurr != "" && chCurr != "AUTO" {
 					resolvedCurrency = chCurr
-					resolvedRate = resolveEffectiveUpstreamExchangeRate(chCurr, chRate)
+					resolvedRate = model.ResolveEffectiveChannelExchangeRate(chCurr, chRate)
 				} else {
 					upID, _ := model.ResolveChannelUpstreamSource(ch, nil, cfg)
 					if upID != "" && upID != model.DirectUpstreamSourceID {
-						for _, acc := range cfg.UpstreamAccounts {
-							if model.UpstreamAccountKey(acc) == upID {
-								accCurr := strings.ToUpper(strings.TrimSpace(acc.Currency))
-								if accCurr != "" && accCurr != "AUTO" {
-									resolvedCurrency = accCurr
-								}
-								if chRate <= 0 && acc.ExchangeRate > 0 {
-									chRate = acc.ExchangeRate
-								}
-								break
+						if acc, ok := model.FindUpstreamAccountByKey(cfg, upID); ok {
+							accCurr := strings.ToUpper(strings.TrimSpace(acc.Currency))
+							if accCurr != "" && accCurr != "AUTO" {
+								resolvedCurrency = accCurr
+							}
+							if chRate <= 0 && acc.ExchangeRate > 0 {
+								chRate = acc.ExchangeRate
 							}
 						}
 					}
-					resolvedRate = resolveEffectiveUpstreamExchangeRate(resolvedCurrency, chRate)
+					resolvedRate = model.ResolveEffectiveChannelExchangeRate(resolvedCurrency, chRate)
 				}
 				if resolvedRate <= 0 {
 					resolvedRate = 1.0
@@ -1777,38 +1770,9 @@ func ExecuteChannelUpstreamSync(
 					// Preserve the unscaled 1x base ModelRatio / ModelPrice for system pricing,
 					// and convert only the channel's actual cost (InputCost / OutputCost) into local quota units via unitMult.
 					base := deriveUpstreamBasePricing(pItem)
-					effRate := resolveEffectiveUpstreamExchangeRate(resolvedCurrency, resolvedRate)
-					unitMult := resolveUpstreamUnitToLocalUnitMultiplier(resolvedCurrency, effRate)
-					entry := model.ChannelModelCostEntry{
-						ChannelID:        ch.Id,
-						ChannelName:      ch.Name,
-						ChannelType:      ch.Type,
-						Model:            mName,
-						ModelRatio:       roundRatioValue(base.ModelRatio),
-						CompletionRatio:  base.CompletionRatio,
-						CacheRatio:       base.CacheRatio,
-						CreateCacheRatio: base.CreateCacheRatio,
-						BaseMultiplier:   upstreamGroupRatio,
-						Currency:         resolvedCurrency,
-						ExchangeRate:     effRate,
-						FromUpstream:     true,
-						UpdatedAt:        now,
-					}
-					if base.QuotaType == 1 && base.ModelPrice >= 0 {
-						entry.QuotaType = 1
-						entry.RawModelPrice = roundRatioValue(base.ModelPrice)
-						entry.ModelPrice = roundRatioValue(base.ModelPrice)
-						entry.RawInputCost = roundRatioValue(entry.RawModelPrice * upstreamGroupRatio)
-						entry.RawOutputCost = entry.RawInputCost
-						entry.InputCost = roundRatioValue(entry.RawInputCost * unitMult)
-						entry.OutputCost = entry.InputCost
-						costEntries[mName] = entry
-					} else if base.Priced && !isUnconfiguredDefaultModelRatio(mName, 0, base.ModelRatio, base.CompletionRatio) {
-						entry.QuotaType = 0
-						entry.RawInputCost = roundRatioValue(base.ModelRatio * 2.0 * upstreamGroupRatio)
-						entry.RawOutputCost = roundRatioValue(entry.RawInputCost * base.CompletionRatio)
-						entry.InputCost = roundRatioValue(entry.RawInputCost * unitMult)
-						entry.OutputCost = roundRatioValue(entry.InputCost * base.CompletionRatio)
+					effRate := model.ResolveEffectiveChannelExchangeRate(resolvedCurrency, resolvedRate)
+					unitMult := model.ResolveUpstreamToQuotaUnitMultiplier(resolvedCurrency, effRate)
+					if entry, ok := buildUpstreamChannelModelCostEntry(ch.Id, ch.Name, ch.Type, mName, base, upstreamGroupRatio, resolvedCurrency, effRate, unitMult, now); ok {
 						costEntries[mName] = entry
 					}
 				}
@@ -1905,7 +1869,7 @@ func ExecuteChannelUpstreamSync(
 		// Sync channel balance from matched upstream account or standard balance endpoint
 		balanceSynced := false
 		if ch.Type == constant.ChannelTypeNewAPI {
-			normHost := normalizeUpstreamBaseURL(ch.GetBaseURL())
+			normHost := strings.ToLower(model.CleanUpstreamAPIBaseURL(ch.GetBaseURL(), ""))
 			if selfBal, hasSelf := upstreamSelfBalByHost[normHost]; hasSelf {
 				upGroup := strings.TrimSpace(itemRes.UpstreamGroup)
 				if upGroup == "" {
@@ -2330,29 +2294,10 @@ func ExecuteCronJob(ctx context.Context, jobID string) (*model.CronJob, error) {
 		}, errMsg)
 	}
 
-	jobs = model.GetCronJobs()
-	var updatedJob *model.CronJob
-	for i := range jobs {
-		if jobs[i].ID == jobID {
-			jobs[i].LastRunAt = finish.Unix()
-			jobs[i].LastDurationMs = durMs
-			jobs[i].RunCount++
-			if runErr != nil {
-				jobs[i].LastStatus = "failed"
-			} else {
-				jobs[i].LastStatus = "success"
-			}
-			jobs[i].LastOutput = output
-			if jobs[i].Enabled {
-				if next, err := model.NextCronTime(jobs[i].CronExpr, finish); err == nil {
-					jobs[i].NextRunAt = next.Unix()
-				}
-			}
-			cp := jobs[i]
-			updatedJob = &cp
-			break
-		}
+	status := "success"
+	if runErr != nil {
+		status = "failed"
 	}
-	_ = model.SaveCronJobs(jobs)
+	updatedJob := model.RecordCronJobRun(jobID, finish, status, durMs, output)
 	return updatedJob, nil
 }

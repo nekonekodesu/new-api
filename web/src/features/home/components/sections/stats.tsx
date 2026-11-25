@@ -19,6 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 import { useRef, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { toIntlLocale } from '@/i18n/languages'
+import { formatNumber } from '@/lib/format'
+
 interface CounterProps {
   end: number
   suffix?: string
@@ -28,14 +31,18 @@ interface CounterProps {
 }
 
 function Counter(props: CounterProps) {
+  const { i18n } = useTranslation()
+  const intlLocale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const { end, suffix = '', prefix = '', duration = 1600, decimals = 0 } = props
   const ref = useRef<HTMLSpanElement>(null)
   const startedRef = useRef(false)
 
   const formatValue = useCallback(
     (v: number) =>
-      decimals > 0 ? v.toFixed(decimals) : Math.round(v).toLocaleString(),
-    [decimals]
+      decimals > 0
+        ? v.toFixed(decimals)
+        : formatNumber(Math.round(v), intlLocale, { maximumFractionDigits: 0 }),
+    [decimals, intlLocale]
   )
 
   const animate = useCallback(() => {

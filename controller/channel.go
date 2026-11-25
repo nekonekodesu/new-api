@@ -1301,22 +1301,7 @@ func UpdateChannel(c *gin.Context) {
 				return channel.Key, nil
 			}
 			var newKeys []string
-			var existingKeys []string
-
-			// 解析现有密钥
-			if strings.HasPrefix(strings.TrimSpace(stored), "[") {
-				// JSON数组格式
-				var arr []json.RawMessage
-				if err := json.Unmarshal([]byte(strings.TrimSpace(stored)), &arr); err == nil {
-					existingKeys = make([]string, len(arr))
-					for i, v := range arr {
-						existingKeys[i] = string(v)
-					}
-				}
-			} else {
-				// 换行分隔格式
-				existingKeys = strings.Split(strings.Trim(stored, "\n"), "\n")
-			}
+			existingKeys := model.ParseChannelKeys(stored)
 
 			// 处理 Vertex AI 的特殊情况
 			if channel.Type == constant.ChannelTypeVertexAi && channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
@@ -1442,7 +1427,7 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
-	if !equalStringPtr(channel.CurrencyCode, originChannel.CurrencyCode) {
+	if !common.EqualPtr(channel.CurrencyCode, originChannel.CurrencyCode) {
 		model.SyncChannelCurrencyCode(channel.Id, channel.CurrencyCode)
 		model.RecalculateAllChannelModelCosts(true)
 	}
@@ -1463,7 +1448,7 @@ func UpdateChannel(c *gin.Context) {
 	if channel.Type != originChannel.Type {
 		changedFields = append(changedFields, "type")
 	}
-	if !equalStringPtr(channel.BaseURL, originChannel.BaseURL) {
+	if !common.EqualPtr(channel.BaseURL, originChannel.BaseURL) {
 		changedFields = append(changedFields, "base_url")
 	}
 	if keyChanged {
@@ -1554,17 +1539,6 @@ func BatchUpdateChannelStatus(c *gin.Context) {
 
 func isManageableChannelStatus(status int) bool {
 	return status == common.ChannelStatusEnabled || status == common.ChannelStatusManuallyDisabled
-}
-
-// equalStringPtr 比较两个 *string 是否相等（均为 nil 视为相等）。
-func equalStringPtr(a, b *string) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return *a == *b
 }
 
 type fetchModelsRequest struct {
@@ -2508,7 +2482,7 @@ func OllamaPullModelStream(c *gin.Context) {
 
 	// 创建进度回调函数
 	progressCallback := func(progress ollama.OllamaPullResponse) {
-		data, _ := json.Marshal(progress)
+		data, _ := common.Marshal(progress)
 		fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
 		c.Writer.Flush()
 	}
@@ -2517,12 +2491,12 @@ func OllamaPullModelStream(c *gin.Context) {
 	err = ollama.PullOllamaModelStream(baseURL, key, req.ModelName, progressCallback)
 
 	if err != nil {
-		errorData, _ := json.Marshal(gin.H{
+		errorData, _ := common.Marshal(gin.H{
 			"error": err.Error(),
 		})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", string(errorData))
 	} else {
-		successData, _ := json.Marshal(gin.H{
+		successData, _ := common.Marshal(gin.H{
 			"message": fmt.Sprintf("Model %s pulled successfully", req.ModelName),
 		})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", string(successData))

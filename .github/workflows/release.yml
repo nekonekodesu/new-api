@@ -30,6 +30,14 @@ jobs:
             VERSION=$(git describe --tags --match 'v[0-9]*')
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          LOWER_VERSION=$(printf '%s' "$VERSION" | tr '[:upper:]' '[:lower:]')
+          if [[ "$LOWER_VERSION" =~ [0-9]b[0-9]+ ]] || [[ "$LOWER_VERSION" =~ -(alpha|beta|rc|pre) ]]; then
+            echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
+            echo "MAKE_LATEST=false" >> "$GITHUB_ENV"
+          else
+            echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+            echo "MAKE_LATEST=true" >> "$GITHUB_ENV"
+          fi
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: '1.4.4'
@@ -61,6 +69,8 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+          make_latest: ${{ env.MAKE_LATEST }}
           files: |
             new-api-*
             checksums-linux.txt
@@ -84,6 +94,14 @@ jobs:
             VERSION=$(git describe --tags --match 'v[0-9]*')
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          LOWER_VERSION=$(printf '%s' "$VERSION" | tr '[:upper:]' '[:lower:]')
+          if [[ "$LOWER_VERSION" =~ [0-9]b[0-9]+ ]] || [[ "$LOWER_VERSION" =~ -(alpha|beta|rc|pre) ]]; then
+            echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
+            echo "MAKE_LATEST=false" >> "$GITHUB_ENV"
+          else
+            echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+            echo "MAKE_LATEST=true" >> "$GITHUB_ENV"
+          fi
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: '1.4.4'
@@ -111,6 +129,8 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+          make_latest: ${{ env.MAKE_LATEST }}
           files: |
             new-api-macos-*
             checksums-macos.txt
@@ -136,6 +156,14 @@ jobs:
             VERSION=$(git describe --tags --match 'v[0-9]*')
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          LOWER_VERSION=$(printf '%s' "$VERSION" | tr '[:upper:]' '[:lower:]')
+          if [[ "$LOWER_VERSION" =~ [0-9]b[0-9]+ ]] || [[ "$LOWER_VERSION" =~ -(alpha|beta|rc|pre) ]]; then
+            echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
+            echo "MAKE_LATEST=false" >> "$GITHUB_ENV"
+          else
+            echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+            echo "MAKE_LATEST=true" >> "$GITHUB_ENV"
+          fi
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: '1.4.4'
@@ -162,6 +190,8 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+          make_latest: ${{ env.MAKE_LATEST }}
           files: |
             new-api-*.exe
             checksums-windows.txt

@@ -201,3 +201,23 @@ export function addTimeToDate(
 
   return result
 }
+
+export type TimeRangeKey = 'all' | '1d' | '7d' | '30d' | '90d'
+
+/** Compute Unix start timestamp (seconds) for common dashboard/analytics ranges. */
+export function computeStartTimestamp(range: TimeRangeKey): number | undefined {
+  const nowSec = Math.floor(Date.now() / 1000)
+  switch (range) {
+    case '1d':
+      return nowSec - 86400
+    case '7d':
+      return nowSec - 7 * 86400
+    case '30d':
+      return nowSec - 30 * 86400
+    case '90d':
+      return nowSec - 90 * 86400
+    case 'all':
+    default:
+      return undefined
+  }
+}

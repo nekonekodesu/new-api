@@ -67,11 +67,18 @@ func RecordRelayResult(ctx context.Context, info *relaycommon.RelayInfo, apiErr 
 		}
 		channelHasTtft := hasTtft && info.FirstResponseTime.After(attemptStart)
 		channelTtftMs := int64(0)
-		channelGenerationMs := now.Sub(attemptStart).Milliseconds()
+		attemptElapsed := now.Sub(attemptStart)
+		channelGenerationMs := attemptElapsed.Milliseconds()
+		if channelGenerationMs <= 0 && attemptElapsed > 0 {
+			channelGenerationMs = 1
+		}
 		if channelHasTtft {
 			channelTtftMs = info.FirstResponseTime.Sub(attemptStart).Milliseconds()
-			if ms := now.Sub(info.FirstResponseTime).Milliseconds(); ms > 0 {
+			genElapsed := now.Sub(info.FirstResponseTime)
+			if ms := genElapsed.Milliseconds(); ms > 0 {
 				channelGenerationMs = ms
+			} else if genElapsed > 0 {
+				channelGenerationMs = 1
 			}
 		}
 		model.RecordChannelModelTelemetry(

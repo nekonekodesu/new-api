@@ -28,7 +28,7 @@ import {
   DataTablePage,
   useDataTable,
 } from '@/components/data-table'
-import { useMediaQuery } from '@/hooks'
+import { useIsCompactScreen } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import {
   createServerError,
@@ -66,7 +66,7 @@ export function UsersTable() {
   const { t } = useTranslation()
   const columns = useUsersColumns()
   const { refreshTrigger } = useUsers()
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
   const [sorting, setSorting] = useState<SortingState>([])
 
   const {

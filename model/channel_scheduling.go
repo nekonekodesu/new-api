@@ -237,9 +237,11 @@ type ChannelModelTelemetrySnapshot struct {
 	TpsAvg         float64 `json:"tps_avg"`
 	TpsMax         float64 `json:"tps_max"`
 	AvgTtftSec     float64 `json:"avg_ttft_sec"`
+	AvgLatencySec  float64 `json:"avg_latency_sec"`
 	EmaSuccessRate float64 `json:"ema_success_rate"`
 	EmaTps         float64 `json:"ema_tps"`
 	EmaTtftMs      float64 `json:"ema_ttft_ms"`
+	EmaLatencyMs   float64 `json:"ema_latency_ms"`
 }
 
 type channelModelTelemetryState struct {
@@ -252,9 +254,12 @@ type channelModelTelemetryState struct {
 	tpsCount       int64
 	ttftSumMs      int64
 	ttftCount      int64
+	latencySumMs   int64
+	latencyCount   int64
 	emaSuccessRate float64
 	emaTps         float64
 	emaTtftMs      float64
+	emaLatencyMs   float64
 	lastSampleAt   time.Time
 }
 
@@ -276,6 +281,36 @@ func recoverChannelSuccessRate(rate float64, lastSampleAt time.Time, now time.Ti
 	}
 	remaining := math.Pow(0.5, elapsed.Seconds()/channelHealthRecoveryHalfLife.Seconds())
 	return 1 - (1-rate)*remaining
+}
+
+// recoverChannelDelayMs decays a degraded EMA delay (> 1000ms) back toward the
+// 1000ms neutral baseline when a channel receives no fresh samples.
+func recoverChannelDelayMs(delayMs float64, lastSampleAt time.Time, now time.Time) float64 {
+	const neutralDelayMs = 1000.0
+	if lastSampleAt.IsZero() || delayMs <= neutralDelayMs {
+		return delayMs
+	}
+	elapsed := now.Sub(lastSampleAt)
+	if elapsed <= 0 {
+		return delayMs
+	}
+	remaining := math.Pow(0.5, elapsed.Seconds()/channelHealthRecoveryHalfLife.Seconds())
+	return neutralDelayMs + (delayMs-neutralDelayMs)*remaining
+}
+
+// recoverChannelTps lifts a severely depressed EMA throughput (0 < tps < 80)
+// back toward the 80 tps neutral baseline when a channel receives no samples.
+func recoverChannelTps(tps float64, lastSampleAt time.Time, now time.Time) float64 {
+	const neutralTps = 80.0
+	if lastSampleAt.IsZero() || tps <= 0 || tps >= neutralTps {
+		return tps
+	}
+	elapsed := now.Sub(lastSampleAt)
+	if elapsed <= 0 {
+		return tps
+	}
+	remaining := math.Pow(0.5, elapsed.Seconds()/channelHealthRecoveryHalfLife.Seconds())
+	return neutralTps - (neutralTps-tps)*remaining
 }
 
 type CostControlUpstreamAlloc struct {
@@ -876,49 +911,31 @@ func UpdateGroupChannels(group string, enabledChannelIDs []int) error {
 	return nil
 }
 
-func GetModelPriceSyncConfig() ModelPriceSyncConfig {
-	modelPriceSyncMu.RLock()
-	defer modelPriceSyncMu.RUnlock()
-	cfg := modelPriceSyncCfg
-	cfg.PreferredChannels = maps.Clone(modelPriceSyncCfg.PreferredChannels)
+func normalizeModelPriceSyncConfig(cfg *ModelPriceSyncConfig) {
+	if cfg == nil {
+		return
+	}
 	if cfg.PreferredChannels == nil {
 		cfg.PreferredChannels = make(map[string]int)
 	}
-	cfg.ChannelCurrencies = maps.Clone(modelPriceSyncCfg.ChannelCurrencies)
 	if cfg.ChannelCurrencies == nil {
 		cfg.ChannelCurrencies = make(map[int]string)
 	}
-	cfg.ChannelExchangeRates = maps.Clone(modelPriceSyncCfg.ChannelExchangeRates)
 	if cfg.ChannelExchangeRates == nil {
 		cfg.ChannelExchangeRates = make(map[int]float64)
 	}
-	cfg.ChannelTopupMultipliers = maps.Clone(modelPriceSyncCfg.ChannelTopupMultipliers)
 	if cfg.ChannelTopupMultipliers == nil {
 		cfg.ChannelTopupMultipliers = make(map[int]float64)
 	}
-	cfg.ChannelUpstreamGroups = maps.Clone(modelPriceSyncCfg.ChannelUpstreamGroups)
 	if cfg.ChannelUpstreamGroups == nil {
 		cfg.ChannelUpstreamGroups = make(map[int]string)
 	}
-	cfg.UpstreamAccounts = slices.Clone(modelPriceSyncCfg.UpstreamAccounts)
-	for i := range cfg.UpstreamAccounts {
-		normalizeUpstreamAccountSource(&cfg.UpstreamAccounts[i])
-		cfg.UpstreamAccounts[i].ActiveGroups = slices.Clone(cfg.UpstreamAccounts[i].ActiveGroups)
-		cfg.UpstreamAccounts[i].CreatedChannels = slices.Clone(cfg.UpstreamAccounts[i].CreatedChannels)
-		cfg.UpstreamAccounts[i].UpdatedChannels = slices.Clone(cfg.UpstreamAccounts[i].UpdatedChannels)
-		cfg.UpstreamAccounts[i].RemovedChannels = slices.Clone(cfg.UpstreamAccounts[i].RemovedChannels)
-	}
-	cfg.AutoProvisionedChannels = maps.Clone(modelPriceSyncCfg.AutoProvisionedChannels)
 	if cfg.AutoProvisionedChannels == nil {
 		cfg.AutoProvisionedChannels = make(map[int]AutoProvisionedChannelMeta)
 	}
 	if cfg.ClassifierRules == nil {
 		cfg.ClassifierRules = defaultChannelClassifierRules()
 	} else {
-		cfg.ClassifierRules = slices.Clone(modelPriceSyncCfg.ClassifierRules)
-		for i := range cfg.ClassifierRules {
-			cfg.ClassifierRules[i].Keywords = slices.Clone(cfg.ClassifierRules[i].Keywords)
-		}
 		cfg.ClassifierRules = normalizeChannelClassifierRules(cfg.ClassifierRules)
 	}
 	if cfg.ClassifierEnabled == nil {
@@ -931,23 +948,44 @@ func GetModelPriceSyncConfig() ModelPriceSyncConfig {
 	if cfg.DefaultCurrency == "" {
 		cfg.DefaultCurrency = "AUTO"
 	}
-	cfg.USDExchangeRate = 1.0
-	if cfg.CNYExchangeRate <= 5.5 || cfg.CNYExchangeRate >= 15.0 {
-		cfg.CNYExchangeRate = ResolveEffectiveChannelExchangeRate("CNY", 0)
-	}
-	if cfg.TWDExchangeRate < 15.0 {
-		cfg.TWDExchangeRate = ResolveEffectiveChannelExchangeRate("TWD", 0)
-	}
-	for chID, rate := range cfg.ChannelExchangeRates {
-		curr := cfg.ChannelCurrencies[chID]
-		if curr == "" || strings.EqualFold(curr, "AUTO") {
-			curr = "CNY"
-		}
-		cfg.ChannelExchangeRates[chID] = ResolveEffectiveChannelExchangeRate(curr, rate)
-	}
+	sanitizeModelPriceSyncConfigRates(cfg)
 	if cfg.CronIntervalMinutes <= 0 {
 		cfg.CronIntervalMinutes = 60
 	}
+	for i := range cfg.UpstreamAccounts {
+		normalizeUpstreamAccountSource(&cfg.UpstreamAccounts[i])
+	}
+}
+
+func GetModelPriceSyncConfig() ModelPriceSyncConfig {
+	modelPriceSyncMu.RLock()
+	cfg := modelPriceSyncCfg
+	cfg.PreferredChannels = maps.Clone(modelPriceSyncCfg.PreferredChannels)
+	cfg.ChannelCurrencies = maps.Clone(modelPriceSyncCfg.ChannelCurrencies)
+	cfg.ChannelExchangeRates = maps.Clone(modelPriceSyncCfg.ChannelExchangeRates)
+	cfg.ChannelTopupMultipliers = maps.Clone(modelPriceSyncCfg.ChannelTopupMultipliers)
+	cfg.ChannelUpstreamGroups = maps.Clone(modelPriceSyncCfg.ChannelUpstreamGroups)
+	cfg.UpstreamAccounts = slices.Clone(modelPriceSyncCfg.UpstreamAccounts)
+	for i := range cfg.UpstreamAccounts {
+		cfg.UpstreamAccounts[i].ActiveGroups = slices.Clone(cfg.UpstreamAccounts[i].ActiveGroups)
+		cfg.UpstreamAccounts[i].CreatedChannels = slices.Clone(cfg.UpstreamAccounts[i].CreatedChannels)
+		cfg.UpstreamAccounts[i].UpdatedChannels = slices.Clone(cfg.UpstreamAccounts[i].UpdatedChannels)
+		cfg.UpstreamAccounts[i].RemovedChannels = slices.Clone(cfg.UpstreamAccounts[i].RemovedChannels)
+	}
+	cfg.AutoProvisionedChannels = maps.Clone(modelPriceSyncCfg.AutoProvisionedChannels)
+	if modelPriceSyncCfg.ClassifierRules != nil {
+		cfg.ClassifierRules = slices.Clone(modelPriceSyncCfg.ClassifierRules)
+		for i := range cfg.ClassifierRules {
+			cfg.ClassifierRules[i].Keywords = slices.Clone(modelPriceSyncCfg.ClassifierRules[i].Keywords)
+		}
+	}
+	if modelPriceSyncCfg.ClassifierEnabled != nil {
+		enabled := *modelPriceSyncCfg.ClassifierEnabled
+		cfg.ClassifierEnabled = &enabled
+	}
+	modelPriceSyncMu.RUnlock()
+
+	normalizeModelPriceSyncConfig(&cfg)
 	return cfg
 }
 
@@ -982,39 +1020,7 @@ func LoadModelPriceSyncConfigFromJSON(raw string) error {
 	if err := common.Unmarshal([]byte(raw), &cfg); err != nil {
 		return err
 	}
-	if cfg.PreferredChannels == nil {
-		cfg.PreferredChannels = make(map[string]int)
-	}
-	if cfg.ChannelCurrencies == nil {
-		cfg.ChannelCurrencies = make(map[int]string)
-	}
-	if cfg.ChannelExchangeRates == nil {
-		cfg.ChannelExchangeRates = make(map[int]float64)
-	}
-	if cfg.ChannelTopupMultipliers == nil {
-		cfg.ChannelTopupMultipliers = make(map[int]float64)
-	}
-	if cfg.ChannelUpstreamGroups == nil {
-		cfg.ChannelUpstreamGroups = make(map[int]string)
-	}
-	if cfg.AutoProvisionedChannels == nil {
-		cfg.AutoProvisionedChannels = make(map[int]AutoProvisionedChannelMeta)
-	}
-	cfg.ClassifierRules = normalizeChannelClassifierRules(cfg.ClassifierRules)
-	if cfg.ClassifierEnabled == nil {
-		enabled := true
-		cfg.ClassifierEnabled = &enabled
-	}
-	if cfg.DefaultCurrency == "" {
-		cfg.DefaultCurrency = "AUTO"
-	}
-	sanitizeModelPriceSyncConfigRates(&cfg)
-	if cfg.CronIntervalMinutes <= 0 {
-		cfg.CronIntervalMinutes = 60
-	}
-	for i := range cfg.UpstreamAccounts {
-		normalizeUpstreamAccountSource(&cfg.UpstreamAccounts[i])
-	}
+	normalizeModelPriceSyncConfig(&cfg)
 	modelPriceSyncMu.Lock()
 	modelPriceSyncCfg = cfg
 	modelPriceSyncMu.Unlock()
@@ -1022,39 +1028,7 @@ func LoadModelPriceSyncConfigFromJSON(raw string) error {
 }
 
 func SaveModelPriceSyncConfig(cfg ModelPriceSyncConfig) error {
-	if cfg.PreferredChannels == nil {
-		cfg.PreferredChannels = make(map[string]int)
-	}
-	if cfg.ChannelCurrencies == nil {
-		cfg.ChannelCurrencies = make(map[int]string)
-	}
-	if cfg.ChannelExchangeRates == nil {
-		cfg.ChannelExchangeRates = make(map[int]float64)
-	}
-	if cfg.ChannelTopupMultipliers == nil {
-		cfg.ChannelTopupMultipliers = make(map[int]float64)
-	}
-	if cfg.ChannelUpstreamGroups == nil {
-		cfg.ChannelUpstreamGroups = make(map[int]string)
-	}
-	if cfg.AutoProvisionedChannels == nil {
-		cfg.AutoProvisionedChannels = make(map[int]AutoProvisionedChannelMeta)
-	}
-	cfg.ClassifierRules = normalizeChannelClassifierRules(cfg.ClassifierRules)
-	if cfg.ClassifierEnabled == nil {
-		enabled := true
-		cfg.ClassifierEnabled = &enabled
-	}
-	if cfg.DefaultCurrency == "" {
-		cfg.DefaultCurrency = "AUTO"
-	}
-	sanitizeModelPriceSyncConfigRates(&cfg)
-	if cfg.CronIntervalMinutes <= 0 {
-		cfg.CronIntervalMinutes = 60
-	}
-	for i := range cfg.UpstreamAccounts {
-		normalizeUpstreamAccountSource(&cfg.UpstreamAccounts[i])
-	}
+	normalizeModelPriceSyncConfig(&cfg)
 	modelPriceSyncMu.Lock()
 	modelPriceSyncCfg = cfg
 	modelPriceSyncMu.Unlock()
@@ -1074,17 +1048,75 @@ func SaveModelPriceSyncConfig(cfg ModelPriceSyncConfig) error {
 	return UpdateOption(ModelPriceSyncConfigOptionKey, string(encoded))
 }
 
+// IsLumiyaSyncMode reports whether an upstream source uses or auto-detects the Lumiya sync mode.
+func IsLumiyaSyncMode(syncMode string, name string, baseURL string) bool {
+	if strings.EqualFold(strings.TrimSpace(syncMode), UpstreamSyncModeLumiya) {
+		return true
+	}
+	if strings.TrimSpace(syncMode) != "" {
+		return false
+	}
+	nl := strings.ToLower(name)
+	bl := strings.ToLower(baseURL)
+	return strings.Contains(nl, "lumiya") ||
+		strings.Contains(bl, "lumiya") ||
+		strings.Contains(bl, "xn--1ys141f4ks") ||
+		strings.Contains(baseURL, "露米娅") ||
+		strings.Contains(baseURL, "露米婭")
+}
+
+// CleanUpstreamAPIBaseURL normalizes an upstream panel base URL into scheme://host.
+func CleanUpstreamAPIBaseURL(raw string, syncMode string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.Trim(s, `"'`)
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "露米娅.com", "lumiya.vip")
+	s = strings.ReplaceAll(s, "露米婭.com", "lumiya.vip")
+	if !strings.HasPrefix(strings.ToLower(s), "http://") && !strings.HasPrefix(strings.ToLower(s), "https://") {
+		s = "https://" + s
+	}
+	if parsed, err := url.Parse(s); err == nil && parsed.Host != "" {
+		scheme := strings.ToLower(parsed.Scheme)
+		host := strings.ToLower(parsed.Host)
+		if host == "xn--1ys141f4ks.com" || host == "www.lumiya.vip" {
+			host = "lumiya.vip"
+		}
+		if strings.Contains(host, "lumiya.vip") || (strings.EqualFold(syncMode, UpstreamSyncModeLumiya) && !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost")) {
+			scheme = "https"
+		}
+		return scheme + "://" + host
+	}
+	s = strings.TrimRight(s, "/")
+	for _, suffix := range []string{"/v1", "/api", "/console", "/pricing", "/panel", "/token", "/personal"} {
+		if len(s) >= len(suffix) && strings.EqualFold(s[len(s)-len(suffix):], suffix) {
+			s = s[:len(s)-len(suffix)]
+		}
+	}
+	return strings.TrimRight(s, "/")
+}
+
+// FindUpstreamAccountByKey locates an UpstreamAccountSource by its ID or UpstreamAccountKey.
+func FindUpstreamAccountByKey(cfg ModelPriceSyncConfig, idOrKey string) (UpstreamAccountSource, bool) {
+	target := strings.TrimSpace(idOrKey)
+	if target == "" {
+		return UpstreamAccountSource{}, false
+	}
+	for _, acc := range cfg.UpstreamAccounts {
+		if acc.ID == target || UpstreamAccountKey(acc) == target {
+			return acc, true
+		}
+	}
+	return UpstreamAccountSource{}, false
+}
+
 func normalizeUpstreamAccountSource(src *UpstreamAccountSource) {
 	if src == nil {
 		return
 	}
-	mode := strings.ToLower(strings.TrimSpace(src.SyncMode))
-	isLumiyaLike := strings.Contains(strings.ToLower(src.Name), "lumiya") ||
-		strings.Contains(strings.ToLower(src.BaseURL), "lumiya") ||
-		strings.Contains(strings.ToLower(src.BaseURL), "xn--1ys141f4ks") ||
-		strings.Contains(src.BaseURL, "露米娅") ||
-		strings.Contains(src.BaseURL, "露米婭")
-	if mode == UpstreamSyncModeLumiya || (mode == "" && isLumiyaLike) {
+	isLumiyaLike := IsLumiyaSyncMode("", src.Name, src.BaseURL)
+	if IsLumiyaSyncMode(src.SyncMode, src.Name, src.BaseURL) {
 		src.SyncMode = UpstreamSyncModeLumiya
 	} else {
 		src.SyncMode = UpstreamSyncModeStandard
@@ -1137,11 +1169,9 @@ func ResolveChannelTopupMultiplier(channelID int, ch *Channel, syncCfg ModelPric
 	if ch != nil {
 		upID, _ := ResolveChannelUpstreamSource(ch, nil, syncCfg)
 		if upID != "" && upID != DirectUpstreamSourceID {
-			for _, acc := range syncCfg.UpstreamAccounts {
-				if UpstreamAccountKey(acc) == upID || acc.ID == upID {
-					if acc.TopupMultiplier > 0 && !math.IsNaN(acc.TopupMultiplier) && !math.IsInf(acc.TopupMultiplier, 0) {
-						return acc.TopupMultiplier
-					}
+			if acc, ok := FindUpstreamAccountByKey(syncCfg, upID); ok {
+				if acc.TopupMultiplier > 0 && !math.IsNaN(acc.TopupMultiplier) && !math.IsInf(acc.TopupMultiplier, 0) {
+					return acc.TopupMultiplier
 				}
 			}
 		}
@@ -1320,14 +1350,16 @@ func IsBuiltInCronJobEnabled(jobID string) bool {
 	return false
 }
 
-func RecordBuiltInCronJobRun(jobID string, status string, durationMs int64, output string) {
+func RecordCronJobRun(jobID string, finish time.Time, status string, durationMs int64, output string) *CronJob {
 	jobID = strings.TrimSpace(jobID)
 	if jobID == "" {
-		return
+		return nil
 	}
-	finish := time.Now()
+	if finish.IsZero() {
+		finish = time.Now()
+	}
 	jobs := GetCronJobs()
-	changed := false
+	var updatedJob *CronJob
 	for i := range jobs {
 		if jobs[i].ID == jobID {
 			jobs[i].LastRunAt = finish.Unix()
@@ -1340,13 +1372,19 @@ func RecordBuiltInCronJobRun(jobID string, status string, durationMs int64, outp
 					jobs[i].NextRunAt = next.Unix()
 				}
 			}
-			changed = true
+			cp := jobs[i]
+			updatedJob = &cp
 			break
 		}
 	}
-	if changed {
+	if updatedJob != nil {
 		_ = SaveCronJobs(jobs)
 	}
+	return updatedJob
+}
+
+func RecordBuiltInCronJobRun(jobID string, status string, durationMs int64, output string) {
+	RecordCronJobRun(jobID, time.Now(), status, durationMs, output)
 }
 
 func SyncChannelCurrencyCode(channelID int, currencyCode *string) {
@@ -1767,36 +1805,7 @@ func ArchiveAndCleanupDeletedChannels(deletedChannels []*Channel) {
 	for _, id := range ids {
 		deletedSet[id] = struct{}{}
 	}
-	cfgChanged := false
-	for _, id := range ids {
-		if _, ok := syncCfg.AutoProvisionedChannels[id]; ok {
-			delete(syncCfg.AutoProvisionedChannels, id)
-			cfgChanged = true
-		}
-		if _, ok := syncCfg.ChannelUpstreamGroups[id]; ok {
-			delete(syncCfg.ChannelUpstreamGroups, id)
-			cfgChanged = true
-		}
-		if _, ok := syncCfg.ChannelCurrencies[id]; ok {
-			delete(syncCfg.ChannelCurrencies, id)
-			cfgChanged = true
-		}
-		if _, ok := syncCfg.ChannelExchangeRates[id]; ok {
-			delete(syncCfg.ChannelExchangeRates, id)
-			cfgChanged = true
-		}
-		if _, ok := syncCfg.ChannelTopupMultipliers[id]; ok {
-			delete(syncCfg.ChannelTopupMultipliers, id)
-			cfgChanged = true
-		}
-	}
-	for mName, prefID := range syncCfg.PreferredChannels {
-		if _, deleted := deletedSet[prefID]; deleted {
-			delete(syncCfg.PreferredChannels, mName)
-			cfgChanged = true
-		}
-	}
-	if cfgChanged {
+	if RemoveChannelIDsFromSyncConfig(&syncCfg, deletedSet) {
 		_ = SaveModelPriceSyncConfig(syncCfg)
 	}
 
@@ -1809,52 +1818,71 @@ func ArchiveAndCleanupDeletedChannels(deletedChannels []*Channel) {
 	ResetRealtimeProfitTracker()
 }
 
+func filterSyncConfigChannelIDs(cfg *ModelPriceSyncConfig, keep func(int) bool) bool {
+	if cfg == nil {
+		return false
+	}
+	changed := false
+	for id := range cfg.AutoProvisionedChannels {
+		if !keep(id) {
+			delete(cfg.AutoProvisionedChannels, id)
+			changed = true
+		}
+	}
+	for id := range cfg.ChannelUpstreamGroups {
+		if !keep(id) {
+			delete(cfg.ChannelUpstreamGroups, id)
+			changed = true
+		}
+	}
+	for id := range cfg.ChannelCurrencies {
+		if !keep(id) {
+			delete(cfg.ChannelCurrencies, id)
+			changed = true
+		}
+	}
+	for id := range cfg.ChannelExchangeRates {
+		if !keep(id) {
+			delete(cfg.ChannelExchangeRates, id)
+			changed = true
+		}
+	}
+	for id := range cfg.ChannelTopupMultipliers {
+		if !keep(id) {
+			delete(cfg.ChannelTopupMultipliers, id)
+			changed = true
+		}
+	}
+	for mName, id := range cfg.PreferredChannels {
+		if id > 0 && !keep(id) {
+			delete(cfg.PreferredChannels, mName)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// RemoveChannelIDsFromSyncConfig deletes every reference to deletedSet IDs across active sync maps.
+func RemoveChannelIDsFromSyncConfig(cfg *ModelPriceSyncConfig, deletedSet map[int]struct{}) bool {
+	if cfg == nil || len(deletedSet) == 0 {
+		return false
+	}
+	return filterSyncConfigChannelIDs(cfg, func(id int) bool {
+		_, deleted := deletedSet[id]
+		return !deleted
+	})
+}
+
 // PruneOrphanChannelsFromSyncConfig sweeps any stale channel IDs that no longer
 // exist in the channels table out of ModelPriceSyncConfig maps.
 func PruneOrphanChannelsFromSyncConfig(cfg *ModelPriceSyncConfig, validChannelIDs map[int]struct{}) bool {
 	if cfg == nil || len(validChannelIDs) == 0 {
 		return false
 	}
-	changed := false
-	for id := range cfg.AutoProvisionedChannels {
-		if _, ok := validChannelIDs[id]; !ok {
-			delete(cfg.AutoProvisionedChannels, id)
-			changed = true
-		}
-	}
-	for id := range cfg.ChannelUpstreamGroups {
-		if _, ok := validChannelIDs[id]; !ok {
-			delete(cfg.ChannelUpstreamGroups, id)
-			changed = true
-		}
-	}
-	for id := range cfg.ChannelCurrencies {
-		if _, ok := validChannelIDs[id]; !ok {
-			delete(cfg.ChannelCurrencies, id)
-			changed = true
-		}
-	}
-	for id := range cfg.ChannelExchangeRates {
-		if _, ok := validChannelIDs[id]; !ok {
-			delete(cfg.ChannelExchangeRates, id)
-			changed = true
-		}
-	}
-	for id := range cfg.ChannelTopupMultipliers {
-		if _, ok := validChannelIDs[id]; !ok {
-			delete(cfg.ChannelTopupMultipliers, id)
-			changed = true
-		}
-	}
-	for mName, id := range cfg.PreferredChannels {
-		if id > 0 {
-			if _, ok := validChannelIDs[id]; !ok {
-				delete(cfg.PreferredChannels, mName)
-				changed = true
-			}
-		}
-	}
-	return changed
+	return filterSyncConfigChannelIDs(cfg, func(id int) bool {
+		_, valid := validChannelIDs[id]
+		return valid
+	})
 }
 
 func LoadChannelModelCostsFromJSON(raw string) error {
@@ -1879,19 +1907,19 @@ func LoadChannelModelCostsFromJSON(raw string) error {
 				}
 				entry.RawModelPrice = rawP
 				if entry.RawInputCost <= 0 {
-					entry.RawInputCost = roundCost(rawP * entry.BaseMultiplier)
+					entry.RawInputCost = common.RoundNonNegativeFloat6(rawP * entry.BaseMultiplier)
 					entry.RawOutputCost = entry.RawInputCost
 				}
-				entry.InputCost = roundCost(entry.RawInputCost * unitMult)
+				entry.InputCost = common.RoundNonNegativeFloat6(entry.RawInputCost * unitMult)
 				entry.OutputCost = entry.InputCost
 			} else if entry.RawInputCost > 0 {
 				comp := entry.CompletionRatio
 				if comp <= 0 {
 					comp = 1.0
 				}
-				entry.RawOutputCost = roundCost(entry.RawInputCost * comp)
-				entry.InputCost = roundCost(entry.RawInputCost * unitMult)
-				entry.OutputCost = roundCost(entry.InputCost * comp)
+				entry.RawOutputCost = common.RoundNonNegativeFloat6(entry.RawInputCost * comp)
+				entry.InputCost = common.RoundNonNegativeFloat6(entry.RawInputCost * unitMult)
+				entry.OutputCost = common.RoundNonNegativeFloat6(entry.InputCost * comp)
 			}
 			chMap[mName] = entry
 		}
@@ -1904,11 +1932,40 @@ func LoadChannelModelCostsFromJSON(raw string) error {
 }
 
 var (
-	localTierVarFirstCoeffRe = regexp.MustCompile(`\b(p|c|cr|cc|cc1h)\s*\*\s*(\d+(?:\.\d+)?)`)
-	localTierVarLastCoeffRe  = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*\*\s*\b(p|c|cr|cc|cc1h)`)
+	billingExprVarFirstCoeffRe = regexp.MustCompile(`\b([a-z][a-z0-9_]*)\s*\*\s*(\d+(?:\.\d+)?)`)
+	billingExprVarLastCoeffRe  = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*\*\s*\b([a-z][a-z0-9_]*)`)
+	billingExprFixedPriceRe    = regexp.MustCompile(`\bfixed\(\s*(\d+(?:\.\d+)?)\s*\)`)
+	billingExprUnitVarFirstRe  = regexp.MustCompile(`(?:u\(\s*"(?:image_count|seconds|count)"\s*\)|\b(?:image_count|seconds)\b)\s*\*\s*(\d+(?:\.\d+)?)`)
+	billingExprUnitVarLastRe   = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*\*\s*(?:u\(\s*"(?:image_count|seconds|count)"\s*\)|\b(?:image_count|seconds)\b)`)
 )
 
-func deriveLocalExprBasePricing(expr string) (modelRatio, completionRatio, cacheRatio, createCacheRatio float64, ok bool) {
+var billingExprPricingVars = []string{"p", "c", "cr", "cc", "cc1h"}
+
+// ExtractExprUnitPrice extracts the minimum fixed or per-unit price from a tiered billing expression.
+func ExtractExprUnitPrice(expr string) (float64, bool) {
+	best := 0.0
+	consider := func(raw string) {
+		if v, err := strconv.ParseFloat(raw, 64); err == nil && v > 0 {
+			if best == 0 || v < best {
+				best = v
+			}
+		}
+	}
+	for _, m := range billingExprFixedPriceRe.FindAllStringSubmatch(expr, -1) {
+		consider(m[1])
+	}
+	for _, m := range billingExprUnitVarFirstRe.FindAllStringSubmatch(expr, -1) {
+		consider(m[1])
+	}
+	for _, m := range billingExprUnitVarLastRe.FindAllStringSubmatch(expr, -1) {
+		consider(m[1])
+	}
+	return best, best > 0
+}
+
+// ExtractExprBaseTokenPricing parses tier coefficients in expr, selects the lowest positive prompt tier,
+// and returns (modelRatio, completionRatio, cacheRatio, createCacheRatio, hasCache, hasCreateCache, ok).
+func ExtractExprBaseTokenPricing(expr string) (modelRatio, completionRatio, cacheRatio, createCacheRatio float64, hasCache, hasCreateCache, ok bool) {
 	var best map[string]float64
 	rem := expr
 	for {
@@ -1935,14 +1992,20 @@ func deriveLocalExprBasePricing(expr string) (modelRatio, completionRatio, cache
 		rem = body[end:]
 
 		coeffs := make(map[string]float64)
-		for _, m := range localTierVarFirstCoeffRe.FindAllStringSubmatch(arg, -1) {
+		for _, m := range billingExprVarFirstCoeffRe.FindAllStringSubmatch(arg, -1) {
+			if !slices.Contains(billingExprPricingVars, m[1]) {
+				continue
+			}
 			if _, exists := coeffs[m[1]]; !exists {
 				if v, err := strconv.ParseFloat(m[2], 64); err == nil {
 					coeffs[m[1]] = v
 				}
 			}
 		}
-		for _, m := range localTierVarLastCoeffRe.FindAllStringSubmatch(arg, -1) {
+		for _, m := range billingExprVarLastCoeffRe.FindAllStringSubmatch(arg, -1) {
+			if !slices.Contains(billingExprPricingVars, m[2]) {
+				continue
+			}
 			if _, exists := coeffs[m[2]]; !exists {
 				if v, err := strconv.ParseFloat(m[1], 64); err == nil {
 					coeffs[m[2]] = v
@@ -1956,21 +2019,23 @@ func deriveLocalExprBasePricing(expr string) (modelRatio, completionRatio, cache
 		}
 	}
 	if best == nil {
-		return 0, 0, 0, 0, false
+		return 0, 0, 0, 0, false, false, false
 	}
 	p := best["p"]
-	modelRatio = roundCost(p / 2.0)
+	modelRatio = common.RoundNonNegativeFloat6(p / 2.0)
 	completionRatio = 1.0
 	if c, hasC := best["c"]; hasC && c > 0 {
-		completionRatio = roundCost(c / p)
+		completionRatio = common.RoundNonNegativeFloat6(c / p)
 	}
 	if cr, hasCr := best["cr"]; hasCr {
-		cacheRatio = roundCost(cr / p)
+		cacheRatio = common.RoundNonNegativeFloat6(cr / p)
+		hasCache = true
 	}
 	if cc, hasCc := best["cc"]; hasCc {
-		createCacheRatio = roundCost(cc / p)
+		createCacheRatio = common.RoundNonNegativeFloat6(cc / p)
+		hasCreateCache = true
 	}
-	return modelRatio, completionRatio, cacheRatio, createCacheRatio, true
+	return modelRatio, completionRatio, cacheRatio, createCacheRatio, hasCache, hasCreateCache, true
 }
 
 var channelTrailingMultiplierRe = regexp.MustCompile(`(?:^|[-_])(\d+(?:\.\d+)?)$`)
@@ -2070,16 +2135,13 @@ func ResolveChannelCurrencyAndMultiplier(ch *Channel, existingEntries map[string
 		if currency == "" {
 			upID, _ := ResolveChannelUpstreamSource(ch, nil, syncCfg)
 			if upID != "" && upID != DirectUpstreamSourceID {
-				for _, acc := range syncCfg.UpstreamAccounts {
-					if UpstreamAccountKey(acc) == upID {
-						accCurr := strings.ToUpper(strings.TrimSpace(acc.Currency))
-						if accCurr != "" && accCurr != "AUTO" {
-							currency = accCurr
-						}
-						if rawRate <= 0 && acc.ExchangeRate > 0 {
-							rawRate = acc.ExchangeRate
-						}
-						break
+				if acc, ok := FindUpstreamAccountByKey(syncCfg, upID); ok {
+					accCurr := strings.ToUpper(strings.TrimSpace(acc.Currency))
+					if accCurr != "" && accCurr != "AUTO" {
+						currency = accCurr
+					}
+					if rawRate <= 0 && acc.ExchangeRate > 0 {
+						rawRate = acc.ExchangeRate
 					}
 				}
 			}
@@ -2124,7 +2186,7 @@ func computeDefaultModelCostEntry(ch *Channel, modelName string, now int64, exis
 	lookupModel := modelName
 	if mappedTarget := resolveChannelMappedModelTarget(ch, modelName); mappedTarget != "" {
 		if _, ok := ratio_setting.GetModelPrice(modelName, false); !ok {
-			if mr, hasR, _ := ratio_setting.GetModelRatio(modelName); !hasR || isDefaultUnconfiguredModelRatio(modelName, 0, mr, ratio_setting.GetCompletionRatio(modelName)) {
+			if mr, hasR, _ := ratio_setting.GetModelRatio(modelName); !hasR || IsDefaultUnconfiguredModelRatio(modelName, 0, mr, ratio_setting.GetCompletionRatio(modelName)) {
 				lookupModel = mappedTarget
 			}
 		}
@@ -2152,33 +2214,33 @@ func computeDefaultModelCostEntry(ch *Channel, modelName string, now int64, exis
 	if ch != nil && ch.Type == constant.ChannelTypeNewAPI {
 		unitMult := ResolveUpstreamToQuotaUnitMultiplier(curr, effRate)
 		if unitMult > 0 {
-			costScale = roundCost(costScale * unitMult)
+			costScale = common.RoundNonNegativeFloat6(costScale * unitMult)
 		}
 	}
 
 	if price, ok := ratio_setting.GetModelPrice(lookupModel, false); ok && price > 0 {
 		entry.QuotaType = 1
 		entry.ModelPrice = price
-		entry.RawModelPrice = roundCost(price * baseMult)
+		entry.RawModelPrice = common.RoundNonNegativeFloat6(price * baseMult)
 		entry.RawInputCost = entry.RawModelPrice
 		entry.RawOutputCost = entry.RawModelPrice
-		entry.InputCost = roundCost(price * costScale)
+		entry.InputCost = common.RoundNonNegativeFloat6(price * costScale)
 		entry.OutputCost = entry.InputCost
 		return entry
 	}
 	if billing_setting.GetBillingMode(lookupModel) == billing_setting.BillingModeTieredExpr {
 		if expr, hasExpr := billing_setting.GetBillingExpr(lookupModel); hasExpr && strings.TrimSpace(expr) != "" {
-			if mr, cr, cacheR, createCacheR, ok := deriveLocalExprBasePricing(expr); ok {
+			if mr, cr, cacheR, createCacheR, _, _, ok := ExtractExprBaseTokenPricing(expr); ok {
 				entry.QuotaType = 0
 				entry.ModelRatio = mr
 				entry.CompletionRatio = cr
 				entry.CacheRatio = cacheR
 				entry.CreateCacheRatio = createCacheR
-				baseIn := roundCost(mr * 2.0)
-				entry.RawInputCost = roundCost(baseIn * baseMult)
-				entry.RawOutputCost = roundCost(entry.RawInputCost * cr)
-				entry.InputCost = roundCost(baseIn * costScale)
-				entry.OutputCost = roundCost(entry.InputCost * cr)
+				baseIn := common.RoundNonNegativeFloat6(mr * 2.0)
+				entry.RawInputCost = common.RoundNonNegativeFloat6(baseIn * baseMult)
+				entry.RawOutputCost = common.RoundNonNegativeFloat6(entry.RawInputCost * cr)
+				entry.InputCost = common.RoundNonNegativeFloat6(baseIn * costScale)
+				entry.OutputCost = common.RoundNonNegativeFloat6(entry.InputCost * cr)
 				return entry
 			}
 		}
@@ -2188,23 +2250,23 @@ func computeDefaultModelCostEntry(ch *Channel, modelName string, now int64, exis
 	if compRatio <= 0 {
 		compRatio = 1.0
 	}
-	if !hasR || isDefaultUnconfiguredModelRatio(lookupModel, 0, modelRatio, compRatio) {
+	if !hasR || IsDefaultUnconfiguredModelRatio(lookupModel, 0, modelRatio, compRatio) {
 		modelRatio, compRatio = InferSensibleFallbackModelPricing(lookupModel)
 	}
 	entry.QuotaType = 0
 	entry.ModelRatio = modelRatio
 	entry.CompletionRatio = compRatio
 	if cacheR, ok := ratio_setting.GetCacheRatio(lookupModel); ok && cacheR > 0 {
-		entry.CacheRatio = roundCost(cacheR)
+		entry.CacheRatio = common.RoundNonNegativeFloat6(cacheR)
 	}
 	if createCacheR, ok := ratio_setting.GetCreateCacheRatio(lookupModel); ok && createCacheR > 0 {
-		entry.CreateCacheRatio = roundCost(createCacheR)
+		entry.CreateCacheRatio = common.RoundNonNegativeFloat6(createCacheR)
 	}
-	baseIn := roundCost(modelRatio * 2.0)
-	entry.RawInputCost = roundCost(baseIn * baseMult)
-	entry.RawOutputCost = roundCost(entry.RawInputCost * compRatio)
-	entry.InputCost = roundCost(baseIn * costScale)
-	entry.OutputCost = roundCost(entry.InputCost * compRatio)
+	baseIn := common.RoundNonNegativeFloat6(modelRatio * 2.0)
+	entry.RawInputCost = common.RoundNonNegativeFloat6(baseIn * baseMult)
+	entry.RawOutputCost = common.RoundNonNegativeFloat6(entry.RawInputCost * compRatio)
+	entry.InputCost = common.RoundNonNegativeFloat6(baseIn * costScale)
+	entry.OutputCost = common.RoundNonNegativeFloat6(entry.InputCost * compRatio)
 	return entry
 }
 
@@ -2280,7 +2342,7 @@ func ResolveAuthoritativeModelPricingUSD(modelName string) (quotaType int, model
 		if !exists || !entry.FromUpstream {
 			continue
 		}
-		if isDefaultUnconfiguredModelRatio(modelName, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
+		if IsDefaultUnconfiguredModelRatio(modelName, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
 			continue
 		}
 		effRate := ResolveEffectiveChannelExchangeRate(entry.Currency, entry.ExchangeRate)
@@ -2296,7 +2358,7 @@ func ResolveAuthoritativeModelPricingUSD(modelName string) (quotaType int, model
 				rawBaseIn = entry.ModelPrice
 			}
 			if rawBaseIn <= 0 && entry.RawInputCost > 0 {
-				rawBaseIn = roundCost(entry.RawInputCost / mult)
+				rawBaseIn = common.RoundNonNegativeFloat6(entry.RawInputCost / mult)
 			}
 			rawBaseOut = rawBaseIn
 		} else {
@@ -2305,14 +2367,14 @@ func ResolveAuthoritativeModelPricingUSD(modelName string) (quotaType int, model
 				comp = 1.0
 			}
 			if entry.RawInputCost > 0 {
-				rawBaseIn = roundCost(entry.RawInputCost / mult)
+				rawBaseIn = common.RoundNonNegativeFloat6(entry.RawInputCost / mult)
 			} else if entry.ModelRatio > 0 {
-				rawBaseIn = roundCost(entry.ModelRatio * 2.0)
+				rawBaseIn = common.RoundNonNegativeFloat6(entry.ModelRatio * 2.0)
 			}
-			rawBaseOut = roundCost(rawBaseIn * comp)
+			rawBaseOut = common.RoundNonNegativeFloat6(rawBaseIn * comp)
 		}
-		inUSD := roundCost(rawBaseIn * unitMult)
-		outUSD := roundCost(rawBaseOut * unitMult)
+		inUSD := common.RoundNonNegativeFloat6(rawBaseIn * unitMult)
+		outUSD := common.RoundNonNegativeFloat6(rawBaseOut * unitMult)
 		if inUSD <= 0 && outUSD <= 0 {
 			continue
 		}
@@ -2338,11 +2400,11 @@ func ResolveAuthoritativeModelPricingUSD(modelName string) (quotaType int, model
 		if bestEntry.QuotaType == 1 && bestEntry.InputCost > 0 {
 			return 1, bestEntry.InputCost, 0, 1.0, bestEntry.CacheRatio, bestEntry.CreateCacheRatio
 		}
-		mr := roundCost(bestEntry.InputCost / 2.0)
+		mr := common.RoundNonNegativeFloat6(bestEntry.InputCost / 2.0)
 		cr := bestEntry.CompletionRatio
 		if cr <= 0 {
 			if bestEntry.InputCost > 0 && bestEntry.OutputCost > 0 {
-				cr = roundCost(bestEntry.OutputCost / bestEntry.InputCost)
+				cr = common.RoundNonNegativeFloat6(bestEntry.OutputCost / bestEntry.InputCost)
 			} else {
 				cr = 1.0
 			}
@@ -2352,13 +2414,6 @@ func ResolveAuthoritativeModelPricingUSD(modelName string) (quotaType int, model
 
 	mr, cr := InferSensibleFallbackModelPricing(modelName)
 	return 0, 0, mr, cr, 0, 0
-}
-
-func roundCost(v float64) float64 {
-	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
-		return 0
-	}
-	return math.Round(v*1e6) / 1e6
 }
 
 // ResolveUpstreamToQuotaUnitMultiplier returns how many system USD quota units
@@ -2430,9 +2485,9 @@ func RecalculateAllChannelModelCosts(persist bool) {
 					}
 					prev.RawModelPrice = rawP
 					prev.ModelPrice = rawP
-					prev.RawInputCost = roundCost(rawP * prev.BaseMultiplier)
+					prev.RawInputCost = common.RoundNonNegativeFloat6(rawP * prev.BaseMultiplier)
 					prev.RawOutputCost = prev.RawInputCost
-					prev.InputCost = roundCost(prev.RawInputCost * unitMult)
+					prev.InputCost = common.RoundNonNegativeFloat6(prev.RawInputCost * unitMult)
 					prev.OutputCost = prev.InputCost
 				} else {
 					comp := prev.CompletionRatio
@@ -2441,14 +2496,14 @@ func RecalculateAllChannelModelCosts(persist bool) {
 					}
 					rawIn := prev.RawInputCost
 					if rawIn <= 0 {
-						rawIn = roundCost(prev.ModelRatio * 2.0 * prev.BaseMultiplier)
+						rawIn = common.RoundNonNegativeFloat6(prev.ModelRatio * 2.0 * prev.BaseMultiplier)
 					} else if prev.BaseMultiplier > 0 {
-						prev.ModelRatio = roundCost(rawIn / (2.0 * prev.BaseMultiplier))
+						prev.ModelRatio = common.RoundNonNegativeFloat6(rawIn / (2.0 * prev.BaseMultiplier))
 					}
 					prev.RawInputCost = rawIn
-					prev.RawOutputCost = roundCost(rawIn * comp)
-					prev.InputCost = roundCost(rawIn * unitMult)
-					prev.OutputCost = roundCost(prev.InputCost * comp)
+					prev.RawOutputCost = common.RoundNonNegativeFloat6(rawIn * comp)
+					prev.InputCost = common.RoundNonNegativeFloat6(rawIn * unitMult)
+					prev.OutputCost = common.RoundNonNegativeFloat6(prev.InputCost * comp)
 				}
 				chMap[m] = prev
 				continue
@@ -2545,17 +2600,45 @@ func RecordChannelModelTelemetry(channelID int, modelName string, success bool, 
 	// The EMA starts from a healthy prior of 1.0 so a single failure cannot
 	// drop a new channel straight to zero.
 	now := time.Now()
-	state.emaSuccessRate = recoverChannelSuccessRate(state.emaSuccessRate, state.lastSampleAt, now)
+	prevSampleAt := state.lastSampleAt
+	state.emaSuccessRate = recoverChannelSuccessRate(state.emaSuccessRate, prevSampleAt, now)
 	state.emaSuccessRate = 0.8*state.emaSuccessRate + 0.2*successVal
+	state.emaTtftMs = recoverChannelDelayMs(state.emaTtftMs, prevSampleAt, now)
+	state.emaLatencyMs = recoverChannelDelayMs(state.emaLatencyMs, prevSampleAt, now)
+	state.emaTps = recoverChannelTps(state.emaTps, prevSampleAt, now)
 	state.lastSampleAt = now
 
 	if hasTtft && ttftMs >= 0 {
 		state.ttftSumMs += ttftMs
 		state.ttftCount++
+		sampleTtft := float64(ttftMs)
 		if state.emaTtftMs <= 0 {
-			state.emaTtftMs = float64(ttftMs)
+			state.emaTtftMs = sampleTtft
+		} else if success && sampleTtft < state.emaTtftMs*0.25 {
+			// Fast unfreeze when fresh TTFT is >4x faster than a stale stall spike.
+			state.emaTtftMs = 0.25*state.emaTtftMs + 0.75*sampleTtft
 		} else {
-			state.emaTtftMs = 0.75*state.emaTtftMs + 0.25*float64(ttftMs)
+			state.emaTtftMs = 0.75*state.emaTtftMs + 0.25*sampleTtft
+		}
+	}
+
+	if success {
+		attemptLatencyMs := generationMs
+		if hasTtft && ttftMs > 0 {
+			attemptLatencyMs = ttftMs + max(generationMs, 0)
+		}
+		if attemptLatencyMs > 0 {
+			state.latencySumMs += attemptLatencyMs
+			state.latencyCount++
+			sampleLatency := float64(attemptLatencyMs)
+			if state.emaLatencyMs <= 0 {
+				state.emaLatencyMs = sampleLatency
+			} else if sampleLatency < state.emaLatencyMs*0.25 {
+				// Fast unfreeze when fresh attempt latency is >4x faster than a stale stall spike.
+				state.emaLatencyMs = 0.25*state.emaLatencyMs + 0.75*sampleLatency
+			} else {
+				state.emaLatencyMs = 0.75*state.emaLatencyMs + 0.25*sampleLatency
+			}
 		}
 	}
 
@@ -2579,6 +2662,44 @@ func RecordChannelModelTelemetry(channelID int, modelName string, success bool, 
 	}
 }
 
+func snapshotFromTelemetryState(channelID int, modelName string, state *channelModelTelemetryState, now time.Time) ChannelModelTelemetrySnapshot {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	avail := 100.0
+	if state.requestCount > 0 {
+		avail = math.Round((float64(state.successCount)/float64(state.requestCount))*10000.0) / 100.0
+	}
+	tpsAvg := 0.0
+	if state.tpsCount > 0 {
+		tpsAvg = math.Round((state.tpsSum/float64(state.tpsCount))*100.0) / 100.0
+	}
+	avgTtftSec := 0.0
+	if state.ttftCount > 0 {
+		avgTtftSec = math.Round((float64(state.ttftSumMs)/float64(state.ttftCount)/1000.0)*100.0) / 100.0
+	}
+	avgLatencySec := 0.0
+	if state.latencyCount > 0 {
+		avgLatencySec = math.Round((float64(state.latencySumMs)/float64(state.latencyCount)/1000.0)*1000.0) / 1000.0
+	}
+	return ChannelModelTelemetrySnapshot{
+		ChannelID:      channelID,
+		Model:          modelName,
+		RequestCount:   state.requestCount,
+		SuccessCount:   state.successCount,
+		Availability:   avail,
+		TpsMin:         math.Round(state.tpsMin*100.0) / 100.0,
+		TpsAvg:         tpsAvg,
+		TpsMax:         math.Round(state.tpsMax*100.0) / 100.0,
+		AvgTtftSec:     avgTtftSec,
+		AvgLatencySec:  avgLatencySec,
+		EmaSuccessRate: recoverChannelSuccessRate(state.emaSuccessRate, state.lastSampleAt, now),
+		EmaTps:         recoverChannelTps(state.emaTps, state.lastSampleAt, now),
+		EmaTtftMs:      recoverChannelDelayMs(state.emaTtftMs, state.lastSampleAt, now),
+		EmaLatencyMs:   recoverChannelDelayMs(state.emaLatencyMs, state.lastSampleAt, now),
+	}
+}
+
 func GetChannelModelTelemetry(channelID int, modelName string) ChannelModelTelemetrySnapshot {
 	key := channelModelKey{channelID: channelID, model: strings.TrimSpace(modelName)}
 	val, ok := channelTelemetryMap.Load(key)
@@ -2596,61 +2717,115 @@ func GetChannelModelTelemetry(channelID int, modelName string) ChannelModelTelem
 			EmaSuccessRate: 1.0,
 		}
 	}
-	state := val.(*channelModelTelemetryState)
-	state.mu.Lock()
-	defer state.mu.Unlock()
+	return snapshotFromTelemetryState(channelID, modelName, val.(*channelModelTelemetryState), time.Now())
+}
 
-	avail := 100.0
-	if state.requestCount > 0 {
-		avail = math.Round((float64(state.successCount)/float64(state.requestCount))*10000.0) / 100.0
+// ListChannelModelTelemetry returns recorded in-memory telemetry snapshots matching
+// optional channelID (> 0) and modelName (non-empty), sorted by (channel_id, model).
+func ListChannelModelTelemetry(channelID int, modelName string) []ChannelModelTelemetrySnapshot {
+	modelFilter := strings.TrimSpace(modelName)
+	normalizedFilter := ""
+	if modelFilter != "" {
+		normalizedFilter = ratio_setting.RoutingMatchModelName(modelFilter)
 	}
-	tpsAvg := 0.0
-	if state.tpsCount > 0 {
-		tpsAvg = math.Round((state.tpsSum/float64(state.tpsCount))*100.0) / 100.0
-	}
-	avgTtftSec := 0.0
-	if state.ttftCount > 0 {
-		avgTtftSec = math.Round((float64(state.ttftSumMs)/float64(state.ttftCount)/1000.0)*100.0) / 100.0
-	}
-	return ChannelModelTelemetrySnapshot{
-		ChannelID:      channelID,
-		Model:          modelName,
-		RequestCount:   state.requestCount,
-		SuccessCount:   state.successCount,
-		Availability:   avail,
-		TpsMin:         math.Round(state.tpsMin*100.0) / 100.0,
-		TpsAvg:         tpsAvg,
-		TpsMax:         math.Round(state.tpsMax*100.0) / 100.0,
-		AvgTtftSec:     avgTtftSec,
-		EmaSuccessRate: recoverChannelSuccessRate(state.emaSuccessRate, state.lastSampleAt, time.Now()),
-		EmaTps:         state.emaTps,
-		EmaTtftMs:      state.emaTtftMs,
+	now := time.Now()
+	var snapshots []ChannelModelTelemetrySnapshot
+	channelTelemetryMap.Range(func(k, v any) bool {
+		key, ok := k.(channelModelKey)
+		if !ok {
+			return true
+		}
+		if channelID > 0 && key.channelID != channelID {
+			return true
+		}
+		if modelFilter != "" && key.model != modelFilter && (normalizedFilter == "" || key.model != normalizedFilter) {
+			return true
+		}
+		snapshots = append(snapshots, snapshotFromTelemetryState(key.channelID, key.model, v.(*channelModelTelemetryState), now))
+		return true
+	})
+	sort.Slice(snapshots, func(i, j int) bool {
+		if snapshots[i].ChannelID != snapshots[j].ChannelID {
+			return snapshots[i].ChannelID < snapshots[j].ChannelID
+		}
+		return snapshots[i].Model < snapshots[j].Model
+	})
+	return snapshots
+}
+
+const (
+	schedulingAvailabilityTopBand    = 5000.0
+	schedulingAvailabilityBandGap    = 1000.0
+	schedulingProbeChance            = 0.05
+	schedulingColdStartExploreChance = 0.10
+	schedulingDegradedBelow          = 0.50
+	schedulingReliableBelow          = 0.90
+	schedulingReliableTierOffset     = 1e6
+)
+
+func schedulingAvailabilityBand(availRatio float64) float64 {
+	switch {
+	case availRatio >= 0.99:
+		return schedulingAvailabilityTopBand
+	case availRatio >= 0.95:
+		return schedulingAvailabilityTopBand - schedulingAvailabilityBandGap
+	case availRatio >= 0.90:
+		return schedulingAvailabilityTopBand - 2*schedulingAvailabilityBandGap
+	case availRatio >= 0.75:
+		return schedulingAvailabilityTopBand - 3*schedulingAvailabilityBandGap
+	case availRatio >= 0.50:
+		return schedulingAvailabilityTopBand - 4*schedulingAvailabilityBandGap
+	default:
+		return 0
 	}
 }
 
-func scoreChannelForSchedule(mode string, ch *Channel, modelName string) float64 {
-	telemetry := GetChannelModelTelemetry(ch.Id, modelName)
+func schedulingBBRDeliveryBand(deliveryRatio float64) float64 {
+	switch {
+	case deliveryRatio >= 0.90:
+		return 1.0
+	case deliveryRatio >= 0.75:
+		return 0.80
+	case deliveryRatio >= 0.50:
+		return 0.60
+	case deliveryRatio >= 0.25:
+		return 0.40
+	default:
+		return 0.20
+	}
+}
+
+func schedulingBBRTpsBand(tps float64) float64 {
+	switch {
+	case tps >= 200.0:
+		return 4.0
+	case tps >= 60.0:
+		return 3.0
+	case tps >= 25.0:
+		return 2.0
+	default:
+		return 1.0
+	}
+}
+
+func schedulingBBRTtftBand(ttftSec float64) float64 {
+	switch {
+	case ttftSec <= 1.0:
+		return 1.0
+	case ttftSec <= 2.5:
+		return 1.5
+	case ttftSec <= 5.0:
+		return 2.5
+	default:
+		return 4.0
+	}
+}
+
+func channelEffectiveCompositeCost(ch *Channel, modelName string) float64 {
 	costEntry, hasCost := GetChannelModelCost(ch.Id, modelName)
 	if !hasCost {
 		costEntry = computeDefaultModelCostEntry(ch, modelName, 0)
 	}
-
-	availRatio := telemetry.EmaSuccessRate
-	if telemetry.RequestCount == 0 {
-		availRatio = 1.0
-	}
-	tps := telemetry.EmaTps
-	if tps <= 0 {
-		tps = telemetry.TpsAvg
-	}
-	if tps <= 0 {
-		tps = 80.0 // neutral baseline before first sample
-	}
-	ttftSec := telemetry.AvgTtftSec
-	if ttftSec <= 0 {
-		ttftSec = 1.0 // neutral 1.0s baseline before first sample
-	}
-
 	// Effective composite cost (1x input + 3x output weighted per 1M tokens)
 	compositeCost := costEntry.InputCost + 3.0*costEntry.OutputCost
 	if topupMult := ResolveChannelTopupMultiplier(ch.Id, ch, GetModelPriceSyncConfig()); topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
@@ -2659,46 +2834,223 @@ func scoreChannelForSchedule(mode string, ch *Channel, modelName string) float64
 	if compositeCost <= 0 {
 		compositeCost = 0.001
 	}
+	return compositeCost
+}
 
+func telemetryEffectiveDelaySec(telemetry ChannelModelTelemetrySnapshot) (float64, bool) {
+	if telemetry.EmaTtftMs > 0 {
+		return telemetry.EmaTtftMs / 1000.0, true
+	}
+	if telemetry.AvgTtftSec > 0 {
+		return telemetry.AvgTtftSec, true
+	}
+	if telemetry.EmaLatencyMs > 0 {
+		return telemetry.EmaLatencyMs / 1000.0, true
+	}
+	if telemetry.AvgLatencySec > 0 {
+		return telemetry.AvgLatencySec, true
+	}
+	return 1.0, false
+}
+
+// probeDegradedCandidate gives degraded channels — whether demoted by low
+// success rate (EMA < 0.5) or by stale extreme latency/throughput (>3x slower
+// delay or <20% throughput relative to the best healthy peer in speed/bbr) — a
+// bounded 5% chance to win selection directly so they can collect fresh samples
+// and recover without a process restart.
+func probeDegradedCandidate(candidates []*Channel, modelName string, mode string) *Channel {
+	if len(candidates) == 0 || rand.Float64() >= schedulingProbeChance {
+		return nil
+	}
+
+	minCost := math.Inf(1)
+	if mode == SchedulingModeLowerCost {
+		for _, ch := range candidates {
+			if ch == nil {
+				continue
+			}
+			if c := channelEffectiveCompositeCost(ch, modelName); c < minCost {
+				minCost = c
+			}
+		}
+	}
+
+	checkSpeedDegradation := (mode == SchedulingModeSpeed || mode == SchedulingModeBBR) && len(candidates) > 1
+	bestHealthyDelaySec := math.Inf(1)
+	bestHealthyTps := 0.0
+	if checkSpeedDegradation {
+		for _, ch := range candidates {
+			if ch == nil {
+				continue
+			}
+			tel := GetChannelModelTelemetry(ch.Id, modelName)
+			if tel.RequestCount == 0 || tel.EmaSuccessRate < schedulingDegradedBelow {
+				continue
+			}
+			if dSec, ok := telemetryEffectiveDelaySec(tel); ok && dSec > 0 && dSec < bestHealthyDelaySec {
+				bestHealthyDelaySec = dSec
+			}
+			tps := tel.EmaTps
+			if tps <= 0 {
+				tps = tel.TpsAvg
+			}
+			if tps > bestHealthyTps {
+				bestHealthyTps = tps
+			}
+		}
+	}
+
+	var degraded []*Channel
+	for _, ch := range candidates {
+		if ch == nil {
+			continue
+		}
+		telemetry := GetChannelModelTelemetry(ch.Id, modelName)
+		if telemetry.RequestCount == 0 {
+			continue
+		}
+		healthDegraded := telemetry.EmaSuccessRate < schedulingDegradedBelow
+		speedDegraded := false
+		if checkSpeedDegradation {
+			if dSec, ok := telemetryEffectiveDelaySec(telemetry); ok && !math.IsInf(bestHealthyDelaySec, 1) && dSec > bestHealthyDelaySec*3.0 {
+				speedDegraded = true
+			}
+			tps := telemetry.EmaTps
+			if tps <= 0 {
+				tps = telemetry.TpsAvg
+			}
+			if tps > 0 && bestHealthyTps > 0 && tps < bestHealthyTps*0.2 {
+				speedDegraded = true
+			}
+		}
+		if !healthDegraded && !speedDegraded {
+			continue
+		}
+		if mode == SchedulingModeLowerCost {
+			if channelEffectiveCompositeCost(ch, modelName) > minCost*(1.0+1e-6) {
+				continue
+			}
+		}
+		degraded = append(degraded, ch)
+	}
+	if len(degraded) == 0 {
+		return nil
+	}
+	return degraded[rand.Intn(len(degraded))]
+}
+
+// probeUnsampledSpeedCandidate prevents cold-start starvation in speed mode:
+// once any slow channel records > 80 tps, unsampled faster channels would
+// otherwise lose every deterministic comparison against the neutral baseline
+// and never collect their first speed/latency sample. Once all candidates have
+// at least one sample, this returns nil immediately with zero overhead.
+func probeUnsampledSpeedCandidate(candidates []*Channel, modelName string) *Channel {
+	if len(candidates) <= 1 {
+		return nil
+	}
+	var unsampled []*Channel
+	hasSampled := false
+	for _, ch := range candidates {
+		if ch == nil {
+			continue
+		}
+		tel := GetChannelModelTelemetry(ch.Id, modelName)
+		if tel.EmaTps > 0 || tel.TpsAvg > 0 || tel.EmaLatencyMs > 0 || tel.AvgLatencySec > 0 || tel.EmaTtftMs > 0 || tel.AvgTtftSec > 0 {
+			hasSampled = true
+		} else if tel.RequestCount == 0 || tel.EmaSuccessRate >= schedulingDegradedBelow {
+			unsampled = append(unsampled, ch)
+		}
+	}
+	if !hasSampled || len(unsampled) == 0 || rand.Float64() >= schedulingColdStartExploreChance {
+		return nil
+	}
+	return unsampled[rand.Intn(len(unsampled))]
+}
+
+func ScoreChannelForSchedule(mode string, ch *Channel, modelName string) float64 {
+	return scoreChannelForSchedule(mode, ch, modelName)
+}
+
+func scoreChannelForSchedule(mode string, ch *Channel, modelName string) float64 {
+	telemetry := GetChannelModelTelemetry(ch.Id, modelName)
+
+	availRatio := telemetry.EmaSuccessRate
+	if telemetry.RequestCount == 0 {
+		availRatio = 1.0
+	}
+	rawTps := telemetry.EmaTps
+	if rawTps <= 0 {
+		rawTps = telemetry.TpsAvg
+	}
+	tps := rawTps
+	if tps <= 0 {
+		tps = 80.0 // neutral baseline before first sample
+	}
+
+	// Prefer decaying EMA streaming TTFT; for non-streaming requests where TTFT
+	// does not exist, fall back to decaying EMA attempt latency so response speed
+	// is measured across both streaming and non-streaming workloads.
+	delaySec, hasDelaySample := telemetryEffectiveDelaySec(telemetry)
+
+	compositeCost := channelEffectiveCompositeCost(ch, modelName)
 	priorityBonus := float64(ch.GetPriority()) * 1e-4
 
 	switch mode {
 	case SchedulingModeLowerCost:
-		// Scale by health so a flaky cheap channel gradually yields to a
-		// healthy one; severely degraded channels (< 50% EMA success) are
-		// penalized heavily.
-		healthPenalty := availRatio
-		if availRatio < 0.5 {
-			healthPenalty = 0.01 * availRatio
+		// Reliability gate: channels below 90% EMA success rank strictly below
+		// all reliable channels regardless of price spread, recovering via probes
+		// and time-decay rather than monopolising traffic with cheap failures.
+		reliable := availRatio >= schedulingReliableBelow
+		if !reliable {
+			return availRatio*10.0 + min(1000.0/compositeCost, schedulingReliableTierOffset*0.5)*0.001 + priorityBonus
 		}
-		return (1000.0/compositeCost)*healthPenalty + availRatio*0.1 + priorityBonus
+		availTie := 1.0
+		if availRatio < 0.99 {
+			availTie = math.Floor(availRatio*20.0) / 20.0
+		}
+		return schedulingReliableTierOffset + (1000.0 / compositeCost) + availTie*0.1 + priorityBonus
 
 	case SchedulingModeSpeed:
-		healthPenalty := 1.0
+		availBand := availRatio
+		if availRatio >= 0.95 {
+			availBand = 1.0
+		}
+		healthPenalty := availBand * availBand * availBand
 		if availRatio < 0.5 {
 			healthPenalty = 0.05 * availRatio
 		}
-		speedScore := (tps / (1.0 + ttftSec*0.5))
-		return speedScore*healthPenalty + availRatio*5.0 + priorityBonus
+		delayPenalty := 1.0 + delaySec*1.5 + delaySec*delaySec
+		var speedScore float64
+		if rawTps > 0 {
+			speedScore = rawTps / delayPenalty
+		} else if hasDelaySample {
+			speedScore = 80.0 / (0.05 + delaySec + delaySec*delaySec)
+		} else {
+			speedScore = tps / delayPenalty
+		}
+		return speedScore*healthPenalty + availBand*5.0 + priorityBonus
 
 	case SchedulingModeAvailability:
-		// The recovering EMA dominates; the lifetime success rate only
-		// separates channels with a similar recent record, so an old outage
-		// cannot keep a channel demoted forever.
-		return (availRatio*1000.0 + telemetry.Availability*0.5) - ttftSec*0.5 + tps*0.01 + priorityBonus
+		// Banded availability: channels in the same reliability tier share
+		// traffic by weight instead of collapsing onto a single fastest winner.
+		return schedulingAvailabilityBand(availRatio) + priorityBonus
 
 	case SchedulingModeBBR:
-		// BBR-inspired congestion & delivery score:
-		// - Windowed max bandwidth (TpsMax / EmaTps) and min propagation delay (AvgTtftSec)
-		// - Cubic availability factor to rapidly drain failing channels while allowing 5% BBR probe recovery
+		// BBR-inspired congestion & delivery score with quantised bands so
+		// healthy channels with comparable throughput share traffic while
+		// cubic availability rapidly drains failing channels.
 		btlBw := max(telemetry.TpsMax, tps)
-		deliveryRatio := tps / max(btlBw, 1.0)
-		availFactor := availRatio * availRatio * availRatio
-		if availRatio < 0.5 && rand.Float64() < 0.05 {
-			// BBR ProbeBW: 5% chance to probe a degraded channel to detect recovery
-			availFactor = 0.5
+		deliveryBand := schedulingBBRDeliveryBand(tps / max(btlBw, 1.0))
+		tpsBand := schedulingBBRTpsBand(tps)
+		ttftBand := schedulingBBRTtftBand(delaySec)
+		availBand := availRatio
+		if availRatio >= 0.95 {
+			availBand = 1.0
+		} else {
+			availBand = math.Floor(availRatio*20.0) / 20.0
 		}
-		bbrScore := availFactor * (1.0 + tps/50.0) * (0.5 + 0.5*deliveryRatio) / (1.0 + ttftSec*0.35)
+		availFactor := availBand * availBand * availBand
+		bbrScore := availFactor * tpsBand * (0.5 + 0.5*deliveryBand) / ttftBand
 		return bbrScore*100.0 + priorityBonus
 
 	default:
@@ -2728,11 +3080,22 @@ func selectChannelByGroupSchedule(group string, modelName string, retry int, can
 	if len(candidates) == 0 {
 		return nil
 	}
+
+	mode := GetGroupSchedulingMode(group)
+	if mode == SchedulingModeBBR || mode == SchedulingModeAvailability || mode == SchedulingModeLowerCost || mode == SchedulingModeSpeed {
+		if probed := probeDegradedCandidate(candidates, modelName, mode); probed != nil {
+			return probed
+		}
+	}
+	if mode == SchedulingModeSpeed && retry <= 0 {
+		if explored := probeUnsampledSpeedCandidate(candidates, modelName); explored != nil {
+			return explored
+		}
+	}
 	if len(candidates) == 1 {
 		return candidates[0]
 	}
 
-	mode := GetGroupSchedulingMode(group)
 	if mode == SchedulingModeCostControl {
 		if selected := selectChannelByCostControl(group, modelName, retry, candidates); selected != nil {
 			return selected
@@ -2864,7 +3227,21 @@ var (
 	logCacheCreationTokens1hRe = regexp.MustCompile(`"cache_creation_tokens_1h"\s*:\s*(\d+)`)
 	logUpstreamCostUSDRe       = regexp.MustCompile(`"upstream_cost_usd"\s*:\s*([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)`)
 	logAdminChannelNameRe      = regexp.MustCompile(`"channel_name"\s*:\s*"([^"\\]*)"`)
+	logFrtMsRegex              = regexp.MustCompile(`"frt"\s*:\s*([0-9]+(?:\.[0-9]+)?)`)
 )
+
+// ParseLogOtherFrtMs extracts the upstream first-token time (ms) from a Log.Other JSON string.
+func ParseLogOtherFrtMs(other string) float64 {
+	if !strings.Contains(other, `"frt"`) {
+		return 0
+	}
+	if m := logFrtMsRegex.FindStringSubmatch(other); len(m) == 2 {
+		if val, err := strconv.ParseFloat(m[1], 64); err == nil && val > 0 && !math.IsNaN(val) && !math.IsInf(val, 0) {
+			return val
+		}
+	}
+	return 0
+}
 
 func parseLogOtherUpstreamCostUSD(other string) (float64, bool) {
 	if !strings.Contains(other, "upstream_cost_usd") {
@@ -2932,38 +3309,6 @@ func UpstreamAccountKey(acc UpstreamAccountSource) string {
 	return ""
 }
 
-func cleanUpstreamBaseURLForMatch(raw string) string {
-	s := strings.TrimSpace(raw)
-	s = strings.Trim(s, `"'`)
-	if s == "" {
-		return ""
-	}
-	s = strings.ReplaceAll(s, "露米娅.com", "lumiya.vip")
-	s = strings.ReplaceAll(s, "露米婭.com", "lumiya.vip")
-	lower := strings.ToLower(s)
-	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-		s = "https://" + s
-	}
-	if parsed, err := url.Parse(s); err == nil && parsed.Host != "" {
-		scheme := strings.ToLower(parsed.Scheme)
-		host := strings.ToLower(parsed.Host)
-		if host == "xn--1ys141f4ks.com" || host == "www.lumiya.vip" {
-			host = "lumiya.vip"
-		}
-		if strings.Contains(host, "lumiya.vip") {
-			scheme = "https"
-		}
-		return scheme + "://" + host
-	}
-	s = strings.ToLower(strings.TrimRight(s, "/"))
-	for _, suffix := range []string{"/v1", "/api", "/console", "/pricing", "/panel", "/token", "/personal"} {
-		if trimmed, ok := strings.CutSuffix(s, suffix); ok {
-			s = trimmed
-		}
-	}
-	return strings.TrimRight(s, "/")
-}
-
 // ResolveChannelUpstreamSource resolves which CRON UpstreamAccountSource (or "direct") owns a channel.
 func ResolveChannelUpstreamSource(ch *Channel, policy *GroupCostControlPolicy, cfg ModelPriceSyncConfig) (string, string) {
 	if ch == nil {
@@ -3015,7 +3360,7 @@ func ResolveChannelUpstreamSource(ch *Channel, policy *GroupCostControlPolicy, c
 		}
 	}
 
-	chBase := cleanUpstreamBaseURLForMatch(ch.GetBaseURL())
+	chBase := strings.ToLower(CleanUpstreamAPIBaseURL(ch.GetBaseURL(), ""))
 	chTag := strings.TrimSpace(ch.GetTag())
 	chNameLower := strings.ToLower(strings.TrimSpace(ch.Name))
 
@@ -3028,7 +3373,7 @@ func ResolveChannelUpstreamSource(ch *Channel, policy *GroupCostControlPolicy, c
 		if accName == "" {
 			accName = key
 		}
-		accBase := cleanUpstreamBaseURLForMatch(acc.BaseURL)
+		accBase := strings.ToLower(CleanUpstreamAPIBaseURL(acc.BaseURL, ""))
 		if chBase != "" && accBase != "" && chBase == accBase {
 			return key, accName
 		}
@@ -3050,7 +3395,8 @@ func ResolveChannelUpstreamSource(ch *Channel, policy *GroupCostControlPolicy, c
 	return DirectUpstreamSourceID, "Direct"
 }
 
-func isDefaultUnconfiguredModelRatio(modelName string, quotaType int, modelRatio float64, completionRatio float64) bool {
+// IsDefaultUnconfiguredModelRatio reports whether a model uses the legacy 37.5 fallback placeholder ratio.
+func IsDefaultUnconfiguredModelRatio(modelName string, quotaType int, modelRatio float64, completionRatio float64) bool {
 	if quotaType != 0 {
 		return false
 	}
@@ -3063,17 +3409,22 @@ func isDefaultUnconfiguredModelRatio(modelName string, quotaType int, modelRatio
 	return !strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "gpt-4.5")
 }
 
-func resolveBaseModelPricesUSD(modelName string) (quotaType int, inPrice float64, outPrice float64, cacheRatio float64, createCacheRatio float64) {
+// ResolveBaseModelPricingUSD resolves the site's configured 1x USD unit pricing and metadata for modelName.
+func ResolveBaseModelPricingUSD(modelName string) (quotaType int, billingMode string, inPrice float64, outPrice float64, modelRatio float64, completionRatio float64, cacheRatio float64, createCacheRatio float64) {
 	if price, ok := ratio_setting.GetModelPrice(modelName, false); ok && price > 0 {
-		p := roundCost(price)
-		return 1, p, p, 1.0, 1.0
+		p := common.RoundNonNegativeFloat6(price)
+		return 1, "fixed", p, p, 0, 1.0, 1.0, 1.0
 	}
 	if billing_setting.GetBillingMode(modelName) == billing_setting.BillingModeTieredExpr {
 		if expr, hasExpr := billing_setting.GetBillingExpr(modelName); hasExpr && strings.TrimSpace(expr) != "" {
-			if mr, cr, cacheR, createCacheR, ok := deriveLocalExprBasePricing(expr); ok && mr > 0 {
-				inP := roundCost(mr * 2.0)
-				outP := roundCost(inP * max(cr, 1.0))
-				return 0, inP, outP, cacheR, createCacheR
+			if unitPrice, ok := ExtractExprUnitPrice(expr); ok && unitPrice > 0 {
+				p := common.RoundNonNegativeFloat6(unitPrice)
+				return 1, "tiered_expr", p, p, 0, 1.0, 1.0, 1.0
+			}
+			if mr, cr, cacheR, createCacheR, _, _, ok := ExtractExprBaseTokenPricing(expr); ok && mr > 0 {
+				inP := common.RoundNonNegativeFloat6(mr * 2.0)
+				outP := common.RoundNonNegativeFloat6(inP * max(cr, 1.0))
+				return 0, "tiered_expr", inP, outP, mr, max(cr, 1.0), cacheR, createCacheR
 			}
 		}
 	}
@@ -3082,71 +3433,88 @@ func resolveBaseModelPricesUSD(modelName string) (quotaType int, inPrice float64
 	if cr <= 0 {
 		cr = 1.0
 	}
-	if !hasRatio || isDefaultUnconfiguredModelRatio(modelName, 0, mr, cr) {
-		return 0, 0, 0, 0, 0
+	if !hasRatio || IsDefaultUnconfiguredModelRatio(modelName, 0, mr, cr) {
+		return 0, "token", 0, 0, 0, cr, 0, 0
 	}
 	if r, ok := ratio_setting.GetCacheRatio(modelName); ok && r > 0 {
-		cacheRatio = roundCost(r)
+		cacheRatio = common.RoundNonNegativeFloat6(r)
 	}
 	if w, ok := ratio_setting.GetCreateCacheRatio(modelName); ok && w > 0 {
-		createCacheRatio = roundCost(w)
+		createCacheRatio = common.RoundNonNegativeFloat6(w)
 	}
-	inP := roundCost(mr * 2.0)
-	outP := roundCost(inP * cr)
-	return 0, inP, outP, cacheRatio, createCacheRatio
+	inP := common.RoundNonNegativeFloat6(mr * 2.0)
+	outP := common.RoundNonNegativeFloat6(inP * cr)
+	return 0, "token", inP, outP, mr, cr, cacheRatio, createCacheRatio
+}
+
+func resolveBaseModelPricesUSD(modelName string) (quotaType int, inPrice float64, outPrice float64, cacheRatio float64, createCacheRatio float64) {
+	qt, _, inP, outP, _, _, cacheR, createCacheR := ResolveBaseModelPricingUSD(modelName)
+	return qt, inP, outP, cacheR, createCacheR
+}
+
+// ResolveEffectiveEntryCostsUSD converts a ChannelModelCostEntry into normalized USD unit prices
+// using syncCfg overrides and central exchange rates, before applying TopupMultiplier.
+func ResolveEffectiveEntryCostsUSD(entry ChannelModelCostEntry, syncCfg ModelPriceSyncConfig) (inUSD float64, outUSD float64, rawIn float64, rawOut float64, curr string, rate float64) {
+	curr = strings.ToUpper(strings.TrimSpace(entry.Currency))
+	rate = entry.ExchangeRate
+	if entry.ChannelID > 0 {
+		if chCurr, ok := syncCfg.ChannelCurrencies[entry.ChannelID]; ok && strings.TrimSpace(chCurr) != "" {
+			curr = strings.ToUpper(strings.TrimSpace(chCurr))
+		}
+		if chRate, ok := syncCfg.ChannelExchangeRates[entry.ChannelID]; ok && chRate > 0 {
+			rate = chRate
+		}
+	}
+	if curr == "" {
+		curr = "USD"
+	}
+	effRate := ResolveEffectiveChannelExchangeRate(curr, rate)
+	unitMult := ResolveUpstreamToQuotaUnitMultiplier(curr, effRate)
+	rate = effRate
+
+	rawIn = entry.RawInputCost
+	rawOut = entry.RawOutputCost
+	if rawIn <= 0 {
+		mult := entry.BaseMultiplier
+		if mult <= 0 {
+			mult = 1.0
+		}
+		if entry.QuotaType == 1 && entry.ModelPrice > 0 {
+			rawIn = common.RoundNonNegativeFloat6(entry.ModelPrice * mult)
+			rawOut = rawIn
+		} else if entry.ModelRatio > 0 && !IsDefaultUnconfiguredModelRatio(entry.Model, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
+			rawIn = common.RoundNonNegativeFloat6(entry.ModelRatio * 2.0 * mult)
+			rawOut = common.RoundNonNegativeFloat6(rawIn * max(entry.CompletionRatio, 1.0))
+		} else if entry.InputCost > 0 && !IsDefaultUnconfiguredModelRatio(entry.Model, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
+			rawIn = entry.InputCost
+			rawOut = entry.OutputCost
+		}
+	}
+	if (entry.FromUpstream || entry.ChannelType == constant.ChannelTypeNewAPI) && rawIn > 0 {
+		inUSD = common.RoundNonNegativeFloat6(rawIn * unitMult)
+		outUSD = common.RoundNonNegativeFloat6(rawOut * unitMult)
+		return inUSD, outUSD, rawIn, rawOut, curr, rate
+	}
+	if !IsDefaultUnconfiguredModelRatio(entry.Model, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
+		inUSD = entry.InputCost
+		outUSD = entry.OutputCost
+		if entry.BaseMultiplier <= 0 || math.Abs(entry.BaseMultiplier-1.0) < 1e-6 {
+			if inferred, ok := InferChannelTrailingMultiplier(entry.ChannelName); ok && inferred > 0 && inferred != 1.0 {
+				inUSD = common.RoundNonNegativeFloat6(inUSD * inferred)
+				outUSD = common.RoundNonNegativeFloat6(outUSD * inferred)
+			}
+		}
+	}
+	return inUSD, outUSD, rawIn, rawOut, curr, rate
 }
 
 func resolveChannelModelUnitPricesUSD(channelID int, modelName string, syncCfg ModelPriceSyncConfig) (quotaType int, inUSD float64, outUSD float64, cacheRatio float64, createCacheRatio float64) {
 	if entry, hasEntry := GetChannelModelCost(channelID, modelName); hasEntry {
-		curr := strings.ToUpper(strings.TrimSpace(entry.Currency))
-		rate := entry.ExchangeRate
-		if chCurr, ok := syncCfg.ChannelCurrencies[channelID]; ok && strings.TrimSpace(chCurr) != "" {
-			curr = strings.ToUpper(strings.TrimSpace(chCurr))
-		}
-		if chRate, ok := syncCfg.ChannelExchangeRates[channelID]; ok && chRate > 0 {
-			rate = chRate
-		}
-		if curr == "" {
-			curr = "USD"
-		}
-		effRate := ResolveEffectiveChannelExchangeRate(curr, rate)
-		unitMult := ResolveUpstreamToQuotaUnitMultiplier(curr, effRate)
-
-		rawIn := entry.RawInputCost
-		rawOut := entry.RawOutputCost
-		if rawIn <= 0 {
-			mult := entry.BaseMultiplier
-			if mult <= 0 {
-				mult = 1.0
-			}
-			if entry.QuotaType == 1 && entry.ModelPrice > 0 {
-				rawIn = roundCost(entry.ModelPrice * mult)
-				rawOut = rawIn
-			} else if entry.ModelRatio > 0 && !isDefaultUnconfiguredModelRatio(modelName, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
-				rawIn = roundCost(entry.ModelRatio * 2.0 * mult)
-				rawOut = roundCost(rawIn * max(entry.CompletionRatio, 1.0))
-			} else if entry.InputCost > 0 && !isDefaultUnconfiguredModelRatio(modelName, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
-				rawIn = entry.InputCost
-				rawOut = entry.OutputCost
-			}
-		}
-		if entry.FromUpstream && rawIn > 0 {
-			inUSD = roundCost(rawIn * unitMult)
-			outUSD = roundCost(rawOut * unitMult)
-		} else if !isDefaultUnconfiguredModelRatio(modelName, entry.QuotaType, entry.ModelRatio, entry.CompletionRatio) {
-			inUSD = entry.InputCost
-			outUSD = entry.OutputCost
-			if entry.BaseMultiplier <= 0 || math.Abs(entry.BaseMultiplier-1.0) < 1e-6 {
-				if inferred, ok := InferChannelTrailingMultiplier(entry.ChannelName); ok && inferred > 0 && inferred != 1.0 {
-					inUSD = roundCost(inUSD * inferred)
-					outUSD = roundCost(outUSD * inferred)
-				}
-			}
-		}
+		inUSD, outUSD, _, _, _, _ = ResolveEffectiveEntryCostsUSD(entry, syncCfg)
 		if inUSD > 0 || outUSD > 0 {
 			if topupMult := ResolveChannelTopupMultiplier(channelID, nil, syncCfg); topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
-				inUSD = roundCost(inUSD / topupMult)
-				outUSD = roundCost(outUSD / topupMult)
+				inUSD = common.RoundNonNegativeFloat6(inUSD / topupMult)
+				outUSD = common.RoundNonNegativeFloat6(outUSD / topupMult)
 			}
 			return entry.QuotaType, inUSD, outUSD, entry.CacheRatio, entry.CreateCacheRatio
 		}
@@ -3167,15 +3535,15 @@ func resolveChannelModelUnitPricesUSD(channelID int, modelName string, syncCfg M
 			effRate := ResolveEffectiveChannelExchangeRate(curr, snap.ExchangeRate)
 			unitMult := ResolveUpstreamToQuotaUnitMultiplier(curr, effRate)
 			if entry.FromUpstream && entry.RawInputCost > 0 {
-				inUSD = roundCost(entry.RawInputCost * unitMult)
-				outUSD = roundCost(entry.RawOutputCost * unitMult)
+				inUSD = common.RoundNonNegativeFloat6(entry.RawInputCost * unitMult)
+				outUSD = common.RoundNonNegativeFloat6(entry.RawOutputCost * unitMult)
 			} else if entry.InputCost > 0 || entry.OutputCost > 0 {
 				inUSD = entry.InputCost
 				outUSD = entry.OutputCost
 			}
 			if inUSD > 0 || outUSD > 0 {
-				inUSD = roundCost(inUSD / topupMult)
-				outUSD = roundCost(outUSD / topupMult)
+				inUSD = common.RoundNonNegativeFloat6(inUSD / topupMult)
+				outUSD = common.RoundNonNegativeFloat6(outUSD / topupMult)
 				return entry.QuotaType, inUSD, outUSD, entry.CacheRatio, entry.CreateCacheRatio
 			}
 		}
@@ -3183,14 +3551,22 @@ func resolveChannelModelUnitPricesUSD(channelID int, modelName string, syncCfg M
 	qt, inP, outP, cacheR, createCacheR := resolveBaseModelPricesUSD(modelName)
 	if channelID > 0 && (inP > 0 || outP > 0) {
 		if ch := lookupChannelOutsideRouting(channelID); ch != nil {
-			_, _, baseMult := ResolveChannelCurrencyAndMultiplier(ch, nil, syncCfg)
+			curr, exRate, baseMult := ResolveChannelCurrencyAndMultiplier(ch, nil, syncCfg)
+			costScale := 1.0
 			if baseMult > 0 && baseMult != 1.0 {
-				inP = roundCost(inP * baseMult)
-				outP = roundCost(outP * baseMult)
+				costScale = baseMult
 			}
+			if ch.Type == constant.ChannelTypeNewAPI {
+				unitMult := ResolveUpstreamToQuotaUnitMultiplier(curr, exRate)
+				if unitMult > 0 {
+					costScale = common.RoundNonNegativeFloat6(costScale * unitMult)
+				}
+			}
+			inP = common.RoundNonNegativeFloat6(inP * costScale)
+			outP = common.RoundNonNegativeFloat6(outP * costScale)
 			if topupMult := ResolveChannelTopupMultiplier(channelID, ch, syncCfg); topupMult > 0 && math.Abs(topupMult-1.0) > 1e-6 {
-				inP = roundCost(inP / topupMult)
-				outP = roundCost(outP / topupMult)
+				inP = common.RoundNonNegativeFloat6(inP / topupMult)
+				outP = common.RoundNonNegativeFloat6(outP / topupMult)
 			}
 		} else if snap, hasSnap := GetArchivedChannelSnapshot(channelID); hasSnap {
 			costScale := 1.0
@@ -3200,17 +3576,79 @@ func resolveChannelModelUnitPricesUSD(channelID int, modelName string, syncCfg M
 			if snap.ChannelType == constant.ChannelTypeNewAPI {
 				unitMult := ResolveUpstreamToQuotaUnitMultiplier(snap.Currency, snap.ExchangeRate)
 				if unitMult > 0 {
-					costScale = roundCost(costScale * unitMult)
+					costScale = common.RoundNonNegativeFloat6(costScale * unitMult)
 				}
 			}
 			if snap.TopupMultiplier > 0 && math.Abs(snap.TopupMultiplier-1.0) > 1e-6 {
 				costScale = costScale / snap.TopupMultiplier
 			}
-			inP = roundCost(inP * costScale)
-			outP = roundCost(outP * costScale)
+			inP = common.RoundNonNegativeFloat6(inP * costScale)
+			outP = common.RoundNonNegativeFloat6(outP * costScale)
 		}
 	}
 	return qt, inP, outP, cacheR, createCacheR
+}
+
+func computeTokenUsageCostUSD(modelName string, inUnitPrice float64, outUnitPrice float64, cacheRatio float64, createCacheRatio float64, promptTokens int64, completionTokens int64, cacheReadTokens int64, cacheWriteTokens int64) float64 {
+	if inUnitPrice <= 0 && outUnitPrice <= 0 {
+		return 0
+	}
+	cr := max(cacheReadTokens, 0)
+	cw := max(cacheWriteTokens, 0)
+	nonCachedPrompt := max(promptTokens-cr-cw, 0)
+	inCost := (float64(nonCachedPrompt) / 1_000_000.0) * inUnitPrice
+	if cr > 0 {
+		r := cacheRatio
+		if r <= 0 {
+			if sysCacheR, ok := ratio_setting.GetCacheRatio(modelName); ok && sysCacheR > 0 {
+				r = sysCacheR
+			} else {
+				r = 1.0
+			}
+		}
+		inCost += (float64(cr) / 1_000_000.0) * inUnitPrice * r
+	}
+	if cw > 0 {
+		w := createCacheRatio
+		if w <= 0 {
+			if sysCreateR, ok := ratio_setting.GetCreateCacheRatio(modelName); ok && sysCreateR > 0 {
+				w = sysCreateR
+			} else {
+				w = 1.0
+			}
+		}
+		inCost += (float64(cw) / 1_000_000.0) * inUnitPrice * w
+	}
+	outCost := (float64(max(completionTokens, 0)) / 1_000_000.0) * outUnitPrice
+	return common.RoundNonNegativeFloat6(inCost + outCost)
+}
+
+// CalculateEntryOrFallbackUsageCostUSD computes upstream USD cost for either a synced ChannelModelCostEntry
+// or fallback base unit prices, optionally dividing by topupMultiplier when > 0 and != 1.
+func CalculateEntryOrFallbackUsageCostUSD(entry ChannelModelCostEntry, hasEntry bool, syncCfg ModelPriceSyncConfig, baseQuotaType int, baseInputPrice float64, baseOutputPrice float64, topupMultiplier float64, callCount int64, promptTokens int64, completionTokens int64, cacheReadTokens int64, cacheWriteTokens int64) float64 {
+	if callCount <= 0 && promptTokens <= 0 && completionTokens <= 0 {
+		return 0
+	}
+	var cost float64
+	if hasEntry {
+		inCostUSD, outCostUSD, _, _, _, _ := ResolveEffectiveEntryCostsUSD(entry, syncCfg)
+		if entry.QuotaType == 1 && inCostUSD > 0 {
+			cost = common.RoundNonNegativeFloat6(float64(callCount) * inCostUSD)
+		} else if inCostUSD > 0 || outCostUSD > 0 {
+			cost = computeTokenUsageCostUSD(entry.Model, inCostUSD, outCostUSD, entry.CacheRatio, entry.CreateCacheRatio, promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens)
+		}
+	}
+	if cost == 0 {
+		if baseQuotaType == 1 && baseInputPrice > 0 {
+			cost = common.RoundNonNegativeFloat6(float64(callCount) * baseInputPrice)
+		} else {
+			cost = computeTokenUsageCostUSD(entry.Model, baseInputPrice, baseOutputPrice, entry.CacheRatio, entry.CreateCacheRatio, promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens)
+		}
+	}
+	if topupMultiplier > 0 && math.Abs(topupMultiplier-1.0) > 1e-6 {
+		cost = common.RoundNonNegativeFloat6(cost / topupMultiplier)
+	}
+	return cost
 }
 
 func CalculateChannelModelUsageCost(channelID int, modelName string, callCount int64, promptTokens int64, completionTokens int64, cacheReadTokens int64, cacheWriteTokens int64) float64 {
@@ -3220,31 +3658,9 @@ func CalculateChannelModelUsageCost(channelID int, modelName string, callCount i
 	syncCfg := GetModelPriceSyncConfig()
 	quotaType, inUSD, outUSD, cacheRatio, createCacheRatio := resolveChannelModelUnitPricesUSD(channelID, modelName, syncCfg)
 	if quotaType == 1 && inUSD > 0 {
-		return roundCost(float64(callCount) * inUSD)
+		return common.RoundNonNegativeFloat6(float64(callCount) * inUSD)
 	}
-	if inUSD <= 0 && outUSD <= 0 {
-		return 0
-	}
-	cr := max(cacheReadTokens, 0)
-	cw := max(cacheWriteTokens, 0)
-	nonCachedPrompt := max(promptTokens-cr-cw, 0)
-	inCost := (float64(nonCachedPrompt) / 1_000_000.0) * inUSD
-	if cr > 0 {
-		r := cacheRatio
-		if r <= 0 {
-			r = 1.0
-		}
-		inCost += (float64(cr) / 1_000_000.0) * inUSD * r
-	}
-	if cw > 0 {
-		w := createCacheRatio
-		if w <= 0 {
-			w = 1.0
-		}
-		inCost += (float64(cw) / 1_000_000.0) * inUSD * w
-	}
-	outCost := (float64(max(completionTokens, 0)) / 1_000_000.0) * outUSD
-	return roundCost(inCost + outCost)
+	return computeTokenUsageCostUSD(modelName, inUSD, outUSD, cacheRatio, createCacheRatio, promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens)
 }
 
 func EstimateGroupModelUnitRevenueAndCost(group string, ch *Channel, modelName string) (sellComposite float64, costComposite float64) {
@@ -3325,20 +3741,6 @@ func computeAllowedCostAndDivertProb(policy GroupCostControlPolicy, revenueUSD f
 	return allowedCost, cushion, isOverCost, divertProb
 }
 
-func roundProfit6(v float64) float64 {
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0
-	}
-	return math.Round(v*1e6) / 1e6
-}
-
-func roundProfitPct2(v float64) float64 {
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0
-	}
-	return math.Round(v*100) / 100
-}
-
 func ResetRealtimeProfitTracker() {
 	groupRealtimeProfitMu.Lock()
 	groupRealtimeProfitStates = make(map[string]*groupRealtimeProfitState)
@@ -3372,6 +3774,10 @@ func AggregateGroupCostControlUsage(group string, startTs int64, endTs int64) ([
 	if group == "" {
 		return nil, nil
 	}
+	return aggregateModelChannelGroupUsage(group, startTs, endTs)
+}
+
+func aggregateModelChannelGroupUsage(groupFilter string, startTs, endTs int64) ([]ModelChannelGroupLogStat, error) {
 	logDB := LOG_DB
 	if logDB == nil {
 		logDB = DB
@@ -3380,52 +3786,55 @@ func AggregateGroupCostControlUsage(group string, startTs int64, endTs int64) ([
 		return nil, nil
 	}
 	grpCol := resolvedLogGroupCol()
-	tx := logDB.Model(&Log{}).
+	applyBaseFilters := func(tx *gorm.DB) *gorm.DB {
+		if groupFilter != "" {
+			tx = tx.Where(grpCol+" = ?", groupFilter)
+		}
+		if startTs > 0 {
+			tx = tx.Where("created_at >= ?", startTs)
+		}
+		if endTs > 0 {
+			tx = tx.Where("created_at <= ?", endTs)
+		}
+		return tx
+	}
+
+	tx := applyBaseFilters(logDB.Model(&Log{}).
 		Select("model_name, channel_id, "+grpCol+" as user_group, COUNT(*) as call_count, COALESCE(SUM(prompt_tokens), 0) as prompt_tokens, COALESCE(SUM(completion_tokens), 0) as completion_tokens, COALESCE(SUM(quota), 0) as total_quota").
-		Where("type = ? AND "+grpCol+" = ?", LogTypeConsume, group)
-	if startTs > 0 {
-		tx = tx.Where("created_at >= ?", startTs)
-	}
-	if endTs > 0 {
-		tx = tx.Where("created_at <= ?", endTs)
-	}
+		Where("type = ?", LogTypeConsume))
 	var stats []ModelChannelGroupLogStat
 	if err := tx.Group("model_name, channel_id, " + grpCol).Scan(&stats).Error; err != nil {
 		return nil, err
 	}
 
+	type grpKey struct {
+		model   string
+		channel int
+		group   string
+	}
 	type rawCacheLog struct {
 		ModelName string `gorm:"column:model_name"`
 		ChannelID int    `gorm:"column:channel_id"`
+		UserGroup string `gorm:"column:user_group"`
 		Other     string `gorm:"column:other"`
 	}
 	var cacheRows []rawCacheLog
-	cacheTx := logDB.Model(&Log{}).
-		Select("model_name, channel_id, other").
-		Where("type = ? AND "+grpCol+" = ? AND other LIKE ?", LogTypeConsume, group, "%cache_%")
-	if startTs > 0 {
-		cacheTx = cacheTx.Where("created_at >= ?", startTs)
-	}
-	if endTs > 0 {
-		cacheTx = cacheTx.Where("created_at <= ?", endTs)
-	}
+	cacheTx := applyBaseFilters(logDB.Model(&Log{}).
+		Select("model_name, channel_id, "+grpCol+" as user_group, other").
+		Where("type = ? AND other LIKE ?", LogTypeConsume, "%cache_%"))
 	if err := cacheTx.Scan(&cacheRows).Error; err == nil && len(cacheRows) > 0 {
-		type mcKey struct {
-			model   string
-			channel int
-		}
-		readMap := make(map[mcKey]int64)
-		writeMap := make(map[mcKey]int64)
+		readMap := make(map[grpKey]int64)
+		writeMap := make(map[grpKey]int64)
 		for _, r := range cacheRows {
 			cr, cw := parseLogOtherCacheTokens(r.Other)
 			if cr > 0 || cw > 0 {
-				k := mcKey{model: r.ModelName, channel: r.ChannelID}
+				k := grpKey{model: r.ModelName, channel: r.ChannelID, group: r.UserGroup}
 				readMap[k] += cr
 				writeMap[k] += cw
 			}
 		}
 		for i := range stats {
-			k := mcKey{model: stats[i].ModelName, channel: stats[i].ChannelID}
+			k := grpKey{model: stats[i].ModelName, channel: stats[i].ChannelID, group: stats[i].UserGroup}
 			stats[i].CacheTokens = readMap[k]
 			stats[i].CacheWriteTokens = writeMap[k]
 		}
@@ -3434,25 +3843,16 @@ func AggregateGroupCostControlUsage(group string, startTs int64, endTs int64) ([
 	type rawFrozenLog struct {
 		ModelName        string `gorm:"column:model_name"`
 		ChannelID        int    `gorm:"column:channel_id"`
+		UserGroup        string `gorm:"column:user_group"`
 		PromptTokens     int64  `gorm:"column:prompt_tokens"`
 		CompletionTokens int64  `gorm:"column:completion_tokens"`
 		Other            string `gorm:"column:other"`
 	}
 	var frozenRows []rawFrozenLog
-	frozenTx := logDB.Model(&Log{}).
-		Select("model_name, channel_id, prompt_tokens, completion_tokens, other").
-		Where("type = ? AND "+grpCol+" = ? AND other LIKE ?", LogTypeConsume, group, "%upstream_cost_usd%")
-	if startTs > 0 {
-		frozenTx = frozenTx.Where("created_at >= ?", startTs)
-	}
-	if endTs > 0 {
-		frozenTx = frozenTx.Where("created_at <= ?", endTs)
-	}
+	frozenTx := applyBaseFilters(logDB.Model(&Log{}).
+		Select("model_name, channel_id, "+grpCol+" as user_group, prompt_tokens, completion_tokens, other").
+		Where("type = ? AND other LIKE ?", LogTypeConsume, "%upstream_cost_usd%"))
 	if err := frozenTx.Scan(&frozenRows).Error; err == nil && len(frozenRows) > 0 {
-		type mcKey struct {
-			model   string
-			channel int
-		}
 		type frozenAgg struct {
 			cost  float64
 			calls int64
@@ -3461,13 +3861,13 @@ func AggregateGroupCostControlUsage(group string, startTs int64, endTs int64) ([
 			crTok int64
 			cwTok int64
 		}
-		fMap := make(map[mcKey]*frozenAgg)
+		fMap := make(map[grpKey]*frozenAgg)
 		for _, r := range frozenRows {
 			cost, ok := parseLogOtherUpstreamCostUSD(r.Other)
 			if !ok {
 				continue
 			}
-			k := mcKey{model: r.ModelName, channel: r.ChannelID}
+			k := grpKey{model: r.ModelName, channel: r.ChannelID, group: r.UserGroup}
 			agg := fMap[k]
 			if agg == nil {
 				agg = &frozenAgg{}
@@ -3482,9 +3882,9 @@ func AggregateGroupCostControlUsage(group string, startTs int64, endTs int64) ([
 			agg.cwTok += cw
 		}
 		for i := range stats {
-			k := mcKey{model: stats[i].ModelName, channel: stats[i].ChannelID}
+			k := grpKey{model: stats[i].ModelName, channel: stats[i].ChannelID, group: stats[i].UserGroup}
 			if agg := fMap[k]; agg != nil {
-				stats[i].FrozenCostUSD = roundCost(agg.cost)
+				stats[i].FrozenCostUSD = common.RoundNonNegativeFloat6(agg.cost)
 				stats[i].FrozenCallCount = agg.calls
 				stats[i].FrozenPromptTokens = agg.pTok
 				stats[i].FrozenCompletionTokens = agg.cTok
@@ -3549,14 +3949,14 @@ func hydrateGroupRealtimeProfitFromDB(group string) {
 		rev := float64(st.TotalQuota) / quotaUnit
 		var cost float64
 		if st.FrozenCallCount >= st.CallCount && st.FrozenCallCount > 0 {
-			cost = roundCost(st.FrozenCostUSD)
+			cost = common.RoundNonNegativeFloat6(st.FrozenCostUSD)
 		} else {
 			remCalls := max(st.CallCount-st.FrozenCallCount, 0)
 			remPrompt := max(st.PromptTokens-st.FrozenPromptTokens, 0)
 			remComp := max(st.CompletionTokens-st.FrozenCompletionTokens, 0)
 			remCache := max(st.CacheTokens-st.FrozenCacheTokens, 0)
 			remCacheWrite := max(st.CacheWriteTokens-st.FrozenCacheWriteTokens, 0)
-			cost = roundCost(st.FrozenCostUSD + CalculateChannelModelUsageCost(st.ChannelID, st.ModelName, remCalls, remPrompt, remComp, remCache, remCacheWrite))
+			cost = common.RoundNonNegativeFloat6(st.FrozenCostUSD + CalculateChannelModelUsageCost(st.ChannelID, st.ModelName, remCalls, remPrompt, remComp, remCache, remCacheWrite))
 		}
 
 		totalCalls += st.CallCount
@@ -3571,17 +3971,17 @@ func hydrateGroupRealtimeProfitFromDB(group string) {
 
 		upCnt := byUpstream[upID]
 		upCnt.Calls += st.CallCount
-		upCnt.RevenueUSD = roundProfit6(upCnt.RevenueUSD + rev)
-		upCnt.CostUSD = roundProfit6(upCnt.CostUSD + cost)
-		upCnt.NetProfitUSD = roundProfit6(upCnt.RevenueUSD - upCnt.CostUSD)
+		upCnt.RevenueUSD = common.RoundFloat6(upCnt.RevenueUSD + rev)
+		upCnt.CostUSD = common.RoundFloat6(upCnt.CostUSD + cost)
+		upCnt.NetProfitUSD = common.RoundFloat6(upCnt.RevenueUSD - upCnt.CostUSD)
 		byUpstream[upID] = upCnt
 
 		if st.ChannelID > 0 {
 			chCnt := byChannel[st.ChannelID]
 			chCnt.Calls += st.CallCount
-			chCnt.RevenueUSD = roundProfit6(chCnt.RevenueUSD + rev)
-			chCnt.CostUSD = roundProfit6(chCnt.CostUSD + cost)
-			chCnt.NetProfitUSD = roundProfit6(chCnt.RevenueUSD - chCnt.CostUSD)
+			chCnt.RevenueUSD = common.RoundFloat6(chCnt.RevenueUSD + rev)
+			chCnt.CostUSD = common.RoundFloat6(chCnt.CostUSD + cost)
+			chCnt.NetProfitUSD = common.RoundFloat6(chCnt.RevenueUSD - chCnt.CostUSD)
 			byChannel[st.ChannelID] = chCnt
 		}
 	}
@@ -3604,8 +4004,8 @@ func hydrateGroupRealtimeProfitFromDB(group string) {
 		hydrated:         true,
 		refreshing:       false,
 		totalCalls:       totalCalls,
-		revenueUSD:       roundProfit6(totalRev),
-		costUSD:          roundProfit6(totalCost),
+		revenueUSD:       common.RoundFloat6(totalRev),
+		costUSD:          common.RoundFloat6(totalCost),
 		byUpstream:       byUpstream,
 		byChannel:        byChannel,
 	}
@@ -3662,22 +4062,22 @@ func RecordRealtimeConsumeProfit(group string, channelID int, modelName string, 
 	st.updatedAt = nowTs
 	st.syncedLogVersion = logVersion
 	st.totalCalls++
-	st.revenueUSD = roundProfit6(st.revenueUSD + rev)
-	st.costUSD = roundProfit6(st.costUSD + cost)
+	st.revenueUSD = common.RoundFloat6(st.revenueUSD + rev)
+	st.costUSD = common.RoundFloat6(st.costUSD + cost)
 
 	upCnt := st.byUpstream[upID]
 	upCnt.Calls++
-	upCnt.RevenueUSD = roundProfit6(upCnt.RevenueUSD + rev)
-	upCnt.CostUSD = roundProfit6(upCnt.CostUSD + cost)
-	upCnt.NetProfitUSD = roundProfit6(upCnt.RevenueUSD - upCnt.CostUSD)
+	upCnt.RevenueUSD = common.RoundFloat6(upCnt.RevenueUSD + rev)
+	upCnt.CostUSD = common.RoundFloat6(upCnt.CostUSD + cost)
+	upCnt.NetProfitUSD = common.RoundFloat6(upCnt.RevenueUSD - upCnt.CostUSD)
 	st.byUpstream[upID] = upCnt
 
 	if channelID > 0 {
 		chCnt := st.byChannel[channelID]
 		chCnt.Calls++
-		chCnt.RevenueUSD = roundProfit6(chCnt.RevenueUSD + rev)
-		chCnt.CostUSD = roundProfit6(chCnt.CostUSD + cost)
-		chCnt.NetProfitUSD = roundProfit6(chCnt.RevenueUSD - chCnt.CostUSD)
+		chCnt.RevenueUSD = common.RoundFloat6(chCnt.RevenueUSD + rev)
+		chCnt.CostUSD = common.RoundFloat6(chCnt.CostUSD + cost)
+		chCnt.NetProfitUSD = common.RoundFloat6(chCnt.RevenueUSD - chCnt.CostUSD)
 		st.byChannel[channelID] = chCnt
 	}
 	groupRealtimeProfitMu.Unlock()
@@ -3700,21 +4100,21 @@ func buildProfitSnapshotFromState(group string, policy GroupCostControlPolicy, s
 	snap.WindowStart = st.windowStart
 	snap.UpdatedAt = st.updatedAt
 	snap.TotalCalls = st.totalCalls
-	snap.RevenueUSD = roundProfit6(st.revenueUSD)
-	snap.CostUSD = roundProfit6(st.costUSD)
-	snap.NetProfitUSD = roundProfit6(st.revenueUSD - st.costUSD)
+	snap.RevenueUSD = common.RoundFloat6(st.revenueUSD)
+	snap.CostUSD = common.RoundFloat6(st.costUSD)
+	snap.NetProfitUSD = common.RoundFloat6(st.revenueUSD - st.costUSD)
 	if st.revenueUSD > 1e-9 {
-		snap.NetMarginPct = roundProfitPct2(((st.revenueUSD - st.costUSD) / st.revenueUSD) * 100.0)
-		snap.CostRatioPct = roundProfitPct2((st.costUSD / st.revenueUSD) * 100.0)
+		snap.NetMarginPct = common.RoundFloat2(((st.revenueUSD - st.costUSD) / st.revenueUSD) * 100.0)
+		snap.CostRatioPct = common.RoundFloat2((st.costUSD / st.revenueUSD) * 100.0)
 	} else if st.costUSD > 1e-9 {
 		snap.NetMarginPct = -100.0
 		snap.CostRatioPct = 100.0
 	}
 	allowed, cushion, overCost, divertProb := computeAllowedCostAndDivertProb(policy, st.revenueUSD, st.costUSD)
-	snap.AllowedCostUSD = roundProfit6(allowed)
-	snap.ProfitCushionUSD = roundProfit6(cushion)
+	snap.AllowedCostUSD = common.RoundFloat6(allowed)
+	snap.ProfitCushionUSD = common.RoundFloat6(cushion)
 	snap.IsOverCost = overCost
-	snap.DivertProbPct = roundProfitPct2(divertProb * 100.0)
+	snap.DivertProbPct = common.RoundFloat2(divertProb * 100.0)
 	snap.ByUpstream = maps.Clone(st.byUpstream)
 	if snap.ByUpstream == nil {
 		snap.ByUpstream = make(map[string]RealtimeProfitCounter)
@@ -4076,133 +4476,7 @@ func selectChannelByCostControl(group string, modelName string, retry int, candi
 }
 
 func AggregateModelChannelGroupUsage(startTs, endTs int64) ([]ModelChannelGroupLogStat, error) {
-	logDB := LOG_DB
-	if logDB == nil {
-		logDB = DB
-	}
-	if logDB == nil {
-		return nil, nil
-	}
-	grpCol := resolvedLogGroupCol()
-	tx := logDB.Model(&Log{}).
-		Select("model_name, channel_id, "+grpCol+" as user_group, COUNT(*) as call_count, COALESCE(SUM(prompt_tokens), 0) as prompt_tokens, COALESCE(SUM(completion_tokens), 0) as completion_tokens, COALESCE(SUM(quota), 0) as total_quota").
-		Where("type = ?", LogTypeConsume)
-	if startTs > 0 {
-		tx = tx.Where("created_at >= ?", startTs)
-	}
-	if endTs > 0 {
-		tx = tx.Where("created_at <= ?", endTs)
-	}
-	var stats []ModelChannelGroupLogStat
-	if err := tx.Group("model_name, channel_id, " + grpCol).Scan(&stats).Error; err != nil {
-		return nil, err
-	}
-
-	type rawCacheLog struct {
-		ModelName string `gorm:"column:model_name"`
-		ChannelID int    `gorm:"column:channel_id"`
-		UserGroup string `gorm:"column:user_group"`
-		Other     string `gorm:"column:other"`
-	}
-	var cacheRows []rawCacheLog
-	cacheTx := logDB.Model(&Log{}).
-		Select("model_name, channel_id, "+grpCol+" as user_group, other").
-		Where("type = ? AND other LIKE ?", LogTypeConsume, "%cache_%")
-	if startTs > 0 {
-		cacheTx = cacheTx.Where("created_at >= ?", startTs)
-	}
-	if endTs > 0 {
-		cacheTx = cacheTx.Where("created_at <= ?", endTs)
-	}
-	if err := cacheTx.Scan(&cacheRows).Error; err == nil && len(cacheRows) > 0 {
-		type grpKey struct {
-			model   string
-			channel int
-			group   string
-		}
-		readMap := make(map[grpKey]int64)
-		writeMap := make(map[grpKey]int64)
-		for _, r := range cacheRows {
-			cr, cw := parseLogOtherCacheTokens(r.Other)
-			if cr > 0 || cw > 0 {
-				k := grpKey{model: r.ModelName, channel: r.ChannelID, group: r.UserGroup}
-				readMap[k] += cr
-				writeMap[k] += cw
-			}
-		}
-		for i := range stats {
-			k := grpKey{model: stats[i].ModelName, channel: stats[i].ChannelID, group: stats[i].UserGroup}
-			stats[i].CacheTokens = readMap[k]
-			stats[i].CacheWriteTokens = writeMap[k]
-		}
-	}
-
-	type rawFrozenGrpLog struct {
-		ModelName        string `gorm:"column:model_name"`
-		ChannelID        int    `gorm:"column:channel_id"`
-		UserGroup        string `gorm:"column:user_group"`
-		PromptTokens     int64  `gorm:"column:prompt_tokens"`
-		CompletionTokens int64  `gorm:"column:completion_tokens"`
-		Other            string `gorm:"column:other"`
-	}
-	var frozenGrpRows []rawFrozenGrpLog
-	frozenGrpTx := logDB.Model(&Log{}).
-		Select("model_name, channel_id, "+grpCol+" as user_group, prompt_tokens, completion_tokens, other").
-		Where("type = ? AND other LIKE ?", LogTypeConsume, "%upstream_cost_usd%")
-	if startTs > 0 {
-		frozenGrpTx = frozenGrpTx.Where("created_at >= ?", startTs)
-	}
-	if endTs > 0 {
-		frozenGrpTx = frozenGrpTx.Where("created_at <= ?", endTs)
-	}
-	if err := frozenGrpTx.Scan(&frozenGrpRows).Error; err == nil && len(frozenGrpRows) > 0 {
-		type grpKey struct {
-			model   string
-			channel int
-			group   string
-		}
-		type frozenAgg struct {
-			cost  float64
-			calls int64
-			pTok  int64
-			cTok  int64
-			crTok int64
-			cwTok int64
-		}
-		fMap := make(map[grpKey]*frozenAgg)
-		for _, r := range frozenGrpRows {
-			cost, ok := parseLogOtherUpstreamCostUSD(r.Other)
-			if !ok {
-				continue
-			}
-			k := grpKey{model: r.ModelName, channel: r.ChannelID, group: r.UserGroup}
-			agg := fMap[k]
-			if agg == nil {
-				agg = &frozenAgg{}
-				fMap[k] = agg
-			}
-			agg.cost += cost
-			agg.calls++
-			agg.pTok += r.PromptTokens
-			agg.cTok += r.CompletionTokens
-			cr, cw := parseLogOtherCacheTokens(r.Other)
-			agg.crTok += cr
-			agg.cwTok += cw
-		}
-		for i := range stats {
-			k := grpKey{model: stats[i].ModelName, channel: stats[i].ChannelID, group: stats[i].UserGroup}
-			if agg := fMap[k]; agg != nil {
-				stats[i].FrozenCostUSD = roundCost(agg.cost)
-				stats[i].FrozenCallCount = agg.calls
-				stats[i].FrozenPromptTokens = agg.pTok
-				stats[i].FrozenCompletionTokens = agg.cTok
-				stats[i].FrozenCacheTokens = agg.crTok
-				stats[i].FrozenCacheWriteTokens = agg.cwTok
-			}
-		}
-	}
-
-	return stats, nil
+	return aggregateModelChannelGroupUsage("", startTs, endTs)
 }
 
 func AggregateUserCostUsage(startTs, endTs int64) ([]UserModelChannelLogStat, map[int]int64, map[int]UserOnlineTopupStat, error) {
@@ -4322,7 +4596,7 @@ func AggregateUserCostUsage(startTs, endTs int64) ([]UserModelChannelLogStat, ma
 		for i := range consumeStats {
 			k := uKey{uid: consumeStats[i].UserID, model: consumeStats[i].ModelName, channel: consumeStats[i].ChannelID}
 			if agg := fMap[k]; agg != nil {
-				consumeStats[i].FrozenCostUSD = roundCost(agg.cost)
+				consumeStats[i].FrozenCostUSD = common.RoundNonNegativeFloat6(agg.cost)
 				consumeStats[i].FrozenCallCount = agg.calls
 				consumeStats[i].FrozenPromptTokens = agg.pTok
 				consumeStats[i].FrozenCompletionTokens = agg.cTok

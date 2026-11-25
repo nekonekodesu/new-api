@@ -22,17 +22,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Dialog } from '@/components/dialog'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -40,6 +31,7 @@ import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
 import { getFreshAuthHeaders } from '@/lib/api'
+import { formatBinaryBytes } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { getServerMessage } from '@/lib/server-error-message'
 
@@ -51,7 +43,6 @@ import {
 } from '../../api'
 import { channelsQueryKeys, parseModelsString } from '../../lib'
 import {
-  formatBytes,
   normalizeOllamaModels,
   resolveOllamaBaseUrl,
   type OllamaModel,
@@ -533,7 +524,7 @@ export function OllamaModelsDialog({
                               </div>
                               <div className='text-muted-foreground flex flex-wrap gap-x-3 gap-y-1 text-xs'>
                                 <span>
-                                  {t('Size:')} {formatBytes(m.size)}
+                                  {t('Size:')} {formatBinaryBytes(m.size)}
                                 </span>
                                 {m.digest && (
                                   <span className='truncate'>
@@ -567,42 +558,33 @@ export function OllamaModelsDialog({
         </div>
       )}
 
-      <AlertDialog
+      <ConfirmDialog
         open={deleteOpen}
         onOpenChange={(v) => {
           setDeleteOpen(v)
           if (!v) setDeleteTarget(null)
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('Confirm delete')}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {t('Delete model "{{name}}"? This cannot be undone.', {
-                name: deleteTarget || '',
-              })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>
-              {t('Cancel')}
-            </AlertDialogCancel>
-            <AlertDialogAction
-              variant='destructive'
-              disabled={isDeleting || !deleteTarget}
-              onClick={() => {
-                if (!deleteTarget) return
-                void deleteModel(deleteTarget)
-              }}
-            >
-              {isDeleting ? (
-                <Loader2 className='mr-2 h-4 w-4 animate-spin' />
-              ) : null}
-              {t('Delete')}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title={t('Confirm delete')}
+        desc={t('Delete model "{{name}}"? This cannot be undone.', {
+          name: deleteTarget || '',
+        })}
+        cancelBtnText={t('Cancel')}
+        confirmText={
+          <>
+            {isDeleting ? (
+              <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+            ) : null}
+            {t('Delete')}
+          </>
+        }
+        destructive
+        isLoading={isDeleting}
+        disabled={!deleteTarget}
+        handleConfirm={() => {
+          if (!deleteTarget) return
+          void deleteModel(deleteTarget)
+        }}
+      />
     </Dialog>
   )
 }

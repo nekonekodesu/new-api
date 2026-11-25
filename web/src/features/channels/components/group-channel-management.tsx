@@ -47,9 +47,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { useMediaQuery } from '@/hooks'
+import { useIsCompactScreen } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
-import { formatBillingCurrencyFromUSD } from '@/lib/currency'
+import { formatBillingAmountUSD } from '@/lib/currency'
 import { formatNumber } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
@@ -63,7 +63,8 @@ import {
   getGroupScheduling,
   updateGroupScheduling,
 } from '../api'
-import { CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OPTIONS } from '../constants'
+import { CHANNEL_TYPE_NEW_API } from '../constants'
+import { getChannelTypeLabel } from '../lib'
 import {
   DIRECT_UPSTREAM_ID,
   normalizeCostControlPolicy,
@@ -474,14 +475,6 @@ export function GroupChannelManagement(props: {
     })
   }
 
-  const formatMoney = (usdVal: number) =>
-    formatBillingCurrencyFromUSD(usdVal, {
-      digitsLarge: 2,
-      digitsSmall: 4,
-      abbreviate: false,
-      locale: intlLocale,
-    })
-
   const renderTierShareBadge = (
     isChecked: boolean,
     meta: ChannelCostControlMeta
@@ -517,10 +510,7 @@ export function GroupChannelManagement(props: {
     )
   }
 
-  const getChannelTypeLabel = (type: number) =>
-    CHANNEL_TYPE_OPTIONS.find((item) => item.value === type)?.label ??
-    `#${type}`
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
   const hasChannelRuleOverrides =
     Object.keys(draftCostControl.channel_rules).length > 0
 
@@ -903,7 +893,7 @@ export function GroupChannelManagement(props: {
                             >
                               {formatNumber(meta.calls, intlLocale)} ·{' '}
                               {meta.netProfitUSD > 0 ? '+' : ''}
-                              {formatMoney(meta.netProfitUSD)}
+                              {formatBillingAmountUSD(meta.netProfitUSD, intlLocale)}
                             </span>
                           </div>
                         </div>
@@ -1153,7 +1143,7 @@ export function GroupChannelManagement(props: {
                                   className={cn('font-semibold', chProfitClass)}
                                 >
                                   {meta.netProfitUSD > 0 ? '+' : ''}
-                                  {formatMoney(meta.netProfitUSD)}
+                                  {formatBillingAmountUSD(meta.netProfitUSD, intlLocale)}
                                 </span>
                                 <span className='text-muted-foreground text-[10px]'>
                                   {formatNumber(meta.calls, intlLocale)}{' '}

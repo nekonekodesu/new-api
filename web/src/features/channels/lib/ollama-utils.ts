@@ -148,14 +148,3 @@ export function normalizeOllamaModels(items: unknown): OllamaModel[] {
     })
     .filter(Boolean) as OllamaModel[]
 }
-
-export function formatBytes(bytes?: number) {
-  if (typeof bytes !== 'number' || Number.isNaN(bytes)) return '-'
-  if (bytes < 1024) return `${bytes} B`
-  const kb = bytes / 1024
-  if (kb < 1024) return `${kb.toFixed(1)} KB`
-  const mb = kb / 1024
-  if (mb < 1024) return `${mb.toFixed(1)} MB`
-  const gb = mb / 1024
-  return `${gb.toFixed(2)} GB`
-}

@@ -487,12 +487,9 @@ func resolveNewAPIChannelBalanceCurrency(channel *model.Channel) (string, *model
 	if channel != nil {
 		upID, _ := model.ResolveChannelUpstreamSource(channel, nil, syncCfg)
 		if upID != "" && upID != model.DirectUpstreamSourceID {
-			for i := range syncCfg.UpstreamAccounts {
-				if model.UpstreamAccountKey(syncCfg.UpstreamAccounts[i]) == upID || syncCfg.UpstreamAccounts[i].ID == upID {
-					accCopy := syncCfg.UpstreamAccounts[i]
-					matchedAcc = &accCopy
-					break
-				}
+			if acc, ok := model.FindUpstreamAccountByKey(syncCfg, upID); ok {
+				accCopy := acc
+				matchedAcc = &accCopy
 			}
 		}
 		if channel.Id > 0 {
@@ -788,7 +785,7 @@ func UpdateChannelBalance(c *gin.Context) {
 		}
 		balance := channel.Balance
 		if detail != nil {
-			if usd, ok := usdBalance(detail.BalanceResult); ok {
+			if usd, ok := service.PluginBalanceUSD(detail.BalanceResult); ok {
 				balance = usd
 			}
 		}

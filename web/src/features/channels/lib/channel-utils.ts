@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { formatCurrencyFromUSD, formatQuotaWithCurrency } from '@/lib/currency'
+import { formatCurrencyFromUSD } from '@/lib/currency'
 import { formatTimestampToDate } from '@/lib/format'
 
 import {
@@ -221,31 +221,29 @@ export function countKeys(key: string): number {
 // ============================================================================
 
 /**
- * Parse comma-separated models list
+ * Parse a comma-separated list into trimmed non-empty entries.
  */
-export function parseModelsList(models: string): string[] {
-  if (!models) {
+export function parseCommaSeparatedList(value: string): string[] {
+  if (!value) {
     return []
   }
-  return models
+  return value
     .split(',')
-    .map((m) => m.trim())
-    .filter((m) => m.length > 0)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
 }
+
+/**
+ * Parse comma-separated models list
+ */
+export const parseModelsList = parseCommaSeparatedList
 
 /**
  * Parse comma-separated groups list.
  * Sorts with 'default' group first, then locale-sorted alphabetically.
  */
 export function parseGroupsList(groups: string): string[] {
-  if (!groups) {
-    return []
-  }
-  const list = groups
-    .split(',')
-    .map((g) => g.trim())
-    .filter((g) => g.length > 0)
-  return list.sort((a, b) => {
+  return parseCommaSeparatedList(groups).sort((a, b) => {
     if (a === 'default') {
       return -1
     }
@@ -481,19 +479,6 @@ export function formatTimestamp(timestamp: number): string {
   } catch {
     return 'Invalid date'
   }
-}
-
-// ============================================================================
-// Quota Formatting
-// ============================================================================
-
-/** Format quota units using the global currency display configuration. */
-export function formatQuota(quota: number): string {
-  return formatQuotaWithCurrency(quota, {
-    digitsLarge: 2,
-    digitsSmall: 4,
-    abbreviate: true,
-  })
 }
 
 // ============================================================================

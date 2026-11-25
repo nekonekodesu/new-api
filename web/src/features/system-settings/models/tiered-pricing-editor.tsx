@@ -54,6 +54,8 @@ import {
   USD_PRICING_CURRENCY,
   type PricingCurrency,
 } from '@/features/model-pricing/currency'
+import { copyToClipboard } from '@/lib/copy-to-clipboard'
+
 import { useBillingTime } from '@/features/pricing/hooks/use-billing-time'
 import {
   BILLING_EXTRA_VARS,
@@ -993,10 +995,9 @@ function LlmPromptHelper({ modelName }: LlmPromptHelperProps) {
   }, [modelName])
 
   const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(prompt)
+    if (await copyToClipboard(prompt)) {
       toast.success(t('Copied to clipboard'))
-    } catch {
+    } else {
       toast.error(t('Failed to copy'))
     }
   }, [prompt, t])

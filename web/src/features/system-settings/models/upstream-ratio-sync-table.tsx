@@ -39,7 +39,7 @@ import {
 } from '@/components/ui/select'
 import type { PricingCurrency } from '@/features/model-pricing/currency'
 import { useDebounce } from '@/hooks/use-debounce'
-import { useMediaQuery } from '@/hooks/use-media-query'
+import { useIsCompactScreen } from '@/hooks'
 
 import type { DifferencesMap, PricingSyncModels } from '../types'
 import type {
@@ -77,7 +77,7 @@ type UpstreamRatioSyncTableProps = {
 }
 export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
   const { t } = useTranslation()
-  const isMobile = useMediaQuery('(max-width: 640px)')
+  const isMobile = useIsCompactScreen()
   const [search, setSearch] = useState('')
   const [showUnchanged, setShowUnchanged] = useState(false)
   const [kind, setKind] = useState('__all__')
