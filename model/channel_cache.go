@@ -291,35 +291,43 @@ func getRandomSatisfiedChannel(
 		}
 	}
 
-	// smoothing factor and adjustment
-	smoothingFactor := 1
-	smoothingAdjustment := 0
-
-	if sumWeight == 0 {
-		// when all channels have weight 0, set sumWeight to the number of channels and set smoothing adjustment to 100
-		// each channel's effective weight = 100
-		sumWeight = len(targetChannels) * 100
-		smoothingAdjustment = 100
-	} else if sumWeight/len(targetChannels) < 10 {
-		// when the average weight is less than 10, set smoothing factor to 100
-		smoothingFactor = 100
+	weights := make([]int, len(targetChannels))
+	for i, channel := range targetChannels {
+		weights[i] = channel.GetWeight()
 	}
+	if idx := pickWeightedIndex(weights); idx >= 0 {
+		return targetChannels[idx], nil
+	}
+	return nil, errors.New("channel not found")
+}
 
-	// Calculate the total weight of all channels up to endIdx
-	totalWeight := sumWeight * smoothingFactor
-
-	// Generate a random value in the range [0, totalWeight)
-	randomWeight := rand.Intn(totalWeight)
-
-	// Find a channel based on its weight
-	for _, channel := range targetChannels {
-		randomWeight -= channel.GetWeight()*smoothingFactor + smoothingAdjustment
-		if randomWeight < 0 {
-			return channel, nil
+// pickWeightedIndex chooses an index proportionally to positive weights, or
+// uniformly when every candidate has weight <= 0, keeping the DB and in-memory
+// cache routing paths identical.
+func pickWeightedIndex(weights []int) int {
+	if len(weights) == 0 {
+		return -1
+	}
+	sumWeight := 0
+	for _, w := range weights {
+		if w > 0 {
+			sumWeight += w
 		}
 	}
-	// return null if no channel is not found
-	return nil, errors.New("channel not found")
+	if sumWeight == 0 {
+		return rand.Intn(len(weights))
+	}
+	pick := rand.Intn(sumWeight)
+	for i, w := range weights {
+		if w <= 0 {
+			continue
+		}
+		pick -= w
+		if pick < 0 {
+			return i
+		}
+	}
+	return 0
 }
 
 func CacheGetChannel(id int) (*Channel, error) {

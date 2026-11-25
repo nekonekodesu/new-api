@@ -1,12 +1,15 @@
 package model
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func setupSchedulingBandTestGroup(t *testing.T, group string, mode string, channelIDs ...int) {
@@ -481,7 +484,7 @@ func TestSpeedModeUnfreezesHealthyButPreviouslySlowChannel(t *testing.T) {
 	// A's upstream is now fast again (26ms, ~3461 tps). Verify speed-degraded probe unfreezes A in closed loop.
 	candidates := []*Channel{chC, chA}
 	hits := map[int]int{}
-	for range 300 {
+	for range 800 {
 		picked := selectChannelByGroupSchedule(group, modelName, 0, candidates, nil)
 		require.NotNil(t, picked)
 		hits[picked.Id]++
@@ -524,4 +527,85 @@ func TestSpeedModePenalisesHighStreamingTTFTAndIdleDelayDecays(t *testing.T) {
 	assert.InDelta(t, 26.0, recoverChannelDelayMs(26.0, now.Add(-channelHealthRecoveryHalfLife), now), 1e-6)
 	assert.InDelta(t, 40.25, recoverChannelTps(0.50, now.Add(-channelHealthRecoveryHalfLife), now), 1e-6)
 	assert.InDelta(t, 3500.0, recoverChannelTps(3500.0, now.Add(-channelHealthRecoveryHalfLife), now), 1e-6)
+}
+
+func TestStandardRoutingWeightParityBetweenCacheAndDB(t *testing.T) {
+	prevDB := DB
+	prevMemCache := common.MemoryCacheEnabled
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "weight-parity.db")), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		DB = prevDB
+		common.MemoryCacheEnabled = prevMemCache
+		_ = sqlDB.Close()
+	})
+	DB = db
+	require.NoError(t, db.AutoMigrate(&Channel{}, &Ability{}))
+
+	for _, tc := range []struct {
+		name           string
+		wA             uint
+		wB             uint
+		minAShare      float64
+		maxAShare      float64
+		expectExactAll bool
+	}{
+		{name: "skewed 99 to 1 without +10 distortion", wA: 99, wB: 1, minAShare: 0.95, maxAShare: 1.0},
+		{name: "zero weight yields zero share when peer has positive weight", wA: 10, wB: 0, minAShare: 1.0, maxAShare: 1.0, expectExactAll: true},
+		{name: "all zero weights share traffic evenly", wA: 0, wB: 0, minAShare: 0.35, maxAShare: 0.65},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&Ability{}).Error)
+			require.NoError(t, db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&Channel{}).Error)
+
+			prio := int64(0)
+			wA, wB := tc.wA, tc.wB
+			chA := &Channel{Name: "ch-a", Type: 1, Status: common.ChannelStatusEnabled, Group: "parity", Models: "gpt-parity", Priority: &prio, Weight: &wA}
+			chB := &Channel{Name: "ch-b", Type: 1, Status: common.ChannelStatusEnabled, Group: "parity", Models: "gpt-parity", Priority: &prio, Weight: &wB}
+			require.NoError(t, db.Create(chA).Error)
+			require.NoError(t, db.Create(chB).Error)
+			require.NoError(t, chA.AddAbilities(db))
+			require.NoError(t, chB.AddAbilities(db))
+
+			common.MemoryCacheEnabled = true
+			InitChannelCache()
+
+			const samples = 1000
+			cacheAHits := 0
+			for range samples {
+				picked, pickErr := GetRandomSatisfiedChannel("parity", "gpt-parity", 0, nil)
+				require.NoError(t, pickErr)
+				require.NotNil(t, picked)
+				if picked.Id == chA.Id {
+					cacheAHits++
+				}
+			}
+
+			common.MemoryCacheEnabled = false
+			dbAHits := 0
+			for range samples {
+				picked, pickErr := GetRandomSatisfiedChannel("parity", "gpt-parity", 0, nil)
+				require.NoError(t, pickErr)
+				require.NotNil(t, picked)
+				if picked.Id == chA.Id {
+					dbAHits++
+				}
+			}
+
+			cacheShare := float64(cacheAHits) / float64(samples)
+			dbShare := float64(dbAHits) / float64(samples)
+			if tc.expectExactAll {
+				assert.Equal(t, samples, cacheAHits)
+				assert.Equal(t, samples, dbAHits)
+			} else {
+				assert.GreaterOrEqual(t, cacheShare, tc.minAShare)
+				assert.LessOrEqual(t, cacheShare, tc.maxAShare)
+				assert.GreaterOrEqual(t, dbShare, tc.minAShare)
+				assert.LessOrEqual(t, dbShare, tc.maxAShare)
+				assert.InDelta(t, cacheShare, dbShare, 0.08)
+			}
+		})
+	}
 }

@@ -205,21 +205,15 @@ func getChannelFromDB(
 	}
 	channel := Channel{}
 	if len(abilities) > 0 {
-		// Randomly choose one
-		weightSum := uint(0)
-		for _, ability_ := range abilities {
-			weightSum += ability_.Weight + 10
+		weights := make([]int, len(abilities))
+		for i, ability_ := range abilities {
+			weights[i] = int(ability_.Weight)
 		}
-		// Randomly choose one
-		weight := common.GetRandomInt(int(weightSum))
-		for _, ability_ := range abilities {
-			weight -= int(ability_.Weight) + 10
-			//log.Printf("weight: %d, ability weight: %d", weight, *ability_.Weight)
-			if weight < 0 {
-				channel.Id = ability_.ChannelId
-				break
-			}
+		idx := pickWeightedIndex(weights)
+		if idx < 0 {
+			return nil, nil
 		}
+		channel.Id = abilities[idx].ChannelId
 	} else {
 		return nil, nil
 	}

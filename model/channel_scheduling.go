@@ -2878,10 +2878,14 @@ func probeDegradedCandidate(candidates []*Channel, modelName string, mode string
 	checkSpeedDegradation := (mode == SchedulingModeSpeed || mode == SchedulingModeBBR) && len(candidates) > 1
 	bestHealthyDelaySec := math.Inf(1)
 	bestHealthyTps := 0.0
+	topScore := math.Inf(-1)
 	if checkSpeedDegradation {
 		for _, ch := range candidates {
 			if ch == nil {
 				continue
+			}
+			if s := scoreChannelForSchedule(mode, ch, modelName); s > topScore {
+				topScore = s
 			}
 			tel := GetChannelModelTelemetry(ch.Id, modelName)
 			if tel.RequestCount == 0 || tel.EmaSuccessRate < schedulingDegradedBelow {
@@ -2911,7 +2915,7 @@ func probeDegradedCandidate(candidates []*Channel, modelName string, mode string
 		}
 		healthDegraded := telemetry.EmaSuccessRate < schedulingDegradedBelow
 		speedDegraded := false
-		if checkSpeedDegradation {
+		if checkSpeedDegradation && scoreChannelForSchedule(mode, ch, modelName) < topScore-1e-5 {
 			if dSec, ok := telemetryEffectiveDelaySec(telemetry); ok && !math.IsInf(bestHealthyDelaySec, 1) && dSec > bestHealthyDelaySec*3.0 {
 				speedDegraded = true
 			}
