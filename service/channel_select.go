@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -95,133 +97,181 @@ func (p *RetryParam) RemainingRetries() int {
 
 var ErrChannelsCoolingDown = errors.New("every channel is cooling down")
 
-// CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
-// 尝试获取一个满足要求的随机渠道。
-//
-// For "auto" tokenGroup with cross-group Retry enabled:
-// 对于启用了跨分组重试的 "auto" tokenGroup：
-//
-//   - Each group will exhaust all its priorities before moving to the next group.
-//     每个分组会用完所有优先级后才会切换到下一个分组。
-//
-//   - Uses ContextKeyAutoGroupIndex to track current group index.
-//     使用 ContextKeyAutoGroupIndex 跟踪当前分组索引。
-//
-//   - Uses ContextKeyAutoGroupRetryIndex to track the global Retry count when current group started.
-//     使用 ContextKeyAutoGroupRetryIndex 跟踪当前分组开始时的全局重试次数。
-//
-//   - priorityRetry = Retry - startRetryIndex, represents the priority level within current group.
-//     priorityRetry = Retry - startRetryIndex，表示当前分组内的优先级级别。
-//
-//   - When GetRandomSatisfiedChannel returns nil (priorities exhausted), moves to next group.
-//     当 GetRandomSatisfiedChannel 返回 nil（优先级用完）时，切换到下一个分组。
-//
-// Example flow (2 groups, each with 2 priorities, RetryTimes=3):
-// 示例流程（2个分组，每个有2个优先级，RetryTimes=3）：
-//
-//	Retry=0: GroupA, priority0 (startRetryIndex=0, priorityRetry=0)
-//	         分组A, 优先级0
-//
-//	Retry=1: GroupA, priority1 (startRetryIndex=0, priorityRetry=1)
-//	         分组A, 优先级1
-//
-//	Retry=2: GroupA exhausted → GroupB, priority0 (startRetryIndex=2, priorityRetry=0)
-//	         分组A用完 → 分组B, 优先级0
-//
-//	Retry=3: GroupB, priority1 (startRetryIndex=2, priorityRetry=1)
-//	         分组B, 优先级1
-func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
-	var channel *model.Channel
-	var err error
+const ginKeyChannelCooldownRoundTried = "channel_cooldown_round_tried"
+
+func usedChannelIDs(c *gin.Context) []int {
+	if c == nil {
+		return nil
+	}
+	raw := c.GetStringSlice("use_channel")
+	if len(raw) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(raw))
+	for _, item := range raw {
+		if id, err := strconv.Atoi(item); err == nil && id > 0 {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func cooldownRoundTriedIDs(c *gin.Context) []int {
+	if c == nil {
+		return nil
+	}
+	if raw, ok := c.Get(ginKeyChannelCooldownRoundTried); ok {
+		if ids, ok := raw.([]int); ok {
+			return ids
+		}
+	}
+	return nil
+}
+
+func selectSatisfiedChannelPass(
+	param *RetryParam,
+	filters []dto.ChannelFilter,
+	ignoreCooldown bool,
+	triedIDs []int,
+) (*model.Channel, string, error) {
 	selectGroup := param.TokenGroup
-	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
-	filters := GetChannelConstraints(param.Ctx).Filters
 	affinityRetryOffset := param.Ctx.GetInt(ginKeyChannelAffinityRetryOffset)
 
-	if param.TokenGroup == "auto" {
-		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
-		if len(autoGroups) == 0 {
-			return nil, selectGroup, errors.New("auto groups is not enabled")
+	if param.TokenGroup != "auto" {
+		priorityRetry := max(param.GetRetry()-affinityRetryOffset, 0)
+		if ignoreCooldown {
+			ch, err := model.GetRandomSatisfiedChannelIgnoringCooldown(param.TokenGroup, param.ModelName, priorityRetry, filters, triedIDs...)
+			return ch, selectGroup, err
 		}
+		ch, err := model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, priorityRetry, filters, triedIDs...)
+		return ch, selectGroup, err
+	}
 
-		// startGroupIndex: the group index to start searching from
-		// startGroupIndex: 开始搜索的分组索引
-		startGroupIndex := 0
-		crossGroupRetry := common.GetContextKeyBool(param.Ctx, constant.ContextKeyTokenCrossGroupRetry)
+	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
+	autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
+	if len(autoGroups) == 0 {
+		return nil, selectGroup, errors.New("auto groups is not enabled")
+	}
 
-		if lastGroupIndex, exists := common.GetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex); exists {
-			if idx, ok := lastGroupIndex.(int); ok {
-				startGroupIndex = idx
-			}
+	startGroupIndex := 0
+	if lastGroupIndex, exists := common.GetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex); exists {
+		if idx, ok := lastGroupIndex.(int); ok {
+			startGroupIndex = idx
 		}
+	}
+	crossGroupRetry := common.GetContextKeyBool(param.Ctx, constant.ContextKeyTokenCrossGroupRetry)
+	selectedAutoGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyAutoGroup)
+	if selectedAutoGroup != "" {
+		selectGroup = selectedAutoGroup
+	}
 
-		for i := startGroupIndex; i < len(autoGroups); i++ {
-			autoGroup := autoGroups[i]
-			// Calculate priorityRetry for current group
-			// 计算当前分组的 priorityRetry
-			groupRetry := param.GetRetry()
-			// A new group starts from its highest priority without the affinity offset.
-			if i > startGroupIndex {
-				groupRetry = 0
-			}
-			priorityRetry := max(groupRetry-affinityRetryOffset, 0)
-			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
-
-			channel, _ = model.GetRandomSatisfiedChannel(
-				autoGroup,
-				param.ModelName,
-				priorityRetry,
-				filters,
-			)
-			if channel == nil {
-				// Current group has no available channel for this model, try next group
-				// 当前分组没有该模型的可用渠道，尝试下一个分组
-				logger.LogDebug(param.Ctx, "No available channel in group %s for model %s at priorityRetry %d, trying next group", autoGroup, param.ModelName, priorityRetry)
-				// 重置状态以尝试下一个分组
-				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i+1)
-				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupRetryIndex, 0)
-				// Reset retry counter so outer loop can continue for next group
-				// 重置重试计数器，以便外层循环可以为下一个分组继续
-				param.SetRetry(0)
-				affinityRetryOffset = 0
-				param.Ctx.Set(ginKeyChannelAffinityRetryOffset, 0)
-				continue
-			}
-			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroup, autoGroup)
-			selectGroup = autoGroup
-			logger.LogDebug(param.Ctx, "Auto selected group: %s", autoGroup)
-
-			// Prepare state for next retry
-			// 为下一次重试准备状态
-			if crossGroupRetry && groupRetry >= common.RetryTimes {
-				// Current group has exhausted all retries, prepare to switch to next group
-				// This request still uses current group, but next retry will use next group
-				// 当前分组已用完所有重试次数，准备切换到下一个分组
-				// 本次请求仍使用当前分组，但下次重试将使用下一个分组
-				logger.LogDebug(param.Ctx, "Current group %s retries exhausted (groupRetry=%d >= RetryTimes=%d), preparing switch to next group for next retry", autoGroup, groupRetry, common.RetryTimes)
-				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i+1)
-				// Reset retry counter so outer loop can continue for next group
-				// 重置重试计数器，以便外层循环可以为下一个分组继续
-				param.SetRetry(0)
-				param.ResetRetryNextTry()
-				param.Ctx.Set(ginKeyChannelAffinityRetryOffset, 0)
-			} else {
-				// Stay in current group, save current state
-				// 保持在当前分组，保存当前状态
-				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i)
-			}
-			break
+	for i := startGroupIndex; i < len(autoGroups); i++ {
+		autoGroup := autoGroups[i]
+		selectGroup = autoGroup
+		groupRetry := param.GetRetry()
+		// A new group starts from its highest priority without the affinity offset.
+		if i > startGroupIndex {
+			groupRetry = 0
 		}
-	} else {
-		channel, err = model.GetRandomSatisfiedChannel(
-			param.TokenGroup,
-			param.ModelName,
-			max(param.GetRetry()-affinityRetryOffset, 0),
-			filters,
+		priorityRetry := max(groupRetry-affinityRetryOffset, 0)
+		logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
+
+		var (
+			channel *model.Channel
+			err     error
 		)
-		if err != nil {
-			return nil, param.TokenGroup, err
+		if ignoreCooldown {
+			channel, err = model.GetRandomSatisfiedChannelIgnoringCooldown(autoGroup, param.ModelName, priorityRetry, filters, triedIDs...)
+		} else if !crossGroupRetry || len(triedIDs) == 0 || model.HasUntriedChannel(autoGroup, param.ModelName, filters, triedIDs) {
+			channel, err = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, filters, triedIDs...)
 		}
+		if err != nil {
+			return nil, autoGroup, err
+		}
+		if channel == nil {
+			if !crossGroupRetry && selectedAutoGroup != "" && autoGroup == selectedAutoGroup {
+				break
+			}
+			logger.LogDebug(param.Ctx, "No available channel in group %s for model %s at priorityRetry %d, trying next group", autoGroup, param.ModelName, priorityRetry)
+			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i+1)
+			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupRetryIndex, 0)
+			param.SetRetry(0)
+			affinityRetryOffset = 0
+			param.Ctx.Set(ginKeyChannelAffinityRetryOffset, 0)
+			continue
+		}
+
+		common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroup, autoGroup)
+		logger.LogDebug(param.Ctx, "Auto selected group: %s", autoGroup)
+
+		if !ignoreCooldown && crossGroupRetry && groupRetry >= common.RetryTimes {
+			logger.LogDebug(param.Ctx, "Current group %s retries exhausted (groupRetry=%d >= RetryTimes=%d), preparing switch to next group for next retry", autoGroup, groupRetry, common.RetryTimes)
+			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i+1)
+			param.SetRetry(0)
+			param.ResetRetryNextTry()
+			param.Ctx.Set(ginKeyChannelAffinityRetryOffset, 0)
+		} else {
+			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i)
+		}
+		return channel, autoGroup, nil
+	}
+	return nil, selectGroup, nil
+}
+
+// CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
+// 尝试获取一个满足要求的随机渠道。
+func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
+	filters := GetChannelConstraints(param.Ctx).Filters
+	if common.GetContextKeyBool(param.Ctx, constant.ContextKeyChannelCooldownBypassed) {
+		tried := cooldownRoundTriedIDs(param.Ctx)
+		channel, selectGroup, err := selectSatisfiedChannelPass(param, filters, true, tried)
+		if err != nil {
+			return nil, selectGroup, err
+		}
+		if channel == nil {
+			common.SetContextKey(param.Ctx, constant.ContextKeyChannelCooldownBypassed, false)
+			return nil, selectGroup, ErrChannelsCoolingDown
+		}
+		if param.Ctx != nil && !slices.Contains(tried, channel.Id) {
+			param.Ctx.Set(ginKeyChannelCooldownRoundTried, append(slices.Clone(tried), channel.Id))
+		}
+		return channel, selectGroup, nil
+	}
+
+	channel, selectGroup, err := selectSatisfiedChannelPass(param, filters, false, usedChannelIDs(param.Ctx))
+	if err != nil || channel != nil || !common.RetryCooldownEnabled {
+		return channel, selectGroup, err
+	}
+
+	// Ordinary routing found no non-cooling candidate. Probe once whether
+	// ignoring cooldown yields any candidate; if not, no channel exists at all
+	// and the caller receives the normal nil-channel outcome instead of 503.
+	if param.TokenGroup == "auto" {
+		crossGroupRetry := common.GetContextKeyBool(param.Ctx, constant.ContextKeyTokenCrossGroupRetry)
+		selectedAutoGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyAutoGroup)
+		if crossGroupRetry || selectedAutoGroup == "" {
+			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, 0)
+			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupRetryIndex, 0)
+		} else {
+			userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
+			if idx := slices.Index(GetRequestAutoGroups(param.Ctx, userGroup), selectedAutoGroup); idx >= 0 {
+				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, idx)
+			}
+		}
+	}
+	param.SetRetry(0)
+	if param.Ctx != nil {
+		param.Ctx.Set(ginKeyChannelAffinityRetryOffset, 0)
+	}
+
+	tried := cooldownRoundTriedIDs(param.Ctx)
+	channel, selectGroup, err = selectSatisfiedChannelPass(param, filters, true, tried)
+	if err != nil || channel == nil {
+		return nil, selectGroup, err
+	}
+	common.SetContextKey(param.Ctx, constant.ContextKeyChannelCooldownBypassed, true)
+	if param.Ctx != nil && !slices.Contains(tried, channel.Id) {
+		param.Ctx.Set(ginKeyChannelCooldownRoundTried, append(slices.Clone(tried), channel.Id))
 	}
 	return channel, selectGroup, nil
 }
@@ -348,13 +398,30 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 	usingGroup := retry.TokenGroup
 	var channel *model.Channel
 	var selectGroup string
-	if retry.GetRetry() == 0 {
+	autoGroupIdx := 0
+	if lastGroupIndex, exists := common.GetContextKey(c, constant.ContextKeyAutoGroupIndex); exists {
+		if idx, ok := lastGroupIndex.(int); ok {
+			autoGroupIdx = idx
+		}
+	}
+	isInitialAttempt := retry.GetRetry() == 0 &&
+		autoGroupIdx == 0 &&
+		!common.GetContextKeyBool(c, constant.ContextKeyChannelCooldownBypassed) &&
+		len(usedChannelIDs(c)) == 0 &&
+		len(cooldownRoundTriedIDs(c)) == 0
+	if isInitialAttempt {
 		if preferredChannelID, found := GetPreferredChannelByAffinity(c, modelName, usingGroup); found {
+			strictSession := RequestPolicy(c).SessionMode == "strict"
 			affinityUsable := false
 			preferred, err := model.CacheGetChannel(preferredChannelID)
 			affinitySatisfied := false
+			preferredCooling := false
 			if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
 				affinitySatisfied, _ = model.ChannelSatisfiesFilters(preferred, modelName, constraints.Filters)
+				if affinitySatisfied && !strictSession && model.IsChannelModelCooling(preferred.Id, modelName) {
+					preferredCooling = true
+					affinitySatisfied = false
+				}
 			}
 			if affinitySatisfied {
 				if usingGroup == "auto" {
@@ -376,10 +443,10 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 					MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
 				}
 			}
-			if !affinityUsable && !ShouldKeepChannelAffinityOnChannelDisabled() {
+			if !affinityUsable && !preferredCooling && !ShouldKeepChannelAffinityOnChannelDisabled() {
 				ClearCurrentChannelAffinityCache(c)
 			}
-			if !affinityUsable && RequestPolicy(c).SessionMode == "strict" {
+			if !affinityUsable && strictSession {
 				return nil, "", &ChannelSelectError{StatusCode: http.StatusServiceUnavailable, Message: "strict_session_binding_unavailable"}
 			}
 		}
@@ -388,6 +455,12 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 	if channel == nil {
 		var err error
 		channel, selectGroup, err = CacheGetRandomSatisfiedChannel(retry)
+		if errors.Is(err, ErrChannelsCoolingDown) {
+			return nil, selectGroup, &ChannelSelectError{
+				StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeGetChannelFailed, MessageID: i18n.MsgChannelsCoolingDown,
+				Params: map[string]any{"Group": selectGroup, "Model": modelName},
+			}
+		}
 		if err != nil {
 			showGroup := usingGroup
 			if usingGroup == "auto" {

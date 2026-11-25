@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,7 +15,6 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -25,6 +24,10 @@ func setupChannelSelectAutoGroupsTest(t *testing.T) *gorm.DB {
 	t.Helper()
 
 	originalDB := model.DB
+	originalLogDB := model.LOG_DB
+	originalMainType := common.MainDatabaseType()
+	originalSQLitePath := common.SQLitePath
+	originalIsMaster := common.IsMasterNode
 	originalMemoryCacheEnabled := common.MemoryCacheEnabled
 	originalRetryTimes := common.RetryTimes
 	originalAutoGroups := setting.AutoGroups2JsonString()
@@ -32,11 +35,13 @@ func setupChannelSelectAutoGroupsTest(t *testing.T) *gorm.DB {
 	originalGroupRatios := ratio_setting.GroupRatio2JSONString()
 	originalMaxTokenAutoGroups := setting.GetMaxTokenAutoGroups()
 
-	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
-	require.NoError(t, err)
+	common.IsMasterNode = false
+	common.SQLitePath = filepath.Join(t.TempDir(), "channel_select.db")
+	t.Setenv("SQL_DSN", "local")
+	t.Setenv("LOG_SQL_DSN", "")
+	require.NoError(t, model.InitDB())
+	db := model.DB
 	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
-	model.DB = db
 	common.MemoryCacheEnabled = true
 	common.RetryTimes = 0
 
@@ -46,7 +51,15 @@ func setupChannelSelectAutoGroupsTest(t *testing.T) *gorm.DB {
 	require.NoError(t, setting.UpdateMaxTokenAutoGroups("2"))
 
 	t.Cleanup(func() {
+		sqlDB, err := db.DB()
+		if err == nil {
+			require.NoError(t, sqlDB.Close())
+		}
 		model.DB = originalDB
+		model.LOG_DB = originalLogDB
+		common.SetMainDatabaseType(originalMainType)
+		common.SQLitePath = originalSQLitePath
+		common.IsMasterNode = originalIsMaster
 		common.MemoryCacheEnabled = originalMemoryCacheEnabled
 		common.RetryTimes = originalRetryTimes
 		require.NoError(t, setting.UpdateAutoGroupsByJsonString(originalAutoGroups))
@@ -57,10 +70,6 @@ func setupChannelSelectAutoGroupsTest(t *testing.T) *gorm.DB {
 		if originalMemoryCacheEnabled && originalDB != nil &&
 			originalDB.Migrator().HasTable(&model.Channel{}) && originalDB.Migrator().HasTable(&model.Ability{}) {
 			model.InitChannelCache()
-		}
-		sqlDB, err := db.DB()
-		if err == nil {
-			require.NoError(t, sqlDB.Close())
 		}
 	})
 
@@ -191,66 +200,80 @@ func TestCacheGetRandomSatisfiedChannelIgnoresCooldownOncePerRequest(t *testing.
 	second, _, err := CacheGetRandomSatisfiedChannel(param)
 	assert.ErrorIs(t, err, ErrChannelsCoolingDown)
 	assert.Nil(t, second)
+
+	missingCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(missingCtx, constant.ContextKeyUserGroup, "default")
+	missingRetry := 0
+	missingCh, _, missingErr := CacheGetRandomSatisfiedChannel(&RetryParam{
+		Ctx: missingCtx, TokenGroup: "default", ModelName: "unconfigured-model", Retry: &missingRetry,
+	})
+	require.NoError(t, missingErr, "a model with zero channels must report nil channel rather than ErrChannelsCoolingDown")
+	assert.Nil(t, missingCh)
 }
 
 func TestChannelCooldownFinalRoundVisitsEveryCandidate(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		auto       bool
-		crossGroup bool
-		want       []int
-	}{
-		{name: "single group", want: []int{2501, 2502, 2503}},
-		{name: "auto cross group", auto: true, crossGroup: true, want: []int{2501, 2502, 2503}},
-		{name: "auto same group", auto: true, want: []int{2501, 2502}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			db := setupChannelSelectAutoGroupsTest(t)
-			common.RetryTimes = 0
-			const name = "cooldown-round"
-			createChannelSelectAutoGroupsChannel(t, db, 2501, "default", name)
-			createChannelSelectAutoGroupsChannel(t, db, 2502, "default", name)
-			group := "default"
-			if tc.auto {
-				group = "vip"
-			}
-			createChannelSelectAutoGroupsChannel(t, db, 2503, group, name)
-			model.InitChannelCache()
-			enabled, threshold := common.RetryCooldownEnabled, common.RetryCooldownFailureThreshold
-			common.RetryCooldownEnabled, common.RetryCooldownFailureThreshold = true, 1
-			model.ResetChannelCooldowns()
-			t.Cleanup(func() {
-				common.RetryCooldownEnabled, common.RetryCooldownFailureThreshold = enabled, threshold
+	for _, cached := range []bool{true, false} {
+		for _, tc := range []struct {
+			name       string
+			auto       bool
+			crossGroup bool
+			want       []int
+		}{
+			{name: "single group", want: []int{2501, 2502, 2503}},
+			{name: "auto cross group", auto: true, crossGroup: true, want: []int{2501, 2502, 2503}},
+			{name: "auto same group", auto: true, want: []int{2501, 2502}},
+		} {
+			t.Run(fmt.Sprintf("cache=%t/%s", cached, tc.name), func(t *testing.T) {
+				db := setupChannelSelectAutoGroupsTest(t)
+				common.MemoryCacheEnabled = cached
+				common.RetryTimes = 0
+				const name = "cooldown-round"
+				createChannelSelectAutoGroupsChannel(t, db, 2501, "default", name)
+				createChannelSelectAutoGroupsChannel(t, db, 2502, "default", name)
+				group := "default"
+				if tc.auto {
+					group = "vip"
+				}
+				createChannelSelectAutoGroupsChannel(t, db, 2503, group, name)
+				if cached {
+					model.InitChannelCache()
+				}
+				enabled, threshold := common.RetryCooldownEnabled, common.RetryCooldownFailureThreshold
+				common.RetryCooldownEnabled, common.RetryCooldownFailureThreshold = true, 1
 				model.ResetChannelCooldowns()
-			})
-			for _, id := range []int{2501, 2502, 2503} {
-				require.True(t, model.RecordChannelCooldownFailure(id, name))
-			}
-			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-			common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
-			param := &RetryParam{Ctx: ctx, TokenGroup: "default", ModelName: name}
-			if tc.auto {
-				param.TokenGroup = "auto"
-				common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"default", "vip"})
-				common.SetContextKey(ctx, constant.ContextKeyTokenCrossGroupRetry, tc.crossGroup)
-			}
-			var visited []int
-			for range len(tc.want) {
-				require.True(t, param.CanAttempt(), "the final round must finish even with no ordinary retries")
+				t.Cleanup(func() {
+					common.RetryCooldownEnabled, common.RetryCooldownFailureThreshold = enabled, threshold
+					model.ResetChannelCooldowns()
+				})
+				for _, id := range []int{2501, 2502, 2503} {
+					require.True(t, model.RecordChannelCooldownFailure(id, name))
+				}
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+				param := &RetryParam{Ctx: ctx, TokenGroup: "default", ModelName: name}
+				if tc.auto {
+					param.TokenGroup = "auto"
+					common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"default", "vip"})
+					common.SetContextKey(ctx, constant.ContextKeyTokenCrossGroupRetry, tc.crossGroup)
+				}
+				var visited []int
+				for range len(tc.want) {
+					require.True(t, param.CanAttempt(), "the final round must finish even with no ordinary retries")
+					channel, _, err := CacheGetRandomSatisfiedChannel(param)
+					require.NoError(t, err)
+					require.NotNil(t, channel)
+					visited = append(visited, channel.Id)
+					AppendUsedChannel(ctx, channel.Id)
+					require.Positive(t, param.RemainingRetries())
+					param.IncreaseRetry()
+				}
+				assert.ElementsMatch(t, tc.want, visited)
+				require.True(t, param.CanAttempt(), "selection must report final-round exhaustion")
 				channel, _, err := CacheGetRandomSatisfiedChannel(param)
-				require.NoError(t, err)
-				require.NotNil(t, channel)
-				visited = append(visited, channel.Id)
-				AppendUsedChannel(ctx, channel.Id)
-				require.Positive(t, param.RemainingRetries())
-				param.IncreaseRetry()
-			}
-			assert.ElementsMatch(t, tc.want, visited)
-			require.True(t, param.CanAttempt(), "selection must report final-round exhaustion")
-			channel, _, err := CacheGetRandomSatisfiedChannel(param)
-			assert.ErrorIs(t, err, ErrChannelsCoolingDown)
-			assert.Nil(t, channel)
-		})
+				assert.ErrorIs(t, err, ErrChannelsCoolingDown)
+				assert.Nil(t, channel)
+			})
+		}
 	}
 }
 
