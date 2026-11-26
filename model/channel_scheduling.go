@@ -213,6 +213,158 @@ type ModelPriceSyncConfig struct {
 	LastSyncTime            int64                              `json:"last_sync_time"`
 }
 
+type UpstreamAccountPublicView struct {
+	ID                   string   `json:"id"`
+	Name                 string   `json:"name"`
+	BaseURL              string   `json:"base_url"`
+	SyncMode             string   `json:"sync_mode"`
+	UserID               string   `json:"user_id"`
+	HasAccessToken       bool     `json:"has_access_token"`
+	TokenNameRule        string   `json:"token_name_rule"`
+	ChannelNameRule      string   `json:"channel_name_rule"`
+	ChannelTag           string   `json:"channel_tag"`
+	LocalGroup           string   `json:"local_group"`
+	Currency             string   `json:"currency"`
+	ExchangeRate         float64  `json:"exchange_rate"`
+	TopupMultiplier      float64  `json:"topup_multiplier"`
+	CleanRemovedGroups   bool     `json:"clean_removed_groups"`
+	AdoptExistingChannel bool     `json:"adopt_existing_channel"`
+	Enabled              bool     `json:"enabled"`
+	BalanceUSD           float64  `json:"balance_usd"`
+	UsedQuotaUSD         float64  `json:"used_quota_usd"`
+	LastSyncAt           int64    `json:"last_sync_at"`
+	LastStatus           string   `json:"last_status"`
+	LastMessage          string   `json:"last_message,omitempty"`
+	ActiveGroups         []string `json:"active_groups,omitempty"`
+	CreatedChannels      []string `json:"created_channels,omitempty"`
+	UpdatedChannels      []string `json:"updated_channels,omitempty"`
+	RemovedChannels      []string `json:"removed_channels,omitempty"`
+}
+
+func (a UpstreamAccountSource) PublicView() UpstreamAccountPublicView {
+	return UpstreamAccountPublicView{
+		ID:                   a.ID,
+		Name:                 a.Name,
+		BaseURL:              a.BaseURL,
+		SyncMode:             a.SyncMode,
+		UserID:               a.UserID,
+		HasAccessToken:       strings.TrimSpace(a.AccessToken) != "",
+		TokenNameRule:        a.TokenNameRule,
+		ChannelNameRule:      a.ChannelNameRule,
+		ChannelTag:           a.ChannelTag,
+		LocalGroup:           a.LocalGroup,
+		Currency:             a.Currency,
+		ExchangeRate:         a.ExchangeRate,
+		TopupMultiplier:      a.TopupMultiplier,
+		CleanRemovedGroups:   a.CleanRemovedGroups,
+		AdoptExistingChannel: a.AdoptExistingChannel,
+		Enabled:              a.Enabled,
+		BalanceUSD:           a.BalanceUSD,
+		UsedQuotaUSD:         a.UsedQuotaUSD,
+		LastSyncAt:           a.LastSyncAt,
+		LastStatus:           a.LastStatus,
+		LastMessage:          a.LastMessage,
+		ActiveGroups:         slices.Clone(a.ActiveGroups),
+		CreatedChannels:      slices.Clone(a.CreatedChannels),
+		UpdatedChannels:      slices.Clone(a.UpdatedChannels),
+		RemovedChannels:      slices.Clone(a.RemovedChannels),
+	}
+}
+
+func ToUpstreamAccountPublicViews(accounts []UpstreamAccountSource) []UpstreamAccountPublicView {
+	out := make([]UpstreamAccountPublicView, 0, len(accounts))
+	for _, a := range accounts {
+		out = append(out, a.PublicView())
+	}
+	return out
+}
+
+type ModelPriceSyncPublicView struct {
+	HighestPricePriority    bool                    `json:"highest_price_priority"`
+	PreferredChannels       map[string]int          `json:"preferred_channels"`
+	DefaultCurrency         string                  `json:"default_currency"`
+	CustomExchangeRate      float64                 `json:"custom_exchange_rate"`
+	USDExchangeRate         float64                 `json:"usd_exchange_rate"`
+	CNYExchangeRate         float64                 `json:"cny_exchange_rate"`
+	TWDExchangeRate         float64                 `json:"twd_exchange_rate"`
+	ChannelCurrencies       map[int]string          `json:"channel_currencies"`
+	ChannelExchangeRates    map[int]float64         `json:"channel_exchange_rates"`
+	ChannelTopupMultipliers map[int]float64         `json:"channel_topup_multipliers"`
+	ChannelUpstreamGroups   map[int]string          `json:"channel_upstream_groups"`
+	ClassifierEnabled       *bool                   `json:"classifier_enabled,omitempty"`
+	ClassifierRules         []ChannelClassifierRule `json:"classifier_rules,omitempty"`
+	CronEnabled             bool                    `json:"cron_enabled"`
+	CronIntervalMinutes     int                     `json:"cron_interval_minutes"`
+	AutoSyncModels          bool                    `json:"auto_sync_models"`
+	AutoSyncPrices          bool                    `json:"auto_sync_prices"`
+	ReplaceModels           *bool                   `json:"replace_models,omitempty"`
+	LastSyncTime            int64                   `json:"last_sync_time"`
+}
+
+func (c ModelPriceSyncConfig) PublicView() ModelPriceSyncPublicView {
+	var classifierEnabled *bool
+	if c.ClassifierEnabled != nil {
+		v := *c.ClassifierEnabled
+		classifierEnabled = &v
+	}
+	var replaceModels *bool
+	if c.ReplaceModels != nil {
+		v := *c.ReplaceModels
+		replaceModels = &v
+	}
+	rules := slices.Clone(c.ClassifierRules)
+	for i := range rules {
+		rules[i].Keywords = slices.Clone(rules[i].Keywords)
+	}
+	return ModelPriceSyncPublicView{
+		HighestPricePriority:    c.HighestPricePriority,
+		PreferredChannels:       maps.Clone(c.PreferredChannels),
+		DefaultCurrency:         c.DefaultCurrency,
+		CustomExchangeRate:      c.CustomExchangeRate,
+		USDExchangeRate:         c.USDExchangeRate,
+		CNYExchangeRate:         c.CNYExchangeRate,
+		TWDExchangeRate:         c.TWDExchangeRate,
+		ChannelCurrencies:       maps.Clone(c.ChannelCurrencies),
+		ChannelExchangeRates:    maps.Clone(c.ChannelExchangeRates),
+		ChannelTopupMultipliers: maps.Clone(c.ChannelTopupMultipliers),
+		ChannelUpstreamGroups:   maps.Clone(c.ChannelUpstreamGroups),
+		ClassifierEnabled:       classifierEnabled,
+		ClassifierRules:         rules,
+		CronEnabled:             c.CronEnabled,
+		CronIntervalMinutes:     c.CronIntervalMinutes,
+		AutoSyncModels:          c.AutoSyncModels,
+		AutoSyncPrices:          c.AutoSyncPrices,
+		ReplaceModels:           replaceModels,
+		LastSyncTime:            c.LastSyncTime,
+	}
+}
+
+func RedactModelPriceSyncConfigOptionJSON(raw string) (string, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return "{}", true
+	}
+	cfg := defaultModelPriceSyncConfig()
+	if err := common.Unmarshal([]byte(raw), &cfg); err != nil {
+		return "", false
+	}
+	normalizeModelPriceSyncConfig(&cfg)
+	type redactedOptionPayload struct {
+		ModelPriceSyncPublicView
+		UpstreamAccounts        []UpstreamAccountPublicView        `json:"upstream_accounts,omitempty"`
+		AutoProvisionedChannels map[int]AutoProvisionedChannelMeta `json:"auto_provisioned_channels,omitempty"`
+	}
+	payload := redactedOptionPayload{
+		ModelPriceSyncPublicView: cfg.PublicView(),
+		UpstreamAccounts:         ToUpstreamAccountPublicViews(cfg.UpstreamAccounts),
+		AutoProvisionedChannels:  maps.Clone(cfg.AutoProvisionedChannels),
+	}
+	encoded, err := common.Marshal(payload)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
 func (c ModelPriceSyncConfig) IsReplaceModelsEnabled() bool {
 	if c.ReplaceModels == nil {
 		return true
@@ -1027,6 +1179,8 @@ func LoadModelPriceSyncConfigFromJSON(raw string) error {
 	return nil
 }
 
+var modelPriceSyncWriteMu sync.Mutex
+
 func SaveModelPriceSyncConfig(cfg ModelPriceSyncConfig) error {
 	normalizeModelPriceSyncConfig(&cfg)
 	modelPriceSyncMu.Lock()
@@ -1046,6 +1200,23 @@ func SaveModelPriceSyncConfig(cfg ModelPriceSyncConfig) error {
 	}
 	common.OptionMapRWMutex.Unlock()
 	return UpdateOption(ModelPriceSyncConfigOptionKey, string(encoded))
+}
+
+// UpdateModelPriceSyncConfig serializes concurrent read-modify-write updates on
+// ModelPriceSyncConfig so independent settings workflows do not overwrite each
+// other's committed changes.
+func UpdateModelPriceSyncConfig(fn func(cfg *ModelPriceSyncConfig) error) (ModelPriceSyncConfig, error) {
+	modelPriceSyncWriteMu.Lock()
+	defer modelPriceSyncWriteMu.Unlock()
+
+	cfg := GetModelPriceSyncConfig()
+	if err := fn(&cfg); err != nil {
+		return cfg, err
+	}
+	if err := SaveModelPriceSyncConfig(cfg); err != nil {
+		return cfg, err
+	}
+	return GetModelPriceSyncConfig(), nil
 }
 
 // IsLumiyaSyncMode reports whether an upstream source uses or auto-detects the Lumiya sync mode.
@@ -1115,18 +1286,12 @@ func normalizeUpstreamAccountSource(src *UpstreamAccountSource) {
 	if src == nil {
 		return
 	}
-	isLumiyaLike := IsLumiyaSyncMode("", src.Name, src.BaseURL)
 	if IsLumiyaSyncMode(src.SyncMode, src.Name, src.BaseURL) {
 		src.SyncMode = UpstreamSyncModeLumiya
 	} else {
 		src.SyncMode = UpstreamSyncModeStandard
 	}
-	if isLumiyaLike && strings.TrimSpace(src.AccessToken) == "uxGSJ4IdALqzBHMEbUYjicNe1qV/3Q==" {
-		src.AccessToken = "8xfOUw1xHsz/dOVmfU4vuJx8T3GsFHk="
-	}
-	if isLumiyaLike && strings.TrimSpace(src.UserID) == "" {
-		src.UserID = "502"
-	}
+	src.UserID = strings.TrimSpace(src.UserID)
 	curr := strings.ToUpper(strings.TrimSpace(src.Currency))
 	if curr == "" || curr == "AUTO" {
 		curr = "CNY"
@@ -1391,20 +1556,21 @@ func SyncChannelCurrencyCode(channelID int, currencyCode *string) {
 	if channelID <= 0 {
 		return
 	}
-	cfg := GetModelPriceSyncConfig()
-	if cfg.ChannelCurrencies == nil {
-		cfg.ChannelCurrencies = make(map[int]string)
-	}
-	code := ""
-	if currencyCode != nil {
-		code = strings.ToUpper(strings.TrimSpace(*currencyCode))
-	}
-	if code == "" || code == "AUTO" {
-		delete(cfg.ChannelCurrencies, channelID)
-	} else {
-		cfg.ChannelCurrencies[channelID] = code
-	}
-	_ = SaveModelPriceSyncConfig(cfg)
+	_, _ = UpdateModelPriceSyncConfig(func(cfg *ModelPriceSyncConfig) error {
+		if cfg.ChannelCurrencies == nil {
+			cfg.ChannelCurrencies = make(map[int]string)
+		}
+		code := ""
+		if currencyCode != nil {
+			code = strings.ToUpper(strings.TrimSpace(*currencyCode))
+		}
+		if code == "" || code == "AUTO" {
+			delete(cfg.ChannelCurrencies, channelID)
+		} else {
+			cfg.ChannelCurrencies[channelID] = code
+		}
+		return nil
+	})
 }
 
 func GetCronJobs() []CronJob {
@@ -1805,9 +1971,10 @@ func ArchiveAndCleanupDeletedChannels(deletedChannels []*Channel) {
 	for _, id := range ids {
 		deletedSet[id] = struct{}{}
 	}
-	if RemoveChannelIDsFromSyncConfig(&syncCfg, deletedSet) {
-		_ = SaveModelPriceSyncConfig(syncCfg)
-	}
+	_, _ = UpdateModelPriceSyncConfig(func(cfg *ModelPriceSyncConfig) error {
+		RemoveChannelIDsFromSyncConfig(cfg, deletedSet)
+		return nil
+	})
 
 	channelModelCostMu.Lock()
 	for _, id := range ids {

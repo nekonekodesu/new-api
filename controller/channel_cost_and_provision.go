@@ -82,17 +82,6 @@ func defaultUpstreamChannelTag(source model.UpstreamAccountSource) string {
 	return "auto:" + strings.TrimSpace(source.Name)
 }
 
-func maskSecretToken(raw string) string {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return ""
-	}
-	if len(s) <= 8 {
-		return "****"
-	}
-	return s[:4] + "********" + s[len(s)-4:]
-}
-
 func matchesMaskedTokenKey(fullKey string, maskedKey string) bool {
 	fk := strings.TrimPrefix(strings.TrimSpace(fullKey), "sk-")
 	mk := strings.TrimPrefix(strings.TrimSpace(maskedKey), "sk-")
@@ -390,6 +379,9 @@ func fetchUpstreamSelfBalance(ctx context.Context, baseURL string, accessToken s
 }
 
 func resolveUpstreamChannelBalanceUSD(tok upstreamTokenRecord, hasTok bool, selfInfo upstreamSelfQuotaInfo, currency ...string) (float64, bool) {
+	if !hasTok {
+		return 0, false
+	}
 	quotaPerUnit := selfInfo.QuotaPerUnit
 	if quotaPerUnit <= 0 {
 		quotaPerUnit = 500000.0
@@ -404,20 +396,23 @@ func resolveUpstreamChannelBalanceUSD(tok upstreamTokenRecord, hasTok bool, self
 	if unitMult <= 0 {
 		unitMult = 1.0
 	}
-	if hasTok && !tok.UnlimitedQuota && tok.RemainQuota > 0 {
-		tokUSD := math.Round(((float64(tok.RemainQuota)/quotaPerUnit)*unitMult)*1e4) / 1e4
+	if tok.UnlimitedQuota {
 		if selfInfo.HasValidQuota {
-			return min(tokUSD, selfInfo.BalanceUSD), true
+			return max(0.0, selfInfo.BalanceUSD), true
 		}
-		return tokUSD, true
+		return 0, false
+	}
+	tokUSD := 0.0
+	if tok.RemainQuota > 0 {
+		tokUSD = max(0.0, math.Round(((float64(tok.RemainQuota)/quotaPerUnit)*unitMult)*1e4)/1e4)
 	}
 	if selfInfo.HasValidQuota {
-		return selfInfo.BalanceUSD, true
+		return min(tokUSD, max(0.0, selfInfo.BalanceUSD)), true
 	}
-	return 0, false
+	return tokUSD, true
 }
 
-func fetchUpstreamTokensList(ctx context.Context, baseURL string, accessToken string, userID string, syncMode ...string) ([]upstreamTokenRecord, error) {
+func fetchUpstreamTokensList(ctx context.Context, baseURL string, accessToken string, userID string, syncMode ...string) ([]upstreamTokenRecord, bool, error) {
 	mode := ""
 	if len(syncMode) > 0 {
 		mode = syncMode[0]
@@ -428,41 +423,34 @@ func fetchUpstreamTokensList(ctx context.Context, baseURL string, accessToken st
 	seenIDs := make(map[int]struct{})
 	lumiyaMode := strings.EqualFold(mode, model.UpstreamSyncModeLumiya)
 
-	for page := 1; page <= 5; page++ {
+	const (
+		pageSize      = 100
+		maxTokenPages = 20
+	)
+	fetchOnePage := func(pParam int, pageParam int) ([]upstreamTokenRecord, int, error) {
 		var endpoint string
 		if lumiyaMode {
-			// Lumiya v1.0.0-rc.10 uses 1-indexed p=?&size=100
-			endpoint = fmt.Sprintf("%s/api/token/?p=%d&size=100", base, page)
+			endpoint = fmt.Sprintf("%s/api/token/?p=%d&size=%d", base, pageParam, pageSize)
 		} else {
-			pZero := page - 1
-			endpoint = fmt.Sprintf("%s/api/token/?p=%d&size=100&page=%d&page_size=100", base, pZero, page)
+			endpoint = fmt.Sprintf("%s/api/token/?p=%d&size=%d&page=%d&page_size=%d", base, pParam, pageSize, pageParam, pageSize)
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		setUpstreamAuthHeaders(req, accessToken, userID, mode)
 
 		resp, err := client.Do(req)
 		if err != nil {
-			if page == 1 {
-				return nil, err
-			}
-			break
+			return nil, 0, err
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
 		_ = resp.Body.Close()
 		if err := checkNotHTMLBody(body, "/api/token/"); err != nil {
-			if page == 1 {
-				return nil, err
-			}
-			break
+			return nil, 0, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			if page == 1 {
-				return nil, fmt.Errorf("upstream /api/token/ HTTP %d", resp.StatusCode)
-			}
-			break
+			return nil, 0, fmt.Errorf("upstream /api/token/ HTTP %d", resp.StatusCode)
 		}
 
 		var pagedResp struct {
@@ -471,13 +459,10 @@ func fetchUpstreamTokensList(ctx context.Context, baseURL string, accessToken st
 			Data    json.RawMessage `json:"data"`
 		}
 		if err := common.Unmarshal(body, &pagedResp); err != nil {
-			if page == 1 {
-				return nil, err
-			}
-			break
+			return nil, 0, err
 		}
-		if !pagedResp.Success && page == 1 && len(pagedResp.Data) == 0 {
-			return nil, fmt.Errorf("upstream /api/token/: %s", pagedResp.Message)
+		if !pagedResp.Success && len(pagedResp.Data) == 0 {
+			return nil, 0, fmt.Errorf("upstream /api/token/: %s", pagedResp.Message)
 		}
 
 		var pageObj struct {
@@ -486,14 +471,34 @@ func fetchUpstreamTokensList(ctx context.Context, baseURL string, accessToken st
 			Total int                   `json:"total"`
 		}
 		var batch []upstreamTokenRecord
-		if err := common.Unmarshal(pagedResp.Data, &pageObj); err == nil && (len(pageObj.Items) > 0 || len(pageObj.Data) > 0) {
+		if err := common.Unmarshal(pagedResp.Data, &pageObj); err == nil && (len(pageObj.Items) > 0 || len(pageObj.Data) > 0 || pageObj.Total > 0) {
 			if len(pageObj.Items) > 0 {
 				batch = pageObj.Items
 			} else {
 				batch = pageObj.Data
 			}
-		} else {
-			_ = common.Unmarshal(pagedResp.Data, &batch)
+		} else if len(pagedResp.Data) > 0 && string(pagedResp.Data) != "null" {
+			if err := common.Unmarshal(pagedResp.Data, &batch); err != nil {
+				return nil, 0, err
+			}
+		}
+		return batch, pageObj.Total, nil
+	}
+
+	complete := false
+	knownTotal := 0
+	for page := 1; page <= maxTokenPages; page++ {
+		// New-API and Lumiya both use 1-indexed p=1 for the first page.
+		batch, total, err := fetchOnePage(page, page)
+		if err != nil {
+			if page == 1 {
+				return nil, false, err
+			}
+			complete = false
+			break
+		}
+		if total > knownTotal {
+			knownTotal = total
 		}
 
 		added := 0
@@ -508,11 +513,41 @@ func fetchUpstreamTokensList(ctx context.Context, baseURL string, accessToken st
 			allTokens = append(allTokens, item)
 			added++
 		}
-		if added == 0 || len(batch) < 100 || (pageObj.Total > 0 && len(allTokens) >= pageObj.Total) {
+
+		if page == 1 && !lumiyaMode && knownTotal > len(allTokens) && len(batch) < pageSize {
+			// Legacy 0-indexed One-API fork where p=1 returned the second page; back-fill p=0.
+			if zeroBatch, _, zeroErr := fetchOnePage(0, 1); zeroErr == nil {
+				for _, item := range zeroBatch {
+					if item.ID <= 0 {
+						continue
+					}
+					if _, exists := seenIDs[item.ID]; !exists {
+						seenIDs[item.ID] = struct{}{}
+						allTokens = append(allTokens, item)
+					}
+				}
+			}
+		}
+
+		if len(batch) == 0 {
+			complete = knownTotal == 0 || len(allTokens) >= knownTotal
+			break
+		}
+		if added == 0 {
+			// Upstream repeated an earlier page instead of advancing.
+			complete = knownTotal > 0 && len(allTokens) >= knownTotal
+			break
+		}
+		if knownTotal > 0 && len(allTokens) >= knownTotal {
+			complete = true
+			break
+		}
+		if len(batch) < pageSize {
+			complete = knownTotal == 0 || len(allTokens) >= knownTotal
 			break
 		}
 	}
-	return allTokens, nil
+	return allTokens, complete, nil
 }
 
 func createUpstreamTokenForGroup(ctx context.Context, baseURL string, accessToken string, userID string, tokenName string, groupName string, syncMode ...string) error {
@@ -718,24 +753,24 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 		return fmt.Errorf("upstream source is nil")
 	}
 	source.Name = strings.TrimSpace(source.Name)
-	lowerIdent := strings.ToLower(source.Name + " " + source.BaseURL)
-	if strings.TrimSpace(source.SyncMode) == "" {
-		if strings.Contains(lowerIdent, "lumiya") || strings.Contains(lowerIdent, "露米娅") || strings.Contains(lowerIdent, "xn--1ys141f4ks") {
-			source.SyncMode = model.UpstreamSyncModeLumiya
-		} else {
-			source.SyncMode = model.UpstreamSyncModeStandard
-		}
-	}
-	if strings.TrimSpace(source.AccessToken) == "uxGSJ4IdALqzBHMEbUYjicNe1qV/3Q==" && model.IsLumiyaSyncMode(source.SyncMode, source.Name, source.BaseURL) {
-		source.AccessToken = "8xfOUw1xHsz/dOVmfU4vuJx8T3GsFHk="
+	if model.IsLumiyaSyncMode(source.SyncMode, source.Name, source.BaseURL) {
+		source.SyncMode = model.UpstreamSyncModeLumiya
+	} else {
+		source.SyncMode = model.UpstreamSyncModeStandard
 	}
 	source.BaseURL = model.CleanUpstreamAPIBaseURL(source.BaseURL, source.SyncMode)
 	source.UserID = strings.TrimSpace(source.UserID)
 	if source.Name == "" || source.BaseURL == "" {
-		return fmt.Errorf("upstream name and base URL are required")
+		source.LastStatus = "pending_config"
+		return fmt.Errorf("pending configuration: upstream name and base URL are required")
+	}
+	if source.UserID == "" {
+		source.LastStatus = "pending_config"
+		return fmt.Errorf("pending configuration: upstream user ID is required for %s", source.Name)
 	}
 	if strings.TrimSpace(source.AccessToken) == "" {
-		return fmt.Errorf("upstream account access token is required for %s", source.Name)
+		source.LastStatus = "pending_config"
+		return fmt.Errorf("pending configuration: upstream access token is required for %s", source.Name)
 	}
 	if strings.TrimSpace(source.TokenNameRule) == "" {
 		source.TokenNameRule = "new_api-{group}-{ratio}"
@@ -841,9 +876,13 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 	sort.Strings(sortedGroups)
 
 	// 2. Fetch existing upstream tokens and create missing ones per group
-	tokens, err := fetchUpstreamTokensList(ctx, source.BaseURL, source.AccessToken, source.UserID, source.SyncMode)
+	tokens, tokensComplete, err := fetchUpstreamTokensList(ctx, source.BaseURL, source.AccessToken, source.UserID, source.SyncMode)
 	if err != nil {
 		return fmt.Errorf("failed to list upstream tokens for %s: %v", source.Name, err)
+	}
+	var syncWarnings []string
+	if !tokensComplete {
+		syncWarnings = append(syncWarnings, "token list pagination incomplete; skipped creating new tokens")
 	}
 	tokenByGroup := make(map[string]upstreamTokenRecord, len(sortedGroups))
 	for _, t := range tokens {
@@ -871,22 +910,24 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 	}
 
 	createdAnyToken := false
-	for _, g := range sortedGroups {
-		if _, exists := tokenByGroup[g]; exists {
-			continue
-		}
-		if pricingResp != nil && pricingModelCountByGroup[g] == 0 {
-			// Skip creating an upstream token for a group with zero models.
-			continue
-		}
-		entry := groupMap[g]
-		expectedTokenName := formatUpstreamNamingRule(source.TokenNameRule, source.Name, g, entry.Ratio)
-		if err := createUpstreamTokenForGroup(ctx, source.BaseURL, source.AccessToken, source.UserID, expectedTokenName, g, source.SyncMode); err == nil {
-			createdAnyToken = true
+	if tokensComplete {
+		for _, g := range sortedGroups {
+			if _, exists := tokenByGroup[g]; exists {
+				continue
+			}
+			if pricingResp != nil && pricingModelCountByGroup[g] == 0 {
+				// Skip creating an upstream token for a group with zero models.
+				continue
+			}
+			entry := groupMap[g]
+			expectedTokenName := formatUpstreamNamingRule(source.TokenNameRule, source.Name, g, entry.Ratio)
+			if err := createUpstreamTokenForGroup(ctx, source.BaseURL, source.AccessToken, source.UserID, expectedTokenName, g, source.SyncMode); err == nil {
+				createdAnyToken = true
+			}
 		}
 	}
 	if createdAnyToken {
-		if refreshed, err := fetchUpstreamTokensList(ctx, source.BaseURL, source.AccessToken, source.UserID, source.SyncMode); err == nil {
+		if refreshed, _, err := fetchUpstreamTokensList(ctx, source.BaseURL, source.AccessToken, source.UserID, source.SyncMode); err == nil {
 			for _, t := range refreshed {
 				g := strings.TrimSpace(t.Group)
 				if g == "" || t.Status != 1 {
@@ -980,6 +1021,8 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 	removedNames := make([]string, 0)
 	syncedChannelIDs := make([]int, 0, len(sortedGroups))
 	activeModelGroupSet := make(map[string]struct{}, len(sortedGroups))
+	unknownModelGroups := make(map[string]struct{})
+	deletedChannelIDs := make(map[int]struct{})
 	now := time.Now().Unix()
 
 	selfBalance := fetchUpstreamSelfBalance(ctx, source.BaseURL, source.AccessToken, source.UserID, source.SyncMode, resolvedCurrency, resolvedRate)
@@ -1031,13 +1074,18 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 				}
 			}
 		}
+		var v1Err error
+		v1Attempted := false
 		if len(modelSet) == 0 && fullKey != "" {
+			v1Attempted = true
 			if mList, err := fetchUpstreamModelsFromV1(ctx, source.BaseURL, fullKey); err == nil {
 				for _, m := range mList {
 					if strings.TrimSpace(m) != "" {
 						modelSet[strings.TrimSpace(m)] = struct{}{}
 					}
 				}
+			} else {
+				v1Err = err
 			}
 		}
 		modelsList := make([]string, 0, len(modelSet))
@@ -1048,8 +1096,21 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 		modelsJoined := strings.Join(modelsList, ",")
 
 		if len(modelsList) == 0 {
-			// Do not create new empty-model channels. For existing channels whose group now has
-			// zero models, let Step 4 delete auto-managed ones when CleanRemovedGroups is on,
+			confirmedEmpty := pricingErr == nil && pricingResp != nil && (!v1Attempted || v1Err == nil)
+			if !confirmedEmpty {
+				// Model list is unknown due to upstream read failure: preserve existing channel,
+				// status, models, pricing, and associations without destructive changes.
+				unknownModelGroups[g] = struct{}{}
+				if pricingErr != nil && v1Err != nil {
+					syncWarnings = append(syncWarnings, fmt.Sprintf("group %s model discovery failed: pricing=(%v), v1_models=(%v)", g, pricingErr, v1Err))
+				} else if pricingErr != nil {
+					syncWarnings = append(syncWarnings, fmt.Sprintf("group %s model discovery failed: pricing=(%v)", g, pricingErr))
+				} else if v1Err != nil {
+					syncWarnings = append(syncWarnings, fmt.Sprintf("group %s model discovery failed: v1_models=(%v)", g, v1Err))
+				}
+				continue
+			}
+			// Confirmed zero models: let Step 4 delete auto-managed ones when CleanRemovedGroups is on,
 			// or auto-disable them and clear stale models when CleanRemovedGroups is off.
 			if existingCh != nil {
 				prevMeta, hadMeta := cfg.AutoProvisionedChannels[existingCh.Id]
@@ -1058,13 +1119,16 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 					if existingCh.Models != "" || existingCh.Status == common.ChannelStatusEnabled {
 						existingCh.Models = ""
 						existingCh.Status = common.ChannelStatusAutoDisabled
-						_ = model.DB.Model(&model.Channel{}).Where("id = ?", existingCh.Id).Updates(map[string]any{
+						if dbErr := model.DB.Model(&model.Channel{}).Where("id = ?", existingCh.Id).Updates(map[string]any{
 							"models": "",
 							"status": common.ChannelStatusAutoDisabled,
-						}).Error
-						_ = existingCh.UpdateAbilities(nil)
-						updatedNames = append(updatedNames, existingCh.Name)
-						syncedChannelIDs = append(syncedChannelIDs, existingCh.Id)
+						}).Error; dbErr == nil {
+							_ = existingCh.UpdateAbilities(nil)
+							updatedNames = append(updatedNames, existingCh.Name)
+							syncedChannelIDs = append(syncedChannelIDs, existingCh.Id)
+						} else {
+							syncWarnings = append(syncWarnings, fmt.Sprintf("auto-disable empty channel %s (#%d) failed: %v", existingCh.Name, existingCh.Id, dbErr))
+						}
 					}
 				}
 			}
@@ -1074,6 +1138,7 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 
 		var targetChannelID int
 		if existingCh != nil {
+			prevModelsWereEmpty := strings.TrimSpace(existingCh.Models) == ""
 			updates := map[string]any{
 				"name":     expectedChName,
 				"base_url": source.BaseURL,
@@ -1091,6 +1156,10 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 			if modelsJoined != existingCh.Models {
 				updates["models"] = modelsJoined
 				existingCh.Models = modelsJoined
+			}
+			if existingCh.Status == common.ChannelStatusAutoDisabled && prevModelsWereEmpty {
+				updates["status"] = common.ChannelStatusEnabled
+				existingCh.Status = common.ChannelStatusEnabled
 			}
 			if hasChBal {
 				updates["balance"] = chBalUSD
@@ -1217,8 +1286,9 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 		}
 	}
 
-	// 4. Clean up auto-created channels whose upstream group disappeared or now has zero models
-	if source.CleanRemovedGroups && len(sortedGroups) > 0 && model.DB != nil {
+	// 4. Clean up auto-created channels whose upstream group was authoritatively removed or confirmed empty
+	authoritativeGroupSet := selfGroupsErr == nil && pricingErr == nil && pricingResp != nil
+	if source.CleanRemovedGroups && authoritativeGroupSet && len(sortedGroups) > 0 && model.DB != nil {
 		var currentChannels []*model.Channel
 		if err := model.DB.Find(&currentChannels).Error; err == nil {
 			validChannelIDs := make(map[int]struct{}, len(currentChannels))
@@ -1256,10 +1326,17 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 				if upGroup == "" {
 					continue
 				}
+				if _, isUnknown := unknownModelGroups[upGroup]; isUnknown {
+					continue
+				}
 				if _, stillActive := activeModelGroupSet[upGroup]; !stillActive {
+					if delErr := ch.Delete(); delErr != nil {
+						syncWarnings = append(syncWarnings, fmt.Sprintf("delete removed-group channel %s (#%d) failed: %v", ch.Name, ch.Id, delErr))
+						continue
+					}
 					removedNames = append(removedNames, ch.Name)
-					_ = ch.Delete()
 					delete(validChannelIDs, ch.Id)
+					deletedChannelIDs[ch.Id] = struct{}{}
 					model.RemoveChannelIDsFromSyncConfig(cfg, map[int]struct{}{ch.Id: {}})
 				}
 			}
@@ -1273,18 +1350,86 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 	}
 	sort.Strings(activeGroupsList)
 
+	baseMsg := fmt.Sprintf(
+		"Groups: %d | Created: +%d | Updated: %d | Removed: -%d",
+		len(activeGroupsList), len(createdNames), len(updatedNames), len(removedNames),
+	)
 	source.LastSyncAt = now
-	source.LastStatus = "success"
 	source.ActiveGroups = activeGroupsList
 	source.CreatedChannels = createdNames
 	source.UpdatedChannels = updatedNames
 	source.RemovedChannels = removedNames
-	source.LastMessage = fmt.Sprintf(
-		"Groups: %d | Created: +%d | Updated: %d | Removed: -%d",
-		len(activeGroupsList), len(createdNames), len(updatedNames), len(removedNames),
-	)
+	if len(syncWarnings) > 0 {
+		source.LastStatus = "partial"
+		source.LastMessage = baseMsg + " | Warnings: " + strings.Join(syncWarnings, "; ")
+	} else {
+		source.LastStatus = "success"
+		source.LastMessage = baseMsg
+	}
 
-	_ = model.SaveModelPriceSyncConfig(*cfg)
+	_, _ = model.UpdateModelPriceSyncConfig(func(live *model.ModelPriceSyncConfig) error {
+		if len(deletedChannelIDs) > 0 {
+			model.RemoveChannelIDsFromSyncConfig(live, deletedChannelIDs)
+		}
+		if live.AutoProvisionedChannels == nil {
+			live.AutoProvisionedChannels = make(map[int]model.AutoProvisionedChannelMeta)
+		}
+		if live.ChannelUpstreamGroups == nil {
+			live.ChannelUpstreamGroups = make(map[int]string)
+		}
+		if live.ChannelTopupMultipliers == nil {
+			live.ChannelTopupMultipliers = make(map[int]float64)
+		}
+		if live.ChannelCurrencies == nil {
+			live.ChannelCurrencies = make(map[int]string)
+		}
+		if live.ChannelExchangeRates == nil {
+			live.ChannelExchangeRates = make(map[int]float64)
+		}
+		for chID, meta := range cfg.AutoProvisionedChannels {
+			if _, deleted := deletedChannelIDs[chID]; !deleted {
+				live.AutoProvisionedChannels[chID] = meta
+			}
+		}
+		for chID, grp := range cfg.ChannelUpstreamGroups {
+			if _, deleted := deletedChannelIDs[chID]; !deleted {
+				live.ChannelUpstreamGroups[chID] = grp
+			}
+		}
+		for chID, mult := range cfg.ChannelTopupMultipliers {
+			if _, deleted := deletedChannelIDs[chID]; !deleted {
+				live.ChannelTopupMultipliers[chID] = mult
+			}
+		}
+		for chID, curr := range cfg.ChannelCurrencies {
+			if _, deleted := deletedChannelIDs[chID]; !deleted {
+				live.ChannelCurrencies[chID] = curr
+			}
+		}
+		for chID, rate := range cfg.ChannelExchangeRates {
+			if _, deleted := deletedChannelIDs[chID]; !deleted {
+				live.ChannelExchangeRates[chID] = rate
+			}
+		}
+		for i := range live.UpstreamAccounts {
+			if live.UpstreamAccounts[i].ID == source.ID {
+				live.UpstreamAccounts[i].LastSyncAt = source.LastSyncAt
+				live.UpstreamAccounts[i].LastStatus = source.LastStatus
+				live.UpstreamAccounts[i].LastMessage = source.LastMessage
+				live.UpstreamAccounts[i].BalanceUSD = source.BalanceUSD
+				live.UpstreamAccounts[i].UsedQuotaUSD = source.UsedQuotaUSD
+				live.UpstreamAccounts[i].ActiveGroups = source.ActiveGroups
+				live.UpstreamAccounts[i].CreatedChannels = source.CreatedChannels
+				live.UpstreamAccounts[i].UpdatedChannels = source.UpdatedChannels
+				live.UpstreamAccounts[i].RemovedChannels = source.RemovedChannels
+				break
+			}
+		}
+		return nil
+	})
+	if len(deletedChannelIDs) > 0 {
+		model.RemoveChannelIDsFromSyncConfig(cfg, deletedChannelIDs)
+	}
 
 	if (len(syncedChannelIDs) > 0 || len(removedNames) > 0) && model.DB != nil {
 		if pricingResp != nil || len(syncedChannelIDs) == 0 {
@@ -1309,6 +1454,9 @@ func syncSingleUpstreamAccountSource(ctx context.Context, source *model.Upstream
 		model.InitChannelCache()
 	}
 
+	if len(syncWarnings) > 0 {
+		return fmt.Errorf("partial upstream sync for %s: %s", source.Name, strings.Join(syncWarnings, "; "))
+	}
 	return nil
 }
 
@@ -1332,6 +1480,7 @@ func ExecuteUpstreamAccountsProvisionSync(ctx context.Context, sourceIDs []strin
 
 	var summaries []string
 	var firstErr error
+	syncedAccounts := make(map[string]model.UpstreamAccountSource, len(cfg.UpstreamAccounts))
 	for i := range cfg.UpstreamAccounts {
 		src := &cfg.UpstreamAccounts[i]
 		if len(filterSet) > 0 {
@@ -1342,10 +1491,15 @@ func ExecuteUpstreamAccountsProvisionSync(ctx context.Context, sourceIDs []strin
 			continue
 		}
 
+		src.LastStatus = ""
 		if err := syncSingleUpstreamAccountSource(ctx, src, &cfg); err != nil {
 			src.LastSyncAt = time.Now().Unix()
-			src.LastStatus = "failed"
-			src.LastMessage = err.Error()
+			if src.LastStatus != "pending_config" && src.LastStatus != "partial" {
+				src.LastStatus = "failed"
+			}
+			if src.LastMessage == "" || src.LastStatus == "failed" || src.LastStatus == "pending_config" {
+				src.LastMessage = err.Error()
+			}
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -1353,9 +1507,55 @@ func ExecuteUpstreamAccountsProvisionSync(ctx context.Context, sourceIDs []strin
 		} else {
 			summaries = append(summaries, fmt.Sprintf("[%s] %s", src.Name, src.LastMessage))
 		}
+		syncedAccounts[src.ID] = *src
 	}
-	_ = model.SaveModelPriceSyncConfig(cfg)
-	if cfg.IsClassifierEnabled() {
+	updatedCfg, _ := model.UpdateModelPriceSyncConfig(func(live *model.ModelPriceSyncConfig) error {
+		for i := range live.UpstreamAccounts {
+			if synced, ok := syncedAccounts[live.UpstreamAccounts[i].ID]; ok {
+				live.UpstreamAccounts[i].LastSyncAt = synced.LastSyncAt
+				live.UpstreamAccounts[i].LastStatus = synced.LastStatus
+				live.UpstreamAccounts[i].LastMessage = synced.LastMessage
+				live.UpstreamAccounts[i].BalanceUSD = synced.BalanceUSD
+				live.UpstreamAccounts[i].UsedQuotaUSD = synced.UsedQuotaUSD
+				live.UpstreamAccounts[i].ActiveGroups = synced.ActiveGroups
+				live.UpstreamAccounts[i].CreatedChannels = synced.CreatedChannels
+				live.UpstreamAccounts[i].UpdatedChannels = synced.UpdatedChannels
+				live.UpstreamAccounts[i].RemovedChannels = synced.RemovedChannels
+			}
+		}
+		if live.AutoProvisionedChannels == nil {
+			live.AutoProvisionedChannels = make(map[int]model.AutoProvisionedChannelMeta)
+		}
+		if live.ChannelUpstreamGroups == nil {
+			live.ChannelUpstreamGroups = make(map[int]string)
+		}
+		if live.ChannelTopupMultipliers == nil {
+			live.ChannelTopupMultipliers = make(map[int]float64)
+		}
+		if live.ChannelCurrencies == nil {
+			live.ChannelCurrencies = make(map[int]string)
+		}
+		if live.ChannelExchangeRates == nil {
+			live.ChannelExchangeRates = make(map[int]float64)
+		}
+		for chID, meta := range cfg.AutoProvisionedChannels {
+			live.AutoProvisionedChannels[chID] = meta
+		}
+		for chID, grp := range cfg.ChannelUpstreamGroups {
+			live.ChannelUpstreamGroups[chID] = grp
+		}
+		for chID, mult := range cfg.ChannelTopupMultipliers {
+			live.ChannelTopupMultipliers[chID] = mult
+		}
+		for chID, curr := range cfg.ChannelCurrencies {
+			live.ChannelCurrencies[chID] = curr
+		}
+		for chID, rate := range cfg.ChannelExchangeRates {
+			live.ChannelExchangeRates[chID] = rate
+		}
+		return nil
+	})
+	if updatedCfg.IsClassifierEnabled() {
 		if clsSummary, err := model.ApplyChannelClassifierToChannels(nil); err == nil {
 			summaries = append(summaries, fmt.Sprintf("[Classifier] Classified %d channels (updated: %d, groups: %s)", clsSummary.TotalChannels, clsSummary.UpdatedChannels, strings.Join(clsSummary.SyncedGroups, ",")))
 		}
@@ -1364,17 +1564,6 @@ func ExecuteUpstreamAccountsProvisionSync(ctx context.Context, sourceIDs []strin
 		return "No enabled upstream accounts to sync", firstErr
 	}
 	return strings.Join(summaries, "\n"), firstErr
-}
-
-func maskUpstreamAccountsForResponse(accounts []model.UpstreamAccountSource) []model.UpstreamAccountSource {
-	out := make([]model.UpstreamAccountSource, 0, len(accounts))
-	for _, a := range accounts {
-		cp := a
-		cp.HasAccessToken = strings.TrimSpace(a.AccessToken) != ""
-		cp.AccessToken = maskSecretToken(a.AccessToken)
-		out = append(out, cp)
-	}
-	return out
 }
 
 func enrichAutoProvisionedChannelsWithBalance(metaMap map[int]model.AutoProvisionedChannelMeta) map[int]model.AutoProvisionedChannelMeta {
@@ -1409,7 +1598,7 @@ func enrichAutoProvisionedChannelsWithBalance(metaMap map[int]model.AutoProvisio
 func GetUpstreamAccounts(c *gin.Context) {
 	cfg := model.GetModelPriceSyncConfig()
 	common.ApiSuccess(c, gin.H{
-		"accounts":                  maskUpstreamAccountsForResponse(cfg.UpstreamAccounts),
+		"accounts":                  model.ToUpstreamAccountPublicViews(cfg.UpstreamAccounts),
 		"auto_provisioned_channels": enrichAutoProvisionedChannelsWithBalance(cfg.AutoProvisionedChannels),
 	})
 }
@@ -1457,89 +1646,97 @@ func SaveUpstreamAccount(c *gin.Context) {
 		req.TopupMultiplier = 1.0
 	}
 
-	cfg := model.GetModelPriceSyncConfig()
 	if req.ID == "" {
 		req.ID = fmt.Sprintf("upstream-%d", time.Now().UnixNano())
 	}
 
-	found := false
-	for i := range cfg.UpstreamAccounts {
-		if cfg.UpstreamAccounts[i].ID == req.ID {
-			prev := cfg.UpstreamAccounts[i]
-			// Preserve stored access token if the caller sent empty or masked value
-			incomingTok := strings.TrimSpace(req.AccessToken)
-			if incomingTok == "" || strings.Contains(incomingTok, "****") {
-				req.AccessToken = prev.AccessToken
-			}
-			req.LastSyncAt = prev.LastSyncAt
-			req.LastStatus = prev.LastStatus
-			req.LastMessage = prev.LastMessage
-			req.BalanceUSD = prev.BalanceUSD
-			req.UsedQuotaUSD = prev.UsedQuotaUSD
-			req.ActiveGroups = prev.ActiveGroups
-			req.CreatedChannels = prev.CreatedChannels
-			req.UpdatedChannels = prev.UpdatedChannels
-			req.RemovedChannels = prev.RemovedChannels
-			cfg.UpstreamAccounts[i] = req
-			found = true
-			break
-		}
-	}
-	if !found {
-		if strings.TrimSpace(req.AccessToken) == "" || strings.Contains(req.AccessToken, "****") {
-			common.ApiError(c, common.NewMessage("Upstream access token cannot be empty"))
-			return
-		}
-		req.LastStatus = "idle"
-		cfg.UpstreamAccounts = append(cfg.UpstreamAccounts, req)
-	}
-
-	// Propagate TopupMultiplier and Currency immediately to all channels belonging to this upstream account
-	if cfg.ChannelTopupMultipliers == nil {
-		cfg.ChannelTopupMultipliers = make(map[int]float64)
-	}
-	if cfg.ChannelCurrencies == nil {
-		cfg.ChannelCurrencies = make(map[int]string)
-	}
-	reqCurr := strings.ToUpper(strings.TrimSpace(req.Currency))
-	matchedChIDs := make(map[int]struct{})
-	for chID, meta := range cfg.AutoProvisionedChannels {
-		if chID > 0 && (meta.SourceID == req.ID || strings.EqualFold(strings.TrimSpace(meta.SourceName), req.Name)) {
-			matchedChIDs[chID] = struct{}{}
-		}
-	}
+	var allChannels []*model.Channel
 	if model.DB != nil {
-		var allChannels []*model.Channel
-		if err := model.DB.Omit("key").Find(&allChannels).Error; err == nil {
-			upKey := model.UpstreamAccountKey(req)
-			for _, ch := range allChannels {
-				if ch == nil || ch.Id <= 0 {
-					continue
-				}
-				srcID, srcName := model.ResolveChannelUpstreamSource(ch, nil, cfg)
-				if (upKey != "" && srcID == upKey) || strings.EqualFold(srcName, req.Name) {
-					matchedChIDs[ch.Id] = struct{}{}
-				}
-			}
-		}
-	}
-	for chID := range matchedChIDs {
-		cfg.ChannelTopupMultipliers[chID] = req.TopupMultiplier
-		if reqCurr != "" && reqCurr != "AUTO" {
-			cfg.ChannelCurrencies[chID] = reqCurr
-			if model.DB != nil {
-				_ = model.DB.Model(&model.Channel{}).Where("id = ?", chID).Update("currency_code", reqCurr).Error
-			}
-		}
+		_ = model.DB.Omit("key").Find(&allChannels).Error
 	}
 
-	if err := model.SaveModelPriceSyncConfig(cfg); err != nil {
+	var matchedChIDs map[int]struct{}
+	reqCurr := strings.ToUpper(strings.TrimSpace(req.Currency))
+
+	cfg, err := model.UpdateModelPriceSyncConfig(func(cfg *model.ModelPriceSyncConfig) error {
+		accountReq := req
+		found := false
+		for i := range cfg.UpstreamAccounts {
+			if cfg.UpstreamAccounts[i].ID == accountReq.ID {
+				prev := cfg.UpstreamAccounts[i]
+				// Preserve stored access token if the caller sent empty or masked value
+				incomingTok := strings.TrimSpace(accountReq.AccessToken)
+				if incomingTok == "" || strings.Contains(incomingTok, "****") {
+					accountReq.AccessToken = prev.AccessToken
+				}
+				accountReq.LastSyncAt = prev.LastSyncAt
+				accountReq.LastStatus = prev.LastStatus
+				accountReq.LastMessage = prev.LastMessage
+				accountReq.BalanceUSD = prev.BalanceUSD
+				accountReq.UsedQuotaUSD = prev.UsedQuotaUSD
+				accountReq.ActiveGroups = prev.ActiveGroups
+				accountReq.CreatedChannels = prev.CreatedChannels
+				accountReq.UpdatedChannels = prev.UpdatedChannels
+				accountReq.RemovedChannels = prev.RemovedChannels
+				cfg.UpstreamAccounts[i] = accountReq
+				found = true
+				break
+			}
+		}
+		if !found {
+			if strings.TrimSpace(accountReq.AccessToken) == "" || strings.Contains(accountReq.AccessToken, "****") {
+				return common.NewMessage("Upstream access token cannot be empty")
+			}
+			accountReq.LastStatus = "idle"
+			if accountReq.UserID == "" {
+				accountReq.LastStatus = "pending_config"
+				accountReq.LastMessage = "pending configuration: upstream user ID is required"
+			}
+			cfg.UpstreamAccounts = append(cfg.UpstreamAccounts, accountReq)
+		}
+
+		if cfg.ChannelTopupMultipliers == nil {
+			cfg.ChannelTopupMultipliers = make(map[int]float64)
+		}
+		if cfg.ChannelCurrencies == nil {
+			cfg.ChannelCurrencies = make(map[int]string)
+		}
+		matchedChIDs = make(map[int]struct{})
+		for chID, meta := range cfg.AutoProvisionedChannels {
+			if chID > 0 && (meta.SourceID == accountReq.ID || strings.EqualFold(strings.TrimSpace(meta.SourceName), accountReq.Name)) {
+				matchedChIDs[chID] = struct{}{}
+			}
+		}
+		upKey := model.UpstreamAccountKey(accountReq)
+		for _, ch := range allChannels {
+			if ch == nil || ch.Id <= 0 {
+				continue
+			}
+			srcID, srcName := model.ResolveChannelUpstreamSource(ch, nil, *cfg)
+			if (upKey != "" && srcID == upKey) || strings.EqualFold(srcName, accountReq.Name) {
+				matchedChIDs[ch.Id] = struct{}{}
+			}
+		}
+		for chID := range matchedChIDs {
+			cfg.ChannelTopupMultipliers[chID] = accountReq.TopupMultiplier
+			if reqCurr != "" && reqCurr != "AUTO" {
+				cfg.ChannelCurrencies[chID] = reqCurr
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	if model.DB != nil && reqCurr != "" && reqCurr != "AUTO" {
+		for chID := range matchedChIDs {
+			_ = model.DB.Model(&model.Channel{}).Where("id = ?", chID).Update("currency_code", reqCurr).Error
+		}
+	}
 	model.ResetRealtimeProfitTracker()
 	common.ApiSuccess(c, gin.H{
-		"accounts":                  maskUpstreamAccountsForResponse(cfg.UpstreamAccounts),
+		"accounts":                  model.ToUpstreamAccountPublicViews(cfg.UpstreamAccounts),
 		"auto_provisioned_channels": enrichAutoProvisionedChannelsWithBalance(cfg.AutoProvisionedChannels),
 	})
 }
@@ -1550,21 +1747,23 @@ func DeleteUpstreamAccount(c *gin.Context) {
 		common.ApiError(c, common.NewMessage("Invalid upstream account ID"))
 		return
 	}
-	cfg := model.GetModelPriceSyncConfig()
-	filtered := make([]model.UpstreamAccountSource, 0, len(cfg.UpstreamAccounts))
-	for _, a := range cfg.UpstreamAccounts {
-		if a.ID != id {
-			filtered = append(filtered, a)
+	cfg, err := model.UpdateModelPriceSyncConfig(func(cfg *model.ModelPriceSyncConfig) error {
+		filtered := make([]model.UpstreamAccountSource, 0, len(cfg.UpstreamAccounts))
+		for _, a := range cfg.UpstreamAccounts {
+			if a.ID != id {
+				filtered = append(filtered, a)
+			}
 		}
-	}
-	cfg.UpstreamAccounts = filtered
-	if err := model.SaveModelPriceSyncConfig(cfg); err != nil {
+		cfg.UpstreamAccounts = filtered
+		return nil
+	})
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	model.ResetRealtimeProfitTracker()
 	common.ApiSuccess(c, gin.H{
-		"accounts":                  maskUpstreamAccountsForResponse(cfg.UpstreamAccounts),
+		"accounts":                  model.ToUpstreamAccountPublicViews(cfg.UpstreamAccounts),
 		"auto_provisioned_channels": enrichAutoProvisionedChannelsWithBalance(cfg.AutoProvisionedChannels),
 	})
 }
@@ -1581,14 +1780,14 @@ func SyncUpstreamAccountsNow(c *gin.Context) {
 		common.ApiSuccess(c, gin.H{
 			"summary":                   summary,
 			"error":                     err.Error(),
-			"accounts":                  maskUpstreamAccountsForResponse(cfg.UpstreamAccounts),
+			"accounts":                  model.ToUpstreamAccountPublicViews(cfg.UpstreamAccounts),
 			"auto_provisioned_channels": enrichAutoProvisionedChannelsWithBalance(cfg.AutoProvisionedChannels),
 		})
 		return
 	}
 	common.ApiSuccess(c, gin.H{
 		"summary":                   summary,
-		"accounts":                  maskUpstreamAccountsForResponse(cfg.UpstreamAccounts),
+		"accounts":                  model.ToUpstreamAccountPublicViews(cfg.UpstreamAccounts),
 		"auto_provisioned_channels": enrichAutoProvisionedChannelsWithBalance(cfg.AutoProvisionedChannels),
 	})
 }
@@ -1646,45 +1845,44 @@ func SaveChannelClassifier(c *gin.Context) {
 		return
 	}
 
-	cfg := model.GetModelPriceSyncConfig()
-	if req.Enabled != nil {
-		enabled := *req.Enabled
-		cfg.ClassifierEnabled = &enabled
-	}
+	cfg, err := model.UpdateModelPriceSyncConfig(func(cfg *model.ModelPriceSyncConfig) error {
+		if req.Enabled != nil {
+			enabled := *req.Enabled
+			cfg.ClassifierEnabled = &enabled
+		}
 
-	if req.Rules != nil {
-		cfg.ClassifierRules = req.Rules
-	} else if req.Rule != nil {
-		r := *req.Rule
-		r.ID = strings.TrimSpace(r.ID)
-		r.Name = strings.TrimSpace(r.Name)
-		r.TargetGroup = strings.TrimSpace(r.TargetGroup)
-		r.Description = strings.TrimSpace(r.Description)
-		if r.TargetGroup == "" {
-			common.ApiError(c, common.NewMessage("Target group cannot be empty"))
-			return
-		}
-		if r.ID == "" {
-			r.ID = fmt.Sprintf("classifier-%s-%d", r.TargetGroup, time.Now().UnixNano())
-		}
-		found := false
-		for i := range cfg.ClassifierRules {
-			if cfg.ClassifierRules[i].ID == r.ID {
-				cfg.ClassifierRules[i] = r
-				found = true
-				break
+		if req.Rules != nil {
+			cfg.ClassifierRules = req.Rules
+		} else if req.Rule != nil {
+			r := *req.Rule
+			r.ID = strings.TrimSpace(r.ID)
+			r.Name = strings.TrimSpace(r.Name)
+			r.TargetGroup = strings.TrimSpace(r.TargetGroup)
+			r.Description = strings.TrimSpace(r.Description)
+			if r.TargetGroup == "" {
+				return common.NewMessage("Target group cannot be empty")
+			}
+			if r.ID == "" {
+				r.ID = fmt.Sprintf("classifier-%s-%d", r.TargetGroup, time.Now().UnixNano())
+			}
+			found := false
+			for i := range cfg.ClassifierRules {
+				if cfg.ClassifierRules[i].ID == r.ID {
+					cfg.ClassifierRules[i] = r
+					found = true
+					break
+				}
+			}
+			if !found {
+				cfg.ClassifierRules = append(cfg.ClassifierRules, r)
 			}
 		}
-		if !found {
-			cfg.ClassifierRules = append(cfg.ClassifierRules, r)
-		}
-	}
-
-	if err := model.SaveModelPriceSyncConfig(cfg); err != nil {
+		return nil
+	})
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	cfg = model.GetModelPriceSyncConfig()
 
 	_, _ = model.SyncClassifierGroupsToSystemSettings(cfg.ClassifierRules)
 
@@ -1709,19 +1907,20 @@ func DeleteChannelClassifierRule(c *gin.Context) {
 		common.ApiError(c, common.NewMessage("Invalid classifier rule ID"))
 		return
 	}
-	cfg := model.GetModelPriceSyncConfig()
-	filtered := make([]model.ChannelClassifierRule, 0, len(cfg.ClassifierRules))
-	for _, r := range cfg.ClassifierRules {
-		if r.ID != id {
-			filtered = append(filtered, r)
+	cfg, err := model.UpdateModelPriceSyncConfig(func(cfg *model.ModelPriceSyncConfig) error {
+		filtered := make([]model.ChannelClassifierRule, 0, len(cfg.ClassifierRules))
+		for _, r := range cfg.ClassifierRules {
+			if r.ID != id {
+				filtered = append(filtered, r)
+			}
 		}
-	}
-	cfg.ClassifierRules = filtered
-	if err := model.SaveModelPriceSyncConfig(cfg); err != nil {
+		cfg.ClassifierRules = filtered
+		return nil
+	})
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	cfg = model.GetModelPriceSyncConfig()
 	_, _ = model.SyncClassifierGroupsToSystemSettings(cfg.ClassifierRules)
 	var summary *model.ChannelClassificationSummary
 	if clsSummary, err := model.ApplyChannelClassifierToChannels(nil); err == nil {
@@ -1838,27 +2037,30 @@ type UserModelChannelCostDetail struct {
 }
 
 type UserCostAnalysisRow struct {
-	UserID           int                          `json:"user_id"`
-	Username         string                       `json:"username"`
-	DisplayName      string                       `json:"display_name"`
-	Group            string                       `json:"group"`
-	Status           int                          `json:"status"`
-	RemainQuotaUSD   float64                      `json:"remain_quota_usd"`
-	LifetimeUsedUSD  float64                      `json:"lifetime_used_usd"`
-	TopupTotalUSD    float64                      `json:"topup_total_usd"`
-	OnlineTopupUSD   float64                      `json:"online_topup_usd"`
-	OnlinePaidMoney  float64                      `json:"online_paid_money"`
-	SystemTopupUSD   float64                      `json:"system_topup_usd"`
-	ConsumedUSD      float64                      `json:"consumed_usd"`
-	CallCount        int64                        `json:"call_count"`
-	PromptTokens     int64                        `json:"prompt_tokens"`
-	CompletionTokens int64                        `json:"completion_tokens"`
-	TotalTokens      int64                        `json:"total_tokens"`
-	RevenueUSD       float64                      `json:"revenue_usd"`
-	CostUSD          float64                      `json:"cost_usd"`
-	GrossProfitUSD   float64                      `json:"gross_profit_usd"`
-	GrossMarginPct   float64                      `json:"gross_margin_pct"`
-	ModelBreakdowns  []UserModelChannelCostDetail `json:"model_breakdowns"`
+	UserID              int                          `json:"user_id"`
+	Username            string                       `json:"username"`
+	DisplayName         string                       `json:"display_name"`
+	Group               string                       `json:"group"`
+	Status              int                          `json:"status"`
+	RemainQuotaUSD      float64                      `json:"remain_quota_usd"`
+	LifetimeUsedUSD     float64                      `json:"lifetime_used_usd"`
+	TopupTotalUSD       float64                      `json:"topup_total_usd"`
+	OnlineTopupUSD      float64                      `json:"online_topup_usd"`
+	OnlinePaidMoney     float64                      `json:"online_paid_money"`
+	SystemTopupUSD      float64                      `json:"system_topup_usd"`
+	ConsumedUSD         float64                      `json:"consumed_usd"`
+	CoveredRevenueUSD   float64                      `json:"covered_revenue_usd"`
+	UncoveredRevenueUSD float64                      `json:"uncovered_revenue_usd"`
+	CostDataStatus      string                       `json:"cost_data_status"`
+	CallCount           int64                        `json:"call_count"`
+	PromptTokens        int64                        `json:"prompt_tokens"`
+	CompletionTokens    int64                        `json:"completion_tokens"`
+	TotalTokens         int64                        `json:"total_tokens"`
+	RevenueUSD          float64                      `json:"revenue_usd"`
+	CostUSD             float64                      `json:"cost_usd"`
+	GrossProfitUSD      float64                      `json:"gross_profit_usd"`
+	GrossMarginPct      float64                      `json:"gross_margin_pct"`
+	ModelBreakdowns     []UserModelChannelCostDetail `json:"model_breakdowns"`
 }
 
 func GetModelCostAnalysis(c *gin.Context) {
@@ -2460,7 +2662,7 @@ func GetUserCostAnalysis(c *gin.Context) {
 	}
 
 	rows := make([]UserCostAnalysisRow, 0, len(userIDSet))
-	var totalTopupUSD, totalConsumedUSD, totalCostUSD, totalProfitUSD float64
+	var totalTopupUSD, totalConsumedUSD, totalCoveredRevenueUSD, totalUncoveredRevenueUSD, totalCostUSD float64
 	var totalCalls, totalTokens int64
 
 	for uid := range userIDSet {
@@ -2625,48 +2827,67 @@ func GetUserCostAnalysis(c *gin.Context) {
 			return breakdowns[i].CallCount > breakdowns[j].CallCount
 		})
 
-		uRev = common.RoundNonNegativeFloat6(uRev)
+		loggedRev := common.RoundNonNegativeFloat6(uRev)
 		uCost = common.RoundNonNegativeFloat6(uCost)
-		consumedUSD := uRev
-		if startTs == 0 && endTs == 0 && consumedUSD == 0 && lifetimeUsedUSD > 0 {
+		consumedUSD := loggedRev
+		coveredRev := loggedRev
+		uncoveredRev := 0.0
+		costDataStatus := "none"
+		if len(uLogs) > 0 {
+			costDataStatus = "complete"
+			if startTs == 0 && endTs == 0 && lifetimeUsedUSD > loggedRev+1e-4 {
+				consumedUSD = lifetimeUsedUSD
+				uncoveredRev = common.RoundNonNegativeFloat6(lifetimeUsedUSD - loggedRev)
+				costDataStatus = "partial"
+			}
+		} else if startTs == 0 && endTs == 0 && lifetimeUsedUSD > 0 {
 			consumedUSD = lifetimeUsedUSD
-			uRev = lifetimeUsedUSD
+			uncoveredRev = lifetimeUsedUSD
+			costDataStatus = "insufficient"
 		}
-		uProfit := common.RoundFloat6(uRev - uCost)
+
+		uProfit := 0.0
 		uMargin := 0.0
-		if uRev > 0 {
-			uMargin = common.RoundFloat2((uProfit / uRev) * 100.0)
+		if costDataStatus == "complete" || costDataStatus == "partial" {
+			uProfit = common.RoundFloat6(coveredRev - uCost)
+			if coveredRev > 0 {
+				uMargin = common.RoundFloat2((uProfit / coveredRev) * 100.0)
+			}
 		}
 
 		totalTopupUSD += userTopupTotal
 		totalConsumedUSD += consumedUSD
+		totalCoveredRevenueUSD += coveredRev
+		totalUncoveredRevenueUSD += uncoveredRev
 		totalCostUSD += uCost
-		totalProfitUSD += uProfit
 		totalCalls += uCalls
 		totalTokens += uPrompt + uComp
 
 		rows = append(rows, UserCostAnalysisRow{
-			UserID:           uid,
-			Username:         username,
-			DisplayName:      displayName,
-			Group:            uGroup,
-			Status:           uStatus,
-			RemainQuotaUSD:   remainUSD,
-			LifetimeUsedUSD:  lifetimeUsedUSD,
-			TopupTotalUSD:    userTopupTotal,
-			OnlineTopupUSD:   onlineTopupUSD,
-			OnlinePaidMoney:  onlinePaidMoney,
-			SystemTopupUSD:   systemTopupUSD,
-			ConsumedUSD:      consumedUSD,
-			CallCount:        uCalls,
-			PromptTokens:     uPrompt,
-			CompletionTokens: uComp,
-			TotalTokens:      uPrompt + uComp,
-			RevenueUSD:       uRev,
-			CostUSD:          uCost,
-			GrossProfitUSD:   uProfit,
-			GrossMarginPct:   uMargin,
-			ModelBreakdowns:  breakdowns,
+			UserID:              uid,
+			Username:            username,
+			DisplayName:         displayName,
+			Group:               uGroup,
+			Status:              uStatus,
+			RemainQuotaUSD:      remainUSD,
+			LifetimeUsedUSD:     lifetimeUsedUSD,
+			TopupTotalUSD:       userTopupTotal,
+			OnlineTopupUSD:      onlineTopupUSD,
+			OnlinePaidMoney:     onlinePaidMoney,
+			SystemTopupUSD:      systemTopupUSD,
+			ConsumedUSD:         consumedUSD,
+			CoveredRevenueUSD:   coveredRev,
+			UncoveredRevenueUSD: uncoveredRev,
+			CostDataStatus:      costDataStatus,
+			CallCount:           uCalls,
+			PromptTokens:        uPrompt,
+			CompletionTokens:    uComp,
+			TotalTokens:         uPrompt + uComp,
+			RevenueUSD:          consumedUSD,
+			CostUSD:             uCost,
+			GrossProfitUSD:      uProfit,
+			GrossMarginPct:      uMargin,
+			ModelBreakdowns:     breakdowns,
 		})
 	}
 
@@ -2681,22 +2902,37 @@ func GetUserCostAnalysis(c *gin.Context) {
 	})
 
 	overallMargin := 0.0
-	if totalConsumedUSD > 0 {
-		overallMargin = common.RoundFloat2(((totalConsumedUSD - totalCostUSD) / totalConsumedUSD) * 100.0)
+	summaryProfit := 0.0
+	summaryCostStatus := "none"
+	if totalCoveredRevenueUSD > 0 || totalCalls > 0 {
+		summaryProfit = common.RoundFloat6(totalCoveredRevenueUSD - totalCostUSD)
+		if totalCoveredRevenueUSD > 0 {
+			overallMargin = common.RoundFloat2((summaryProfit / totalCoveredRevenueUSD) * 100.0)
+		}
+		if totalUncoveredRevenueUSD > 1e-4 {
+			summaryCostStatus = "partial"
+		} else {
+			summaryCostStatus = "complete"
+		}
+	} else if totalUncoveredRevenueUSD > 0 {
+		summaryCostStatus = "insufficient"
 	}
 
 	common.ApiSuccess(c, gin.H{
 		"users": rows,
 		"summary": gin.H{
-			"user_count":         len(rows),
-			"total_topup_usd":    common.RoundNonNegativeFloat6(totalTopupUSD),
-			"total_consumed_usd": common.RoundNonNegativeFloat6(totalConsumedUSD),
-			"total_revenue_usd":  common.RoundNonNegativeFloat6(totalConsumedUSD),
-			"total_cost_usd":     common.RoundNonNegativeFloat6(totalCostUSD),
-			"total_profit_usd":   common.RoundFloat6(totalConsumedUSD - totalCostUSD),
-			"overall_margin_pct": overallMargin,
-			"total_calls":        totalCalls,
-			"total_tokens":       totalTokens,
+			"user_count":            len(rows),
+			"total_topup_usd":       common.RoundNonNegativeFloat6(totalTopupUSD),
+			"total_consumed_usd":    common.RoundNonNegativeFloat6(totalConsumedUSD),
+			"total_revenue_usd":     common.RoundNonNegativeFloat6(totalCoveredRevenueUSD),
+			"covered_revenue_usd":   common.RoundNonNegativeFloat6(totalCoveredRevenueUSD),
+			"uncovered_revenue_usd": common.RoundNonNegativeFloat6(totalUncoveredRevenueUSD),
+			"cost_data_status":      summaryCostStatus,
+			"total_cost_usd":        common.RoundNonNegativeFloat6(totalCostUSD),
+			"total_profit_usd":      summaryProfit,
+			"overall_margin_pct":    overallMargin,
+			"total_calls":           totalCalls,
+			"total_tokens":          totalTokens,
 		},
 	})
 }

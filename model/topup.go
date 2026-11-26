@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -45,9 +46,10 @@ const (
 )
 
 var (
-	ErrPaymentMethodMismatch = errors.New("payment method mismatch")
-	ErrTopUpNotFound         = errors.New("topup not found")
-	ErrTopUpStatusInvalid    = errors.New("topup status invalid")
+	ErrPaymentMethodMismatch        = errors.New("payment method mismatch")
+	ErrTopUpNotFound                = errors.New("topup not found")
+	ErrTopUpStatusInvalid           = errors.New("topup status invalid")
+	ErrLegacyTopUpReconcileRequired = errors.New("legacy pending top-up order lacks unit normalization; manual reconciliation required")
 	// The quota errors reach the web console, so they carry message keys.
 	ErrInvalidTopUpQuota        error = common.NewMessage("Invalid top-up quota")
 	ErrTopUpQuotaLimitExceeded  error = common.NewMessage("Top-up quota limit exceeded")
@@ -84,6 +86,9 @@ func RechargeECPay(tradeNo, callerIP string) (alreadyDone bool, err error) {
 		}
 		if topUp.Status != common.TopUpStatusPending {
 			return ErrTopUpStatusInvalid
+		}
+		if strings.HasPrefix(topUp.TradeNo, "ECPAY") && len(topUp.TradeNo) > 20 {
+			return ErrLegacyTopUpReconcileRequired
 		}
 		quota, err = common.WalletQuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
 		if err != nil || quota <= 0 {
@@ -127,6 +132,9 @@ func RechargeNewebPay(tradeNo, callerIP string) (alreadyDone bool, err error) {
 		}
 		if topUp.Status != common.TopUpStatusPending {
 			return ErrTopUpStatusInvalid
+		}
+		if strings.HasPrefix(topUp.TradeNo, "NEWEB") && len(topUp.TradeNo) > 20 {
+			return ErrLegacyTopUpReconcileRequired
 		}
 		quota, err = common.WalletQuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
 		if err != nil || quota <= 0 {

@@ -5,10 +5,12 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -516,4 +518,224 @@ func TestUpdateOptionValidatesEpaySignSettings(t *testing.T) {
 	assert.Equal(t, operation_setting.EpaySignTypeMD5, returned[signTypeKey])
 	assert.Equal(t, platformPublicKey, returned[publicKeyKey])
 	assert.NotContains(t, returned, privateKeyKey)
+}
+
+func TestTaiwanPaymentCheckoutAndSettlementInvariants(t *testing.T) {
+	db := modelManagementDB(t, "sqlite", "")
+	require.NoError(t, db.AutoMigrate(&model.TopUp{}, &model.Log{}))
+	confirmPaymentComplianceForTest(t)
+
+	paySetting := operation_setting.GetPaymentSetting()
+	prevSetting := *paySetting
+	prevQuotaPerUnit := common.QuotaPerUnit
+	prevDisplayType := operation_setting.GetGeneralSetting().QuotaDisplayType
+	prevMinTopUp := operation_setting.MinTopUp
+	prevPrice := operation_setting.Price
+	prevServerAddr := system_setting.ServerAddress
+	t.Cleanup(func() {
+		*paySetting = prevSetting
+		common.QuotaPerUnit = prevQuotaPerUnit
+		operation_setting.GetGeneralSetting().QuotaDisplayType = prevDisplayType
+		operation_setting.MinTopUp = prevMinTopUp
+		operation_setting.Price = prevPrice
+		system_setting.ServerAddress = prevServerAddr
+	})
+
+	common.QuotaPerUnit = 500000
+	operation_setting.MinTopUp = 1
+	operation_setting.Price = 1.0
+	system_setting.ServerAddress = "https://dashboard.example.com"
+	paySetting.ECPayMerchantID = "3002607"
+	paySetting.ECPayHashKey = "pwFHCqoQZGmho4w6"
+	paySetting.ECPayHashIV = "EkRm7iFT261dpevs"
+	paySetting.NewebPayMerchantID = "MS12345678"
+	paySetting.NewebPayHashKey = "12345678901234567890123456789012"
+	paySetting.NewebPayHashIV = "1234567890123456"
+	paySetting.PaymentMethods = map[string]operation_setting.PaymentMethodSetting{
+		model.PaymentProviderECPay:    {Currency: "TWD", ExchangeRate: 32},
+		model.PaymentProviderNewebPay: {Currency: "TWD", ExchangeRate: 32},
+	}
+
+	alnumTradeNoRE := regexp.MustCompile(`^[A-Za-z0-9]{1,20}$`)
+
+	for _, userID := range []int{1, 123456, 987654321} {
+		require.NoError(t, db.Create(&model.User{
+			Id:       userID,
+			Username: fmt.Sprintf("twpay-%d", userID),
+			AffCode:  fmt.Sprintf("twaff%d", userID),
+			Group:    "default",
+			Status:   common.UserStatusEnabled,
+			Quota:    100000,
+		}).Error)
+	}
+
+	for _, provider := range []string{model.PaymentProviderECPay, model.PaymentProviderNewebPay} {
+		for _, mode := range []string{operation_setting.QuotaDisplayTypeUSD, operation_setting.QuotaDisplayTypeTokens} {
+			t.Run(provider+"/"+mode, func(t *testing.T) {
+				operation_setting.GetGeneralSetting().QuotaDisplayType = mode
+				operation_setting.Price = 1.0
+				userID := 987654321
+				var beforeUser model.User
+				require.NoError(t, db.First(&beforeUser, "id = ?", userID).Error)
+
+				// Request 2 USD units: raw=2 in USD mode, raw=1_250_000 in TOKENS mode (truncates deterministically to 2 units = 1_000_000 quota).
+				reqAmount := int64(2)
+				if mode == operation_setting.QuotaDisplayTypeTokens {
+					reqAmount = 1_250_000
+				}
+				const wantCreditedQuota = 2 * 500000
+				const wantTWD = "64"
+
+				// 1. Quote matches normalized units
+				quoteRec := httptest.NewRecorder()
+				quoteCtx, _ := gin.CreateTestContext(quoteRec)
+				quoteCtx.Set("id", userID)
+				quoteCtx.Request = httptest.NewRequest(http.MethodPost, "/amount", strings.NewReader(fmt.Sprintf(`{"amount":%d}`, reqAmount)))
+				quoteCtx.Request.Header.Set("Content-Type", "application/json")
+				if provider == model.PaymentProviderECPay {
+					RequestECPayAmount(quoteCtx)
+				} else {
+					RequestNewebPayAmount(quoteCtx)
+				}
+				var quoteResp struct {
+					Message string `json:"message"`
+					Data    string `json:"data"`
+				}
+				require.NoError(t, common.Unmarshal(quoteRec.Body.Bytes(), &quoteResp))
+				require.Equal(t, "success", quoteResp.Message)
+				assert.Equal(t, wantTWD, quoteResp.Data)
+
+				// 2. Create order and verify <= 20 char alphanumeric trade_no + both data and params returned
+				payRec := httptest.NewRecorder()
+				payCtx, _ := gin.CreateTestContext(payRec)
+				payCtx.Set("id", userID)
+				payCtx.Request = httptest.NewRequest(http.MethodPost, "/pay", strings.NewReader(fmt.Sprintf(`{"amount":%d}`, reqAmount)))
+				payCtx.Request.Header.Set("Content-Type", "application/json")
+				if provider == model.PaymentProviderECPay {
+					RequestECPay(payCtx)
+				} else {
+					RequestNewebPay(payCtx)
+				}
+				var payResp struct {
+					Message string            `json:"message"`
+					URL     string            `json:"url"`
+					Data    map[string]string `json:"data"`
+					Params  map[string]string `json:"params"`
+				}
+				require.NoError(t, common.Unmarshal(payRec.Body.Bytes(), &payResp))
+				require.Equal(t, "success", payResp.Message)
+				require.NotEmpty(t, payResp.URL)
+				require.Equal(t, payResp.Params, payResp.Data)
+
+				// Flip display mode and price AFTER order creation to prove settlement uses persisted normalized units
+				if mode == operation_setting.QuotaDisplayTypeUSD {
+					operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeTokens
+				} else {
+					operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeUSD
+				}
+				operation_setting.Price = 5.0
+
+				if provider == model.PaymentProviderECPay {
+					tradeNo := payResp.Data["MerchantTradeNo"]
+					require.Regexp(t, alnumTradeNoRE, tradeNo)
+
+					// Simulated payment callback (SimulatePaid=1) must return 1|OK without crediting or completing order
+					simFields := map[string]string{
+						"MerchantID":      paySetting.ECPayMerchantID,
+						"MerchantTradeNo": tradeNo,
+						"RtnCode":         "1",
+						"SimulatePaid":    "1",
+						"TradeAmt":        wantTWD,
+					}
+					simFields["CheckMacValue"] = operation_setting.ECPayCheckMacValue(simFields, paySetting.ECPayHashKey, paySetting.ECPayHashIV)
+					simForm := url.Values{}
+					for k, v := range simFields {
+						simForm.Set(k, v)
+					}
+					simRec := httptest.NewRecorder()
+					simCtx, _ := gin.CreateTestContext(simRec)
+					simCtx.Request = httptest.NewRequest(http.MethodPost, "/api/user/ecpay/notify", strings.NewReader(simForm.Encode()))
+					simCtx.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+					ECPayNotify(simCtx)
+					assert.Equal(t, http.StatusOK, simRec.Code)
+					assert.Equal(t, "1|OK", simRec.Body.String())
+
+					var afterSimUser model.User
+					require.NoError(t, db.First(&afterSimUser, "id = ?", userID).Error)
+					assert.Equal(t, beforeUser.Quota, afterSimUser.Quota, "SimulatePaid=1 must not credit wallet")
+					assert.Equal(t, common.TopUpStatusPending, model.GetTopUpByTradeNo(tradeNo).Status)
+
+					// Real payment callback (SimulatePaid=0) credits once, and duplicate resend does not double-credit
+					realFields := maps.Clone(simFields)
+					realFields["SimulatePaid"] = "0"
+					realFields["CheckMacValue"] = operation_setting.ECPayCheckMacValue(realFields, paySetting.ECPayHashKey, paySetting.ECPayHashIV)
+					realForm := url.Values{}
+					for k, v := range realFields {
+						realForm.Set(k, v)
+					}
+					for range 2 {
+						rec := httptest.NewRecorder()
+						ctx, _ := gin.CreateTestContext(rec)
+						ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/ecpay/notify", strings.NewReader(realForm.Encode()))
+						ctx.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+						ECPayNotify(ctx)
+						assert.Equal(t, http.StatusOK, rec.Code)
+						assert.Equal(t, "1|OK", rec.Body.String())
+					}
+				} else {
+					assert.Equal(t, "2.0", payResp.Data["Version"], "NewebPay MPG 2.0 outer form requires Version=2.0")
+					decodedReq, err := operation_setting.NewebPayDecodeTradeInfo(payResp.Data["TradeInfo"], payResp.Data["TradeSha"])
+					require.NoError(t, err)
+					tradeNo := decodedReq.Get("MerchantOrderNo")
+					require.Regexp(t, alnumTradeNoRE, tradeNo)
+
+					// Official MPG 2.0 RespondType=JSON notification structure
+					notifyJSON := fmt.Sprintf(
+						`{"Status":"SUCCESS","Message":"授權成功","Result":{"MerchantID":%q,"Amt":64,"TradeNo":"2611260001","MerchantOrderNo":%q,"PaymentType":"CREDIT","RespondType":"JSON"}}`,
+						paySetting.NewebPayMerchantID, tradeNo,
+					)
+					cipherHex, err := operation_setting.NewebPayEncryptInfo(notifyJSON, paySetting.NewebPayHashKey, paySetting.NewebPayHashIV)
+					require.NoError(t, err)
+					shaHex := operation_setting.NewebPayCheckValue(cipherHex, paySetting.NewebPayHashKey, paySetting.NewebPayHashIV)
+					form := url.Values{"TradeInfo": {cipherHex}, "TradeSha": {shaHex}}
+					for range 2 {
+						rec := httptest.NewRecorder()
+						ctx, _ := gin.CreateTestContext(rec)
+						ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/newebpay/notify", strings.NewReader(form.Encode()))
+						ctx.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+						NewebPayNotify(ctx)
+						assert.Equal(t, http.StatusOK, rec.Code)
+						assert.Equal(t, "1|OK", rec.Body.String())
+					}
+				}
+
+				var afterRealUser model.User
+				require.NoError(t, db.First(&afterRealUser, "id = ?", userID).Error)
+				assert.Equal(t, beforeUser.Quota+wantCreditedQuota, afterRealUser.Quota)
+			})
+		}
+	}
+
+	// Pre-upgrade legacy pending orders (>20 chars with ECPAY/NEWEB prefix) lack unit metadata and must require manual reconciliation.
+	legacyECPay := &model.TopUp{
+		UserId: 1, Amount: 500000, Money: 32, TradeNo: "ECPAY1legacyorder0123456789",
+		PaymentProvider: model.PaymentProviderECPay, PaymentMethod: "ecpay", Status: common.TopUpStatusPending,
+	}
+	require.NoError(t, legacyECPay.Insert())
+	legacyFields := map[string]string{
+		"MerchantID": paySetting.ECPayMerchantID, "MerchantTradeNo": legacyECPay.TradeNo,
+		"RtnCode": "1", "SimulatePaid": "0", "TradeAmt": "32",
+	}
+	legacyFields["CheckMacValue"] = operation_setting.ECPayCheckMacValue(legacyFields, paySetting.ECPayHashKey, paySetting.ECPayHashIV)
+	legacyForm := url.Values{}
+	for k, v := range legacyFields {
+		legacyForm.Set(k, v)
+	}
+	legacyRec := httptest.NewRecorder()
+	legacyCtx, _ := gin.CreateTestContext(legacyRec)
+	legacyCtx.Request = httptest.NewRequest(http.MethodPost, "/api/user/ecpay/notify", strings.NewReader(legacyForm.Encode()))
+	legacyCtx.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	ECPayNotify(legacyCtx)
+	assert.Equal(t, http.StatusConflict, legacyRec.Code)
+	assert.Equal(t, common.TopUpStatusPending, model.GetTopUpByTradeNo(legacyECPay.TradeNo).Status)
 }

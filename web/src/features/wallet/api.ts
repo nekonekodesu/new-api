@@ -139,13 +139,37 @@ export async function requestPayment(
   }
 }
 
+function extractRecordObject(
+  value: unknown
+): Record<string, unknown> | undefined {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return undefined
+}
+
+function normalizeFormPaymentResponse(raw: PaymentResponse): PaymentResponse {
+  const formFields =
+    extractRecordObject(raw.data) ?? extractRecordObject(raw.params)
+
+  if (!formFields) {
+    return raw
+  }
+
+  return {
+    ...raw,
+    data: formFields,
+    params: raw.params ?? formFields,
+  }
+}
+
 export async function requestECPayPayment(
   request: Omit<PaymentRequest, 'payment_method'>
 ): Promise<PaymentResponse> {
   const res = await api.post('/api/user/ecpay/pay', request, {
     skipBusinessError: true,
   } as Record<string, unknown>)
-  return res.data
+  return normalizeFormPaymentResponse(res.data)
 }
 
 export async function requestNewebPayPayment(
@@ -154,7 +178,7 @@ export async function requestNewebPayPayment(
   const res = await api.post('/api/user/newebpay/pay', request, {
     skipBusinessError: true,
   } as Record<string, unknown>)
-  return res.data
+  return normalizeFormPaymentResponse(res.data)
 }
 
 /**

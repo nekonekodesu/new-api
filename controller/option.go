@@ -101,6 +101,13 @@ func GetOptions(c *gin.Context) {
 		if isSensitiveKey {
 			continue
 		}
+		if k == model.ModelPriceSyncConfigOptionKey {
+			redacted, ok := model.RedactModelPriceSyncConfigOptionJSON(value)
+			if !ok {
+				continue
+			}
+			value = redacted
+		}
 		options = append(options, &model.Option{
 			Key:   k,
 			Value: value,
@@ -413,6 +420,38 @@ func UpdateOption(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	case model.ModelPriceSyncConfigOptionKey:
+		var incoming model.ModelPriceSyncConfig
+		if err := common.Unmarshal([]byte(option.Value.(string)), &incoming); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if _, err := model.UpdateModelPriceSyncConfig(func(cfg *model.ModelPriceSyncConfig) error {
+			existingByID := make(map[string]string, len(cfg.UpstreamAccounts))
+			for _, acc := range cfg.UpstreamAccounts {
+				existingByID[acc.ID] = acc.AccessToken
+			}
+			for i := range incoming.UpstreamAccounts {
+				tok := strings.TrimSpace(incoming.UpstreamAccounts[i].AccessToken)
+				if tok == "" || strings.Contains(tok, "****") {
+					incoming.UpstreamAccounts[i].AccessToken = existingByID[incoming.UpstreamAccounts[i].ID]
+				}
+			}
+			if len(incoming.UpstreamAccounts) == 0 && len(cfg.UpstreamAccounts) > 0 {
+				incoming.UpstreamAccounts = cfg.UpstreamAccounts
+			}
+			if len(incoming.AutoProvisionedChannels) == 0 && len(cfg.AutoProvisionedChannels) > 0 {
+				incoming.AutoProvisionedChannels = cfg.AutoProvisionedChannels
+			}
+			*cfg = incoming
+			return nil
+		}); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		recordManageAudit(c, "option.update", map[string]any{"key": option.Key})
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+		return
 	}
 	if model.IsPasskeyDomainOption(option.Key) {
 		change, updateErr := model.UpdatePasskeyDomainOptions(map[string]string{option.Key: option.Value.(string)}, false, "")

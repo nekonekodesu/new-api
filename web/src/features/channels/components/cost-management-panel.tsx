@@ -1016,6 +1016,16 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
             <CardTitle className='text-xl font-bold text-emerald-600 dark:text-emerald-400'>
               {formatBillingAmountUSD(userSummary?.total_consumed_usd ?? 0, intlLocale, '0')}
             </CardTitle>
+            {(userSummary?.uncovered_revenue_usd ?? 0) > 0 ? (
+              <p className='text-muted-foreground text-[11px]'>
+                {t('Unlogged Revenue')}:{' '}
+                {formatBillingAmountUSD(
+                  userSummary?.uncovered_revenue_usd ?? 0,
+                  intlLocale,
+                  '0'
+                )}
+              </p>
+            ) : null}
           </CardHeader>
         </Card>
 
@@ -1029,7 +1039,13 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
               />
             </CardDescription>
             <CardTitle className='text-xl font-bold'>
-              {formatBillingAmountUSD(userSummary?.total_cost_usd ?? 0, intlLocale, '0')}
+              {userSummary?.cost_data_status === 'insufficient'
+                ? '—'
+                : formatBillingAmountUSD(
+                    userSummary?.total_cost_usd ?? 0,
+                    intlLocale,
+                    '0'
+                  )}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -1041,7 +1057,13 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
               <TrendingUp aria-hidden='true' className='text-primary size-4' />
             </CardDescription>
             <CardTitle className='text-xl font-bold'>
-              {formatBillingAmountUSD(userSummary?.total_profit_usd ?? 0, intlLocale, '0')}
+              {userSummary?.cost_data_status === 'insufficient'
+                ? '—'
+                : formatBillingAmountUSD(
+                    userSummary?.total_profit_usd ?? 0,
+                    intlLocale,
+                    '0'
+                  )}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -1052,12 +1074,31 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
               <span>{t('Overall Gross Margin')}</span>
               <Percent aria-hidden='true' className='text-primary size-4' />
             </CardDescription>
-            <CardTitle className='flex items-center gap-2 text-xl font-bold'>
-              <span>{(userSummary?.overall_margin_pct ?? 0).toFixed(2)}%</span>
+            <CardTitle className='flex flex-wrap items-center gap-2 text-xl font-bold'>
+              {userSummary?.cost_data_status === 'insufficient' ? (
+                <Badge variant='outline' className='text-xs'>
+                  {t('Insufficient Data')}
+                </Badge>
+              ) : (
+                <>
+                  <span>
+                    {(userSummary?.overall_margin_pct ?? 0).toFixed(2)}%
+                  </span>
+                  {userSummary?.cost_data_status === 'partial' ? (
+                    <Badge variant='outline' className='text-[11px]'>
+                      {t('Partial Period')}
+                    </Badge>
+                  ) : null}
+                </>
+              )}
               <Badge
-                variant={getMarginBadgeVariant(
-                  userSummary?.overall_margin_pct ?? 0
-                )}
+                variant={
+                  userSummary?.cost_data_status === 'insufficient'
+                    ? 'outline'
+                    : getMarginBadgeVariant(
+                        userSummary?.overall_margin_pct ?? 0
+                      )
+                }
                 className='text-xs'
               >
                 {userSummary?.user_count ?? 0} {t('Users')}
@@ -1191,12 +1232,30 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                             {u.group}
                           </Badge>
                         </div>
-                        <Badge
-                          variant={getMarginBadgeVariant(u.gross_margin_pct)}
-                          className='shrink-0 font-mono text-xs'
-                        >
-                          {u.gross_margin_pct.toFixed(1)}%
-                        </Badge>
+                        {u.cost_data_status === 'insufficient' ? (
+                          <Badge
+                            variant='outline'
+                            className='shrink-0 text-[11px]'
+                          >
+                            {t('Insufficient Data')}
+                          </Badge>
+                        ) : (
+                          <div className='flex shrink-0 items-center gap-1'>
+                            {u.cost_data_status === 'partial' ? (
+                              <Badge variant='outline' className='text-[10px]'>
+                                {t('Partial Period')}
+                              </Badge>
+                            ) : null}
+                            <Badge
+                              variant={getMarginBadgeVariant(
+                                u.gross_margin_pct
+                              )}
+                              className='font-mono text-xs'
+                            >
+                              {u.gross_margin_pct.toFixed(1)}%
+                            </Badge>
+                          </div>
+                        )}
                       </button>
 
                       <div className='bg-muted/20 grid grid-cols-2 gap-2 rounded-md p-2 text-xs'>
@@ -1228,9 +1287,12 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                           </span>
                           <span className='font-mono text-[11px]'>
                             <span className='text-emerald-600 dark:text-emerald-400'>
-                              {formatBillingAmountUSD(u.revenue_usd, intlLocale, '0')}
+                              {formatBillingAmountUSD(u.consumed_usd, intlLocale, '0')}
                             </span>{' '}
-                            / {formatBillingAmountUSD(u.cost_usd, intlLocale, '0')}
+                            /{' '}
+                            {u.cost_data_status === 'insufficient'
+                              ? '—'
+                              : formatBillingAmountUSD(u.cost_usd, intlLocale, '0')}
                           </span>
                         </div>
                         <div className='flex flex-col gap-0.5'>
@@ -1238,7 +1300,13 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                             {t('Gross Profit')}
                           </span>
                           <span className='font-mono text-[11px] font-semibold'>
-                            {formatBillingAmountUSD(u.gross_profit_usd, intlLocale, '0')}
+                            {u.cost_data_status === 'insufficient'
+                              ? '—'
+                              : formatBillingAmountUSD(
+                                  u.gross_profit_usd,
+                                  intlLocale,
+                                  '0'
+                                )}
                           </span>
                         </div>
                       </div>
@@ -1433,23 +1501,69 @@ export function CostManagementPanel(props: CostManagementPanelProps) {
                               </div>
                             </TableCell>
                             <TableCell className='text-right font-mono text-xs font-medium text-emerald-600 dark:text-emerald-400'>
-                              {formatBillingAmountUSD(u.revenue_usd, intlLocale, '0')}
+                              <div className='flex flex-col items-end'>
+                                <span>
+                                  {formatBillingAmountUSD(
+                                    u.consumed_usd,
+                                    intlLocale,
+                                    '0'
+                                  )}
+                                </span>
+                                {(u.uncovered_revenue_usd ?? 0) > 0 ? (
+                                  <span className='text-muted-foreground text-[10px]'>
+                                    {t('Unlogged Revenue')}:{' '}
+                                    {formatBillingAmountUSD(
+                                      u.uncovered_revenue_usd ?? 0,
+                                      intlLocale,
+                                      '0'
+                                    )}
+                                  </span>
+                                ) : null}
+                              </div>
                             </TableCell>
                             <TableCell className='text-right font-mono text-xs font-medium'>
-                              {formatBillingAmountUSD(u.cost_usd, intlLocale, '0')}
+                              {u.cost_data_status === 'insufficient'
+                                ? '—'
+                                : formatBillingAmountUSD(
+                                    u.cost_usd,
+                                    intlLocale,
+                                    '0'
+                                  )}
                             </TableCell>
                             <TableCell className='text-right font-mono text-xs font-medium'>
-                              {formatBillingAmountUSD(u.gross_profit_usd, intlLocale, '0')}
+                              {u.cost_data_status === 'insufficient'
+                                ? '—'
+                                : formatBillingAmountUSD(
+                                    u.gross_profit_usd,
+                                    intlLocale,
+                                    '0'
+                                  )}
                             </TableCell>
                             <TableCell className='text-right'>
-                              <Badge
-                                variant={getMarginBadgeVariant(
-                                  u.gross_margin_pct
-                                )}
-                                className='font-mono text-xs'
-                              >
-                                {u.gross_margin_pct.toFixed(1)}%
-                              </Badge>
+                              {u.cost_data_status === 'insufficient' ? (
+                                <Badge variant='outline' className='text-xs'>
+                                  {t('Insufficient Data')}
+                                </Badge>
+                              ) : (
+                                <div className='flex items-center justify-end gap-1'>
+                                  {u.cost_data_status === 'partial' ? (
+                                    <Badge
+                                      variant='outline'
+                                      className='text-[10px]'
+                                    >
+                                      {t('Partial Period')}
+                                    </Badge>
+                                  ) : null}
+                                  <Badge
+                                    variant={getMarginBadgeVariant(
+                                      u.gross_margin_pct
+                                    )}
+                                    className='font-mono text-xs'
+                                  >
+                                    {u.gross_margin_pct.toFixed(1)}%
+                                  </Badge>
+                                </div>
+                              )}
                             </TableCell>
                           </TableRow>
 

@@ -145,22 +145,39 @@ export function usePayment() {
         }
 
         // Handle Stripe payment
-        if (isStripe && response.data?.pay_link) {
-          window.open(response.data.pay_link as string, '_blank')
+        if (isStripe) {
+          if (response.data?.pay_link) {
+            window.open(response.data.pay_link as string, '_blank')
+            toast.success(i18next.t('Redirecting to payment page...'))
+            return true
+          }
+          toast.error(i18next.t('Payment request failed'))
+          return false
+        }
+
+        // Handle non-Stripe form payment (Epay / ECPay / NewebPay)
+        let formFields: Record<string, unknown> | undefined
+        if (
+          response.data &&
+          typeof response.data === 'object' &&
+          !Array.isArray(response.data)
+        ) {
+          formFields = response.data
+        } else if (
+          response.params &&
+          typeof response.params === 'object' &&
+          !Array.isArray(response.params)
+        ) {
+          formFields = response.params
+        }
+        const url = response.url
+        if (url && formFields && Object.keys(formFields).length > 0) {
+          submitPaymentForm(url, formFields)
           toast.success(i18next.t('Redirecting to payment page...'))
           return true
         }
 
-        // Handle non-Stripe payment
-        if (!isStripe && response.data) {
-          const url = (response as unknown as { url?: string }).url
-          if (url) {
-            submitPaymentForm(url, response.data)
-            toast.success(i18next.t('Redirecting to payment page...'))
-            return true
-          }
-        }
-
+        toast.error(i18next.t('Payment request failed'))
         return false
       } catch (error) {
         handleServerError(error, i18next.t('Payment request failed'))

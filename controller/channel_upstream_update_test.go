@@ -3,10 +3,15 @@ package controller
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -17,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func newAdvancedCustomModelListChannel(baseURL string, key string, upstreamPath string, auth *dto.AdvancedCustomRouteAuth) *model.Channel {
@@ -961,4 +967,509 @@ func TestSyncSingleUpstreamAccountSkipsEmptyGroupsWritesCurrencyAndCleansRemoved
 	require.False(t, hasEmpty)
 	require.False(t, hasRemoved)
 	require.InDelta(t, 2.0, finalCfg.ChannelTopupMultipliers[remaining[0].Id], 1e-6)
+}
+
+func TestUpstreamAccountsNoHardcodedCredentialsSecretRedactionAndRBACIsolation(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	prevLogDB := model.LOG_DB
+	prevCfg := model.GetModelPriceSyncConfig()
+	model.LOG_DB = db
+	t.Cleanup(func() {
+		model.LOG_DB = prevLogDB
+		_ = model.SaveModelPriceSyncConfig(prevCfg)
+	})
+	require.NoError(t, db.AutoMigrate(&model.Option{}, &model.Ability{}))
+
+	var seenAuth sync.Map
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		seenAuth.Store(r.Header.Get("New-Api-User"), r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/api/user/self/groups":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"default":{"desc":"Default","ratio":1}}}`))
+		case "/api/pricing":
+			_, _ = w.Write([]byte(`{"success":true,"data":[{"model_name":"gpt-4o-mini","quota_type":0,"model_ratio":1,"completion_ratio":2,"enable_groups":["default"]}],"group_ratio":{"default":1},"usable_group":{"default":"Default"}}`))
+		case "/api/token/":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"items":[{"id":1,"name":"tok-default","key":"sk-up-1","status":1,"group":"default","unlimited_quota":true}],"total":1}}`))
+		case "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_per_unit":500000}}`))
+		case "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":2500000,"used_quota":0}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	const (
+		sentinelTokA = "fake-secret-token-alpha-918273645"
+		sentinelTokB = "fake-secret-token-bravo-556677889"
+	)
+
+	// 1. Missing required UserID or AccessToken reports pending_config without filling defaults
+	missingUser := model.UpstreamAccountSource{
+		ID:          "src-missing-uid",
+		Name:        "lumiya-fictional",
+		BaseURL:     upstream.URL,
+		SyncMode:    model.UpstreamSyncModeLumiya,
+		AccessToken: sentinelTokA,
+		Enabled:     true,
+	}
+	cfg := model.GetModelPriceSyncConfig()
+	err := syncSingleUpstreamAccountSource(t.Context(), &missingUser, &cfg)
+	require.Error(t, err)
+	assert.Equal(t, "pending_config", missingUser.LastStatus)
+	assert.Empty(t, missingUser.UserID)
+
+	// 2. Two fictional accounts preserve distinct UserID and AccessToken across save, JSON reload, and sync
+	cfg.UpstreamAccounts = []model.UpstreamAccountSource{
+		{
+			ID:          "src-alpha",
+			Name:        "lumiya-alpha",
+			BaseURL:     upstream.URL,
+			SyncMode:    model.UpstreamSyncModeLumiya,
+			UserID:      "7001",
+			AccessToken: sentinelTokA,
+			Currency:    "CNY",
+			Enabled:     true,
+		},
+		{
+			ID:          "src-bravo",
+			Name:        "standard-bravo",
+			BaseURL:     upstream.URL,
+			SyncMode:    model.UpstreamSyncModeStandard,
+			UserID:      "8002",
+			AccessToken: sentinelTokB,
+			Currency:    "USD",
+			Enabled:     true,
+		},
+	}
+	cfg.AutoProvisionedChannels = map[int]model.AutoProvisionedChannelMeta{
+		99: {ChannelID: 99, ChannelName: "auto-ch-99", SourceID: "src-alpha", SourceName: "lumiya-alpha", UpstreamGroup: "default", AutoCreated: true},
+	}
+	require.NoError(t, model.SaveModelPriceSyncConfig(cfg))
+	require.NoError(t, model.LoadModelPriceSyncConfigFromJSON(common.OptionMap[model.ModelPriceSyncConfigOptionKey]))
+
+	reloaded := model.GetModelPriceSyncConfig()
+	require.Len(t, reloaded.UpstreamAccounts, 2)
+	assert.Equal(t, "7001", reloaded.UpstreamAccounts[0].UserID)
+	assert.Equal(t, sentinelTokA, reloaded.UpstreamAccounts[0].AccessToken)
+	assert.Equal(t, "8002", reloaded.UpstreamAccounts[1].UserID)
+	assert.Equal(t, sentinelTokB, reloaded.UpstreamAccounts[1].AccessToken)
+
+	_, syncErr := ExecuteUpstreamAccountsProvisionSync(t.Context(), nil)
+	require.NoError(t, syncErr)
+	authA, okA := seenAuth.Load("7001")
+	authB, okB := seenAuth.Load("8002")
+	require.True(t, okA)
+	require.True(t, okB)
+	assert.Equal(t, "Bearer "+sentinelTokA, authA)
+	assert.Equal(t, "Bearer "+sentinelTokB, authB)
+
+	// 3. No API response (including GetOptions JSON string) may contain sentinelTokA or sentinelTokB
+	assertNoSentinelLeak := func(name string, handler gin.HandlerFunc, method string, target string, body string) string {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		c.Request = httptest.NewRequest(method, target, reader)
+		if body != "" {
+			c.Request.Header.Set("Content-Type", "application/json")
+		}
+		handler(c)
+		rawBody := rec.Body.String()
+		assert.NotContains(t, rawBody, sentinelTokA, "%s leaked sentinelTokA", name)
+		assert.NotContains(t, rawBody, sentinelTokB, "%s leaked sentinelTokB", name)
+		return rawBody
+	}
+
+	assertNoSentinelLeak("GetModelPriceTable", GetModelPriceTable, http.MethodGet, "/api/channel/model_price_table", "")
+	assertNoSentinelLeak("ApplyModelPriceTable", ApplyModelPriceTable, http.MethodPost, "/api/channel/model_price_table/apply", `{"highest_price_priority":true}`)
+	assertNoSentinelLeak("GetCronSyncConfig", GetCronSyncConfig, http.MethodGet, "/api/channel/cron_sync_config", "")
+	upAccBody := assertNoSentinelLeak("GetUpstreamAccounts", GetUpstreamAccounts, http.MethodGet, "/api/channel/upstream_accounts", "")
+	assert.Contains(t, upAccBody, `"has_access_token":true`)
+	assert.NotContains(t, upAccBody, `"access_token"`)
+	optBody := assertNoSentinelLeak("GetOptions", GetOptions, http.MethodGet, "/api/option/", "")
+	assert.Contains(t, optBody, model.ModelPriceSyncConfigOptionKey)
+
+	// 4. ChannelWrite general update (even if legacy client posts masked/tampered upstream_accounts) cannot alter UpstreamAccounts or AutoProvisionedChannels
+	beforeWrite := model.GetModelPriceSyncConfig()
+	legacyPayload := `{
+		"cny_exchange_rate": 7.15,
+		"twd_exchange_rate": 31.5,
+		"upstream_accounts": [{"id":"src-alpha","name":"hijacked","base_url":"https://evil.example","user_id":"999","access_token":"tampered-token"}],
+		"auto_provisioned_channels": {}
+	}`
+	assertNoSentinelLeak("UpdateCronSyncConfig", UpdateCronSyncConfig, http.MethodPut, "/api/channel/cron_sync_config", legacyPayload)
+	assertNoSentinelLeak("RunCronSyncNow", RunCronSyncNow, http.MethodPost, "/api/channel/cron_sync_run", `{"channel_ids":[999999]}`)
+
+	afterWrite := model.GetModelPriceSyncConfig()
+	assert.InDelta(t, 7.15, afterWrite.CNYExchangeRate, 1e-6)
+	assert.InDelta(t, 31.5, afterWrite.TWDExchangeRate, 1e-6)
+	assert.Equal(t, beforeWrite.UpstreamAccounts, afterWrite.UpstreamAccounts, "ChannelWrite endpoint must preserve UpstreamAccounts byte-for-byte")
+	assert.Equal(t, beforeWrite.AutoProvisionedChannels, afterWrite.AutoProvisionedChannels, "ChannelWrite endpoint must preserve AutoProvisionedChannels")
+
+	// 5. Concurrent ChannelWrite rate update + ChannelSensitiveWrite SaveUpstreamAccount preserve both changes
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		assertNoSentinelLeak("ConcurrentUpdateCronSync", UpdateCronSyncConfig, http.MethodPut, "/api/channel/cron_sync_config", `{"twd_exchange_rate": 32.8}`)
+	}()
+	go func() {
+		defer wg.Done()
+		saveBody := fmt.Sprintf(`{"id":"src-charlie","name":"charlie","base_url":%q,"user_id":"9003","access_token":"fake-secret-charlie-112233","currency":"USD","enabled":true}`, upstream.URL)
+		assertNoSentinelLeak("ConcurrentSaveUpstreamAccount", SaveUpstreamAccount, http.MethodPost, "/api/channel/upstream_accounts", saveBody)
+	}()
+	wg.Wait()
+
+	merged := model.GetModelPriceSyncConfig()
+	assert.InDelta(t, 32.8, merged.TWDExchangeRate, 1e-6)
+	require.Len(t, merged.UpstreamAccounts, 3)
+}
+
+func TestUpstreamSyncPreservesChannelsOnTransientFailureAndHandlesDeleteFailure(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	prevLogDB := model.LOG_DB
+	prevCfg := model.GetModelPriceSyncConfig()
+	model.LOG_DB = db
+	t.Cleanup(func() {
+		model.LOG_DB = prevLogDB
+		_ = model.SaveModelPriceSyncConfig(prevCfg)
+	})
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.Option{}, &model.Ability{}))
+
+	var failPricingAndV1 atomic.Bool
+	var groupRemovedAuthoritatively atomic.Bool
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/user/self/groups":
+			if groupRemovedAuthoritatively.Load() {
+				_, _ = w.Write([]byte(`{"success":true,"data":{"keep":{"desc":"Keep","ratio":1}}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"data":{"keep":{"desc":"Keep","ratio":1},"transient":{"desc":"Transient","ratio":1}}}`))
+		case "/api/pricing":
+			if failPricingAndV1.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(`{"success":false,"message":"bad gateway"}`))
+				return
+			}
+			if groupRemovedAuthoritatively.Load() {
+				_, _ = w.Write([]byte(`{"success":true,"data":[{"model_name":"gpt-4o","quota_type":0,"model_ratio":1,"completion_ratio":2,"enable_groups":["keep"]}],"group_ratio":{"keep":1},"usable_group":{"keep":"Keep"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"data":[{"model_name":"gpt-4o","quota_type":0,"model_ratio":1,"completion_ratio":2,"enable_groups":["keep","transient"]}],"group_ratio":{"keep":1,"transient":1},"usable_group":{"keep":"Keep","transient":"Transient"}}`))
+		case "/api/token/":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"items":[
+				{"id":1,"name":"tok-keep","key":"sk-keep-plain-token-key-0001","status":1,"group":"keep","unlimited_quota":true},
+				{"id":2,"name":"tok-transient","key":"sk-transient-plain-token-key-0002","status":1,"group":"transient","unlimited_quota":true}
+			],"total":2}}`))
+		case "/v1/models":
+			if failPricingAndV1.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		case "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_per_unit":500000}}`))
+		case "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":5000000,"used_quota":0}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	source := model.UpstreamAccountSource{
+		ID:                 "src-resilience",
+		Name:               "resup",
+		BaseURL:            upstream.URL,
+		SyncMode:           model.UpstreamSyncModeStandard,
+		UserID:             "1",
+		AccessToken:        "fake-resilience-token",
+		Currency:           "USD",
+		CleanRemovedGroups: false,
+		Enabled:            true,
+	}
+	cfg := model.GetModelPriceSyncConfig()
+	require.NoError(t, syncSingleUpstreamAccountSource(t.Context(), &source, &cfg))
+	cfg = model.GetModelPriceSyncConfig()
+
+	var baseline []*model.Channel
+	require.NoError(t, db.Order("id ASC").Find(&baseline).Error)
+	require.Len(t, baseline, 2)
+
+	// 1. Transient failure under BOTH CleanRemovedGroups=false and CleanRemovedGroups=true preserves channels, models, status, and links
+	failPricingAndV1.Store(true)
+	for _, cleanRemoved := range []bool{false, true} {
+		source.CleanRemovedGroups = cleanRemoved
+		err := syncSingleUpstreamAccountSource(t.Context(), &source, &cfg)
+		require.Error(t, err)
+		assert.Equal(t, "partial", source.LastStatus)
+
+		var current []*model.Channel
+		require.NoError(t, db.Order("id ASC").Find(&current).Error)
+		require.Len(t, current, 2)
+		for _, ch := range current {
+			assert.Equal(t, "gpt-4o", ch.Models)
+			assert.Equal(t, common.ChannelStatusEnabled, ch.Status)
+			_, hasLink := model.GetModelPriceSyncConfig().AutoProvisionedChannels[ch.Id]
+			assert.True(t, hasLink)
+		}
+	}
+
+	// 2. Authoritative group removal + simulated DB delete failure must keep association until delete succeeds on retry
+	failPricingAndV1.Store(false)
+	groupRemovedAuthoritatively.Store(true)
+	source.CleanRemovedGroups = true
+
+	var transientCh model.Channel
+	require.NoError(t, db.Where("name = ?", "resup-transient-1").First(&transientCh).Error)
+
+	const failDeleteCb = "test:fail_channel_delete"
+	require.NoError(t, db.Callback().Delete().Before("gorm:delete").Register(failDeleteCb, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Schema != nil && tx.Statement.Schema.Table == "channels" {
+			tx.AddError(errors.New("simulated db delete lock"))
+		}
+	}))
+	delErr := syncSingleUpstreamAccountSource(t.Context(), &source, &cfg)
+	require.NoError(t, db.Callback().Delete().Remove(failDeleteCb))
+	require.Error(t, delErr)
+	assert.Equal(t, "partial", source.LastStatus)
+	assert.Empty(t, source.RemovedChannels)
+	_, stillLinked := model.GetModelPriceSyncConfig().AutoProvisionedChannels[transientCh.Id]
+	assert.True(t, stillLinked, "failed DB delete must not orphan channel association")
+
+	// 3. Next sync after DB recovers deletes the removed group cleanly and marks success
+	cfg = model.GetModelPriceSyncConfig()
+	require.NoError(t, syncSingleUpstreamAccountSource(t.Context(), &source, &cfg))
+	assert.Equal(t, "success", source.LastStatus)
+	assert.Equal(t, []string{"resup-transient-1"}, source.RemovedChannels)
+	_, stillLinked = model.GetModelPriceSyncConfig().AutoProvisionedChannels[transientCh.Id]
+	assert.False(t, stillLinked)
+}
+
+func TestUpstreamTokenPaginationAndFiniteBalanceResolution(t *testing.T) {
+	// 1. Offline unit check for finite exhausted, finite positive, unlimited, and missing token states
+	selfBal := upstreamSelfQuotaInfo{Quota: 4_000_000, QuotaPerUnit: 500_000, BalanceUSD: 8.0, HasValidQuota: true}
+
+	bal, ok := resolveUpstreamChannelBalanceUSD(upstreamTokenRecord{UnlimitedQuota: false, RemainQuota: 0}, true, selfBal)
+	require.True(t, ok)
+	assert.Equal(t, 0.0, bal, "exhausted finite token must report 0 rather than account balance")
+
+	bal, ok = resolveUpstreamChannelBalanceUSD(upstreamTokenRecord{UnlimitedQuota: false, RemainQuota: 500_000}, true, selfBal)
+	require.True(t, ok)
+	assert.Equal(t, 1.0, bal)
+
+	bal, ok = resolveUpstreamChannelBalanceUSD(upstreamTokenRecord{UnlimitedQuota: true, RemainQuota: 0}, true, selfBal)
+	require.True(t, ok)
+	assert.Equal(t, 8.0, bal)
+
+	bal, ok = resolveUpstreamChannelBalanceUSD(upstreamTokenRecord{}, false, selfBal)
+	assert.False(t, ok, "missing token data must report unknown rather than account balance")
+	assert.Equal(t, 0.0, bal)
+
+	// 2. Multi-page (1-indexed p=1..3), duplicate-page, and mid-stream failure pagination + no duplicate token creation
+	db := setupModelListControllerTestDB(t)
+	prevLogDB := model.LOG_DB
+	prevCfg := model.GetModelPriceSyncConfig()
+	model.LOG_DB = db
+	t.Cleanup(func() {
+		model.LOG_DB = prevLogDB
+		_ = model.SaveModelPriceSyncConfig(prevCfg)
+	})
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.Option{}, &model.Ability{}))
+
+	allItems := make([]upstreamTokenRecord, 205)
+	for i := range allItems {
+		grp := fmt.Sprintf("grp-%03d", i+1)
+		remain := int64(500_000)
+		if grp == "grp-205" {
+			remain = 0 // exhausted finite token on page 3!
+		}
+		allItems[i] = upstreamTokenRecord{
+			ID:             i + 1,
+			Name:           "tok-" + grp,
+			Key:            "sk-plain-token-key-value-" + grp,
+			Status:         1,
+			Group:          grp,
+			UnlimitedQuota: false,
+			RemainQuota:    remain,
+		}
+	}
+
+	var mode atomic.Int32 // 0 = normal 1-indexed pages, 1 = duplicate page 1, 2 = fail page 2
+	var createdGroups []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/user/self/groups":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"grp-001":{"desc":"G1","ratio":1},"grp-205":{"desc":"G205","ratio":1}}}`))
+		case "/api/pricing":
+			_, _ = w.Write([]byte(`{"success":true,"data":[{"model_name":"gpt-4o","quota_type":0,"model_ratio":1,"completion_ratio":2,"enable_groups":["grp-001","grp-205"]}],"group_ratio":{"grp-001":1,"grp-205":1},"usable_group":{"grp-001":"G1","grp-205":"G205"}}`))
+		case "/api/token/":
+			if r.Method == http.MethodPost {
+				bodyBytes, _ := io.ReadAll(r.Body)
+				var p struct {
+					Group string `json:"group"`
+				}
+				_ = common.Unmarshal(bodyBytes, &p)
+				createdGroups = append(createdGroups, p.Group)
+				_, _ = w.Write([]byte(`{"success":true}`))
+				return
+			}
+			// Simulate New-API common/page_info.go:41 where p<=1 both return page 1 (1-indexed)
+			pNum, _ := strconv.Atoi(r.URL.Query().Get("p"))
+			if pNum <= 0 {
+				pNum = 1
+			}
+			curMode := mode.Load()
+			if curMode == 1 {
+				pNum = 1 // server ignores p and repeats page 1
+			} else if curMode == 2 && pNum >= 2 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			start := (pNum - 1) * 100
+			end := min(start+100, len(allItems))
+			var slice []upstreamTokenRecord
+			if start < len(allItems) {
+				slice = allItems[start:end]
+			}
+			raw, _ := common.Marshal(map[string]any{
+				"success": true,
+				"data":    map[string]any{"items": slice, "total": len(allItems)},
+			})
+			_, _ = w.Write(raw)
+		case "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_per_unit":500000}}`))
+		case "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":4000000,"used_quota":0}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	// Normal 3-page 1-indexed list finds grp-205 on page 3, creates zero extra tokens, and persists 0 balance for exhausted grp-205
+	toks, complete, err := fetchUpstreamTokensList(t.Context(), upstream.URL, "fake-tok", "1", model.UpstreamSyncModeStandard)
+	require.NoError(t, err)
+	assert.True(t, complete)
+	assert.Len(t, toks, 205)
+
+	source := model.UpstreamAccountSource{
+		ID: "src-paged", Name: "paged", BaseURL: upstream.URL,
+		SyncMode: model.UpstreamSyncModeStandard, UserID: "1", AccessToken: "fake-tok", Currency: "USD", Enabled: true,
+	}
+	cfg := model.GetModelPriceSyncConfig()
+	require.NoError(t, syncSingleUpstreamAccountSource(t.Context(), &source, &cfg))
+	assert.Empty(t, createdGroups, "must find grp-205 on page 3 without creating duplicate tokens")
+
+	var ch205 model.Channel
+	require.NoError(t, db.Where("name = ?", "paged-grp-205-1").First(&ch205).Error)
+	assert.Equal(t, 0.0, ch205.Balance, "persisted exhausted finite token channel must read back 0 USD")
+
+	// Duplicate page and mid-stream failure mark incomplete and do NOT create duplicate tokens for grp-205
+	for _, m := range []int32{1, 2} {
+		mode.Store(m)
+		_, comp, fErr := fetchUpstreamTokensList(t.Context(), upstream.URL, "fake-tok", "1", model.UpstreamSyncModeStandard)
+		require.NoError(t, fErr)
+		assert.False(t, comp)
+
+		cfg = model.GetModelPriceSyncConfig()
+		syncErr := syncSingleUpstreamAccountSource(t.Context(), &source, &cfg)
+		require.Error(t, syncErr)
+		assert.Empty(t, createdGroups, "incomplete token pagination must not create duplicate tokens")
+	}
+}
+
+func TestGetUserCostAnalysisSeparatesUnloggedHistoricalQuotaFromCoveredProfit(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	prevLogDB := model.LOG_DB
+	prevQuotaUnit := common.QuotaPerUnit
+	model.LOG_DB = db
+	common.QuotaPerUnit = 500000
+	t.Cleanup(func() {
+		model.LOG_DB = prevLogDB
+		common.QuotaPerUnit = prevQuotaUnit
+	})
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}, &model.TopUp{}, &model.Option{}, &model.Ability{}))
+
+	// User 1: historical UsedQuota = $20 (10_000_000 quota), but ZERO consume logs -> insufficient data, 0 profit
+	require.NoError(t, db.Create(&model.User{
+		Id: 101, Username: "unlogged-user", AffCode: "aff101", Group: "default", Status: 1, Quota: 0, UsedQuota: 10_000_000,
+	}).Error)
+	// User 2: complete logs ($10 revenue = 5_000_000 quota, frozen upstream cost = $4) -> $6 profit (60%)
+	require.NoError(t, db.Create(&model.User{
+		Id: 102, Username: "covered-user", AffCode: "aff102", Group: "default", Status: 1, Quota: 0, UsedQuota: 5_000_000,
+	}).Error)
+	require.NoError(t, db.Create(&model.Log{
+		UserId: 102, Username: "covered-user", Type: model.LogTypeConsume, ModelName: "gpt-4o",
+		Quota: 5_000_000, PromptTokens: 1000, CompletionTokens: 1000, ChannelId: 1,
+		Other: `{"upstream_cost_usd":4}`, CreatedAt: 1700000000,
+	}).Error)
+	// User 3: authoritative zero-cost logs ($5 revenue = 2_500_000 quota, frozen upstream cost = $0) -> $5 profit (100%)
+	require.NoError(t, db.Create(&model.User{
+		Id: 103, Username: "zerocost-user", AffCode: "aff103", Group: "default", Status: 1, Quota: 0, UsedQuota: 2_500_000,
+	}).Error)
+	require.NoError(t, db.Create(&model.Log{
+		UserId: 103, Username: "zerocost-user", Type: model.LogTypeConsume, ModelName: "free-model",
+		Quota: 2_500_000, PromptTokens: 500, CompletionTokens: 500, ChannelId: 1,
+		Other: `{"upstream_cost_usd":0}`, CreatedAt: 1700000000,
+	}).Error)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/channel/cost_management/users", nil)
+	GetUserCostAnalysis(c)
+
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Users   []UserCostAnalysisRow `json:"users"`
+			Summary struct {
+				TotalConsumedUSD    float64 `json:"total_consumed_usd"`
+				CoveredRevenueUSD   float64 `json:"covered_revenue_usd"`
+				UncoveredRevenueUSD float64 `json:"uncovered_revenue_usd"`
+				TotalCostUSD        float64 `json:"total_cost_usd"`
+				TotalProfitUSD      float64 `json:"total_profit_usd"`
+				OverallMarginPct    float64 `json:"overall_margin_pct"`
+				CostDataStatus      string  `json:"cost_data_status"`
+			} `json:"summary"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+
+	byUser := make(map[int]UserCostAnalysisRow, len(resp.Data.Users))
+	for _, row := range resp.Data.Users {
+		byUser[row.UserID] = row
+	}
+
+	assert.Equal(t, "insufficient", byUser[101].CostDataStatus)
+	assert.InDelta(t, 20.0, byUser[101].ConsumedUSD, 1e-6)
+	assert.InDelta(t, 0.0, byUser[101].CoveredRevenueUSD, 1e-6)
+	assert.InDelta(t, 20.0, byUser[101].UncoveredRevenueUSD, 1e-6)
+	assert.InDelta(t, 0.0, byUser[101].GrossProfitUSD, 1e-6)
+	assert.InDelta(t, 0.0, byUser[101].GrossMarginPct, 1e-6)
+
+	assert.Equal(t, "complete", byUser[102].CostDataStatus)
+	assert.InDelta(t, 6.0, byUser[102].GrossProfitUSD, 1e-6)
+	assert.InDelta(t, 60.0, byUser[102].GrossMarginPct, 1e-6)
+
+	assert.Equal(t, "complete", byUser[103].CostDataStatus)
+	assert.InDelta(t, 5.0, byUser[103].GrossProfitUSD, 1e-6)
+	assert.InDelta(t, 100.0, byUser[103].GrossMarginPct, 1e-6, "genuine zero-cost logs must still display 100%% margin")
+
+	assert.Equal(t, "partial", resp.Data.Summary.CostDataStatus)
+	assert.InDelta(t, 35.0, resp.Data.Summary.TotalConsumedUSD, 1e-6)
+	assert.InDelta(t, 15.0, resp.Data.Summary.CoveredRevenueUSD, 1e-6)
+	assert.InDelta(t, 20.0, resp.Data.Summary.UncoveredRevenueUSD, 1e-6)
+	assert.InDelta(t, 4.0, resp.Data.Summary.TotalCostUSD, 1e-6)
+	assert.InDelta(t, 11.0, resp.Data.Summary.TotalProfitUSD, 1e-6, "unlogged historical consumption must not inflate total gross profit")
 }

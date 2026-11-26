@@ -656,7 +656,7 @@ func GetModelPriceTable(c *gin.Context) {
 	}
 	common.ApiSuccess(c, gin.H{
 		"rows":   rows,
-		"config": cfg,
+		"config": cfg.PublicView(),
 	})
 }
 
@@ -874,37 +874,41 @@ func ApplyModelPriceTable(c *gin.Context) {
 		return
 	}
 
-	cfg := model.GetModelPriceSyncConfig()
-	if req.HighestPricePriority != nil {
-		cfg.HighestPricePriority = *req.HighestPricePriority
-		if cfg.HighestPricePriority && len(req.PreferredChannels) == 0 && req.ChannelID == nil {
-			// Clear manual overrides when switching back to global highest-price priority
+	cfg, err := model.UpdateModelPriceSyncConfig(func(cfg *model.ModelPriceSyncConfig) error {
+		if req.HighestPricePriority != nil {
+			cfg.HighestPricePriority = *req.HighestPricePriority
+			if cfg.HighestPricePriority && len(req.PreferredChannels) == 0 && req.ChannelID == nil {
+				// Clear manual overrides when switching back to global highest-price priority
+				cfg.PreferredChannels = make(map[string]int)
+			}
+		}
+		if cfg.PreferredChannels == nil {
 			cfg.PreferredChannels = make(map[string]int)
 		}
-	}
-	if req.PreferredChannels != nil {
-		for m, chID := range req.PreferredChannels {
-			m = strings.TrimSpace(m)
-			if m == "" {
-				continue
+		if req.PreferredChannels != nil {
+			for m, chID := range req.PreferredChannels {
+				m = strings.TrimSpace(m)
+				if m == "" {
+					continue
+				}
+				if chID <= 0 {
+					delete(cfg.PreferredChannels, m)
+				} else {
+					cfg.PreferredChannels[m] = chID
+				}
 			}
-			if chID <= 0 {
+		}
+		if strings.TrimSpace(req.Model) != "" && req.ChannelID != nil {
+			m := strings.TrimSpace(req.Model)
+			if *req.ChannelID <= 0 {
 				delete(cfg.PreferredChannels, m)
 			} else {
-				cfg.PreferredChannels[m] = chID
+				cfg.PreferredChannels[m] = *req.ChannelID
 			}
 		}
-	}
-	if strings.TrimSpace(req.Model) != "" && req.ChannelID != nil {
-		m := strings.TrimSpace(req.Model)
-		if *req.ChannelID <= 0 {
-			delete(cfg.PreferredChannels, m)
-		} else {
-			cfg.PreferredChannels[m] = *req.ChannelID
-		}
-	}
-
-	if err := model.SaveModelPriceSyncConfig(cfg); err != nil {
+		return nil
+	})
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -923,7 +927,7 @@ func ApplyModelPriceTable(c *gin.Context) {
 	}
 	common.ApiSuccess(c, gin.H{
 		"updated_models": updatedCount,
-		"config":         updatedCfg,
+		"config":         updatedCfg.PublicView(),
 		"rows":           rows,
 	})
 }
@@ -978,58 +982,99 @@ func GetCronSyncConfig(c *gin.Context) {
 		})
 	}
 	common.ApiSuccess(c, gin.H{
-		"config":   cfg,
+		"config":   cfg.PublicView(),
 		"channels": briefs,
 	})
 }
 
+type CronSyncConfigUpdateInput struct {
+	HighestPricePriority    *bool                         `json:"highest_price_priority"`
+	PreferredChannels       map[string]int                `json:"preferred_channels"`
+	DefaultCurrency         *string                       `json:"default_currency"`
+	CustomExchangeRate      *float64                      `json:"custom_exchange_rate"`
+	USDExchangeRate         *float64                      `json:"usd_exchange_rate"`
+	CNYExchangeRate         *float64                      `json:"cny_exchange_rate"`
+	TWDExchangeRate         *float64                      `json:"twd_exchange_rate"`
+	ChannelCurrencies       map[int]string                `json:"channel_currencies"`
+	ChannelExchangeRates    map[int]float64               `json:"channel_exchange_rates"`
+	ChannelTopupMultipliers map[int]float64               `json:"channel_topup_multipliers"`
+	ChannelUpstreamGroups   map[int]string                `json:"channel_upstream_groups"`
+	ClassifierEnabled       *bool                         `json:"classifier_enabled"`
+	ClassifierRules         []model.ChannelClassifierRule `json:"classifier_rules"`
+	CronEnabled             *bool                         `json:"cron_enabled"`
+	CronIntervalMinutes     *int                          `json:"cron_interval_minutes"`
+	AutoSyncModels          *bool                         `json:"auto_sync_models"`
+	AutoSyncPrices          *bool                         `json:"auto_sync_prices"`
+	ReplaceModels           *bool                         `json:"replace_models"`
+}
+
 func UpdateCronSyncConfig(c *gin.Context) {
-	var req model.ModelPriceSyncConfig
+	var req CronSyncConfigUpdateInput
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	existing := model.GetModelPriceSyncConfig()
-	if req.PreferredChannels == nil {
-		req.PreferredChannels = existing.PreferredChannels
-	}
-	if req.ChannelCurrencies == nil {
-		req.ChannelCurrencies = existing.ChannelCurrencies
-	}
-	if req.ChannelExchangeRates == nil {
-		req.ChannelExchangeRates = existing.ChannelExchangeRates
-	}
-	if req.ChannelTopupMultipliers == nil {
-		req.ChannelTopupMultipliers = existing.ChannelTopupMultipliers
-	}
-	if req.ChannelUpstreamGroups == nil {
-		req.ChannelUpstreamGroups = existing.ChannelUpstreamGroups
-	}
-	if len(req.UpstreamAccounts) == 0 && len(existing.UpstreamAccounts) > 0 {
-		req.UpstreamAccounts = existing.UpstreamAccounts
-	}
-	if len(req.AutoProvisionedChannels) == 0 && len(existing.AutoProvisionedChannels) > 0 {
-		req.AutoProvisionedChannels = existing.AutoProvisionedChannels
-	}
-	if req.ClassifierRules == nil && len(existing.ClassifierRules) > 0 {
-		req.ClassifierRules = existing.ClassifierRules
-	}
-	if req.ClassifierEnabled == nil {
-		req.ClassifierEnabled = existing.ClassifierEnabled
-	}
-	if req.USDExchangeRate <= 0 {
-		req.USDExchangeRate = existing.USDExchangeRate
-	}
-	if req.CNYExchangeRate <= 0 {
-		req.CNYExchangeRate = existing.CNYExchangeRate
-	}
-	if req.TWDExchangeRate <= 0 {
-		req.TWDExchangeRate = existing.TWDExchangeRate
-	}
-	if req.LastSyncTime == 0 {
-		req.LastSyncTime = existing.LastSyncTime
-	}
-	if err := model.SaveModelPriceSyncConfig(req); err != nil {
+
+	updated, err := model.UpdateModelPriceSyncConfig(func(cfg *model.ModelPriceSyncConfig) error {
+		if req.HighestPricePriority != nil {
+			cfg.HighestPricePriority = *req.HighestPricePriority
+		}
+		if req.PreferredChannels != nil {
+			cfg.PreferredChannels = req.PreferredChannels
+		}
+		if req.DefaultCurrency != nil {
+			cfg.DefaultCurrency = *req.DefaultCurrency
+		}
+		if req.CustomExchangeRate != nil {
+			cfg.CustomExchangeRate = *req.CustomExchangeRate
+		}
+		if req.USDExchangeRate != nil && *req.USDExchangeRate > 0 {
+			cfg.USDExchangeRate = *req.USDExchangeRate
+		}
+		if req.CNYExchangeRate != nil && *req.CNYExchangeRate > 0 {
+			cfg.CNYExchangeRate = *req.CNYExchangeRate
+		}
+		if req.TWDExchangeRate != nil && *req.TWDExchangeRate > 0 {
+			cfg.TWDExchangeRate = *req.TWDExchangeRate
+		}
+		if req.ChannelCurrencies != nil {
+			cfg.ChannelCurrencies = req.ChannelCurrencies
+		}
+		if req.ChannelExchangeRates != nil {
+			cfg.ChannelExchangeRates = req.ChannelExchangeRates
+		}
+		if req.ChannelTopupMultipliers != nil {
+			cfg.ChannelTopupMultipliers = req.ChannelTopupMultipliers
+		}
+		if req.ChannelUpstreamGroups != nil {
+			cfg.ChannelUpstreamGroups = req.ChannelUpstreamGroups
+		}
+		if req.ClassifierEnabled != nil {
+			v := *req.ClassifierEnabled
+			cfg.ClassifierEnabled = &v
+		}
+		if req.ClassifierRules != nil {
+			cfg.ClassifierRules = req.ClassifierRules
+		}
+		if req.CronEnabled != nil {
+			cfg.CronEnabled = *req.CronEnabled
+		}
+		if req.CronIntervalMinutes != nil && *req.CronIntervalMinutes > 0 {
+			cfg.CronIntervalMinutes = *req.CronIntervalMinutes
+		}
+		if req.AutoSyncModels != nil {
+			cfg.AutoSyncModels = *req.AutoSyncModels
+		}
+		if req.AutoSyncPrices != nil {
+			cfg.AutoSyncPrices = *req.AutoSyncPrices
+		}
+		if req.ReplaceModels != nil {
+			v := *req.ReplaceModels
+			cfg.ReplaceModels = &v
+		}
+		return nil
+	})
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -1049,7 +1094,7 @@ func UpdateCronSyncConfig(c *gin.Context) {
 		model.RecalculateAllChannelModelCosts(true)
 	}
 	common.ApiSuccess(c, gin.H{
-		"config": model.GetModelPriceSyncConfig(),
+		"config": updated.PublicView(),
 	})
 }
 
@@ -1067,8 +1112,14 @@ func RunCronSyncNow(c *gin.Context) {
 
 	cfg := model.GetModelPriceSyncConfig()
 	if req.ReplaceModels != nil {
-		cfg.ReplaceModels = req.ReplaceModels
-		_ = model.SaveModelPriceSyncConfig(cfg)
+		v := *req.ReplaceModels
+		if updated, err := model.UpdateModelPriceSyncConfig(func(cur *model.ModelPriceSyncConfig) error {
+			cp := v
+			cur.ReplaceModels = &cp
+			return nil
+		}); err == nil {
+			cfg = updated
+		}
 	}
 	syncModels := cfg.AutoSyncModels
 	if req.SyncModels != nil {
@@ -1103,7 +1154,7 @@ func RunCronSyncNow(c *gin.Context) {
 
 	common.ApiSuccess(c, gin.H{
 		"results": results,
-		"config":  model.GetModelPriceSyncConfig(),
+		"config":  model.GetModelPriceSyncConfig().PublicView(),
 	})
 }
 
@@ -1635,7 +1686,7 @@ func ExecuteChannelUpstreamSync(
 			src.UsedQuotaUSD = selfBal.UsedQuotaUSD
 			upstreamSelfBalByHost[normHost] = selfBal
 		}
-		if toks, err := fetchUpstreamTokensList(ctx, src.BaseURL, src.AccessToken, src.UserID, src.SyncMode); err == nil {
+		if toks, _, err := fetchUpstreamTokensList(ctx, src.BaseURL, src.AccessToken, src.UserID, src.SyncMode); err == nil {
 			byGroup := make(map[string]upstreamTokenRecord, len(toks))
 			for _, t := range toks {
 				g := strings.TrimSpace(t.Group)
@@ -1920,27 +1971,56 @@ func ExecuteChannelUpstreamSync(
 	}
 	model.RecalculateAllChannelModelCosts(true)
 
-	if syncPrices {
-		_, _ = applyAuthoritativeModelPricesToSystem(cfg)
-	}
-
+	var validIDs map[int]struct{}
 	if len(channelIDs) == 0 && model.DB != nil {
 		var allIDs []int
 		if err := model.DB.Model(&model.Channel{}).Pluck("id", &allIDs).Error; err == nil && len(allIDs) > 0 {
-			validIDs := make(map[int]struct{}, len(allIDs))
+			validIDs = make(map[int]struct{}, len(allIDs))
 			for _, id := range allIDs {
 				if id > 0 {
 					validIDs[id] = struct{}{}
 				}
 			}
-			model.PruneOrphanChannelsFromSyncConfig(&cfg, validIDs)
 		}
 	}
 
-	cfg.LastSyncTime = now
-	_ = model.SaveModelPriceSyncConfig(cfg)
+	updatedCfg, _ := model.UpdateModelPriceSyncConfig(func(live *model.ModelPriceSyncConfig) error {
+		if highestPricePriorityOverride != nil {
+			live.HighestPricePriority = *highestPricePriorityOverride
+		}
+		if live.ChannelCurrencies == nil {
+			live.ChannelCurrencies = make(map[int]string)
+		}
+		if live.ChannelUpstreamGroups == nil {
+			live.ChannelUpstreamGroups = make(map[int]string)
+		}
+		for chID, curr := range cfg.ChannelCurrencies {
+			live.ChannelCurrencies[chID] = curr
+		}
+		for chID, upGroup := range cfg.ChannelUpstreamGroups {
+			live.ChannelUpstreamGroups[chID] = upGroup
+		}
+		for chID, meta := range cfg.AutoProvisionedChannels {
+			if curMeta, ok := live.AutoProvisionedChannels[chID]; ok {
+				curMeta.ChannelName = meta.ChannelName
+				curMeta.Balance = meta.Balance
+				curMeta.BalanceUpdatedTime = meta.BalanceUpdatedTime
+				curMeta.UpdatedAt = meta.UpdatedAt
+				live.AutoProvisionedChannels[chID] = curMeta
+			}
+		}
+		if validIDs != nil {
+			model.PruneOrphanChannelsFromSyncConfig(live, validIDs)
+		}
+		live.LastSyncTime = now
+		return nil
+	})
 
-	if cfg.IsClassifierEnabled() && model.DB != nil {
+	if syncPrices {
+		_, _ = applyAuthoritativeModelPricesToSystem(updatedCfg)
+	}
+
+	if updatedCfg.IsClassifierEnabled() && model.DB != nil {
 		_, _ = model.ApplyChannelClassifierToChannels(channelIDs)
 	}
 
@@ -2031,9 +2111,10 @@ func SaveCronJob(c *gin.Context) {
 	}
 
 	if req.ID == model.BuiltInUpstreamSyncCronJobID {
-		syncCfg := model.GetModelPriceSyncConfig()
-		syncCfg.CronEnabled = req.Enabled
-		_ = model.SaveModelPriceSyncConfig(syncCfg)
+		_, _ = model.UpdateModelPriceSyncConfig(func(syncCfg *model.ModelPriceSyncConfig) error {
+			syncCfg.CronEnabled = req.Enabled
+			return nil
+		})
 	}
 
 	if err := model.SaveCronJobs(jobs); err != nil {

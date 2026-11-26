@@ -1505,6 +1505,8 @@ export interface UserModelChannelCostDetail {
   margin_pct: number
 }
 
+export type CostDataStatus = 'complete' | 'partial' | 'insufficient' | 'none'
+
 export interface UserCostAnalysisRow {
   user_id: number
   username: string
@@ -1518,6 +1520,9 @@ export interface UserCostAnalysisRow {
   online_paid_money: number
   system_topup_usd: number
   consumed_usd: number
+  covered_revenue_usd?: number
+  uncovered_revenue_usd?: number
+  cost_data_status?: CostDataStatus
   call_count: number
   prompt_tokens: number
   completion_tokens: number
@@ -1570,6 +1575,9 @@ export async function getUserCostAnalysis(params?: {
       total_topup_usd: number
       total_consumed_usd: number
       total_revenue_usd: number
+      covered_revenue_usd?: number
+      uncovered_revenue_usd?: number
+      cost_data_status?: CostDataStatus
       total_cost_usd: number
       total_profit_usd: number
       overall_margin_pct: number

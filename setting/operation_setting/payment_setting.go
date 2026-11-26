@@ -5,9 +5,11 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/Calcium-Ion/go-epay/epay"
@@ -109,6 +111,28 @@ func NewebPayEncodeTradeInfo(fields map[string]string) (string, string, error) {
 	return encoded, NewebPayCheckValue(encoded, paymentSetting.NewebPayHashKey, paymentSetting.NewebPayHashIV), nil
 }
 
+func parseNewebPayScalarValue(raw json.RawMessage) (string, bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "", false
+	}
+	switch common.GetJsonType(raw) {
+	case "string":
+		var s string
+		if err := common.Unmarshal(raw, &s); err == nil {
+			return s, true
+		}
+	case "number":
+		return trimmed, true
+	case "bool":
+		var b bool
+		if err := common.Unmarshal(raw, &b); err == nil {
+			return strconv.FormatBool(b), true
+		}
+	}
+	return "", false
+}
+
 func NewebPayDecodeTradeInfo(tradeInfo, checkValue string) (url.Values, error) {
 	if !NewebPayVerifyCheckValue(tradeInfo, checkValue, paymentSetting.NewebPayHashKey, paymentSetting.NewebPayHashIV) {
 		return nil, fmt.Errorf("NewebPay CheckValue verification failed")
@@ -117,22 +141,71 @@ func NewebPayDecodeTradeInfo(tradeInfo, checkValue string) (url.Values, error) {
 	if err != nil {
 		return nil, err
 	}
-	return url.ParseQuery(plain)
+	trimmed := strings.TrimSpace(plain)
+	if strings.HasPrefix(trimmed, "{") {
+		var envelope struct {
+			Status  string          `json:"Status"`
+			Message string          `json:"Message"`
+			Result  json.RawMessage `json:"Result"`
+		}
+		if err := common.Unmarshal([]byte(trimmed), &envelope); err != nil {
+			return nil, fmt.Errorf("invalid NewebPay JSON TradeInfo: %w", err)
+		}
+		values := url.Values{}
+		if envelope.Status != "" {
+			values.Set("Status", envelope.Status)
+		}
+		if envelope.Message != "" {
+			values.Set("Message", envelope.Message)
+		}
+		if common.GetJsonType(envelope.Result) == "object" {
+			var resultFields map[string]json.RawMessage
+			if err := common.Unmarshal(envelope.Result, &resultFields); err != nil {
+				return nil, fmt.Errorf("invalid NewebPay Result object: %w", err)
+			}
+			for key, rawVal := range resultFields {
+				if val, ok := parseNewebPayScalarValue(rawVal); ok {
+					values.Set(key, val)
+				}
+			}
+		}
+		return values, nil
+	}
+	if !strings.Contains(trimmed, "=") {
+		return nil, fmt.Errorf("invalid NewebPay query TradeInfo")
+	}
+	return url.ParseQuery(trimmed)
 }
 
-// ECPayCheckMacValue returns the SHA256 signature used by ECPay's form API.
-// Secrets are passed by the caller and are never logged or persisted by this helper.
+// ECPayCheckMacValue returns the SHA256 signature used by ECPay's AIO V5 API.
+// Per ECPay specification, raw key=value pairs are sorted A-Z (case-insensitive)
+// and wrapped with HashKey/HashIV before URL-encoding the complete string.
 func ECPayCheckMacValue(fields map[string]string, hashKey, hashIV string) string {
-	values := make([]string, 0, len(fields))
+	type kv struct {
+		key      string
+		lowerKey string
+		value    string
+	}
+	items := make([]kv, 0, len(fields))
 	for key, value := range fields {
 		if strings.EqualFold(key, "CheckMacValue") {
 			continue
 		}
-		values = append(values, url.QueryEscape(key)+"="+url.QueryEscape(value))
+		items = append(items, kv{key: key, lowerKey: strings.ToLower(key), value: value})
 	}
-	sort.Strings(values)
-	payload := "HashKey=" + url.QueryEscape(hashKey) + "&" + strings.Join(values, "&") + "&HashIV=" + url.QueryEscape(hashIV)
-	payload = strings.ToLower(payload)
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].lowerKey != items[j].lowerKey {
+			return items[i].lowerKey < items[j].lowerKey
+		}
+		return items[i].key < items[j].key
+	})
+	pairs := make([]string, len(items))
+	for i, item := range items {
+		pairs[i] = item.key + "=" + item.value
+	}
+	raw := "HashKey=" + hashKey + "&" + strings.Join(pairs, "&") + "&HashIV=" + hashIV
+	payload := strings.ToLower(url.QueryEscape(raw))
+	payload = strings.ReplaceAll(payload, "~", "%7e")
 	payload = strings.ReplaceAll(payload, "%2d", "-")
 	payload = strings.ReplaceAll(payload, "%5f", "_")
 	payload = strings.ReplaceAll(payload, "%2e", ".")
