@@ -112,7 +112,9 @@ export type TaskPluginOption = {
     properties?: Record<string, unknown>
     [key: string]: unknown
   } | null
-  configSchema?: import('@/features/task-plugins/types').RequestPluginConfigSchema | null
+  configSchema?:
+    | import('@/features/task-plugins/types').RequestPluginConfigSchema
+    | null
   keyHint?: string | Record<string, string>
   name_i18n?: Record<string, string>
   relayPaths?: string[]
@@ -140,7 +142,10 @@ export async function startPluginLogin(
   keyIndex: number | null,
   add = false
 ): Promise<{ flow: string; step: PluginLoginStep }> {
-  const response = await api.post<{ success: boolean; data: { flow: string; step: PluginLoginStep } }>(
+  const response = await api.post<{
+    success: boolean
+    data: { flow: string; step: PluginLoginStep }
+  }>(
     `/api/channel/${channelId}/plugin_login`,
     add ? { add: true } : { key_index: keyIndex },
     channelActionConfig()
@@ -153,7 +158,10 @@ export async function continuePluginLogin(
   flow: string,
   input: PluginLoginInput
 ): Promise<PluginLoginStep> {
-  const response = await api.post<{ success: boolean; data: { step: PluginLoginStep } }>(
+  const response = await api.post<{
+    success: boolean
+    data: { step: PluginLoginStep }
+  }>(
     `/api/channel/${channelId}/plugin_login/continue`,
     { flow, input },
     channelActionConfig()
@@ -165,7 +173,10 @@ export async function submitPluginLoginCallback(
   plugin: string,
   params: Record<string, string>
 ): Promise<{ channel_id: number; step: PluginLoginStep }> {
-  const response = await api.post<{ success: boolean; data: { channel_id: number; step: PluginLoginStep } }>(
+  const response = await api.post<{
+    success: boolean
+    data: { channel_id: number; step: PluginLoginStep }
+  }>(
     '/api/channel/plugin_login/callback',
     { plugin, params },
     channelActionConfig()
@@ -176,10 +187,10 @@ export async function submitPluginLoginCallback(
 export async function getPluginCredentials(
   channelId: number
 ): Promise<PluginCredentialSummary[]> {
-  const response = await api.get<{ success: boolean; data: { items: PluginCredentialSummary[] | null } }>(
-    `/api/channel/${channelId}/plugin_credentials`,
-    channelActionConfig()
-  )
+  const response = await api.get<{
+    success: boolean
+    data: { items: PluginCredentialSummary[] | null }
+  }>(`/api/channel/${channelId}/plugin_credentials`, channelActionConfig())
   return requireServerSuccess(response.data).data.items ?? []
 }
 
@@ -267,9 +278,7 @@ export async function getChannelDefaultBaseURLs(): Promise<
  * Create new channel(s)
  * Supports single, batch, and multi-key modes
  */
-export async function createChannel(
-  data: AddChannelRequest
-): Promise<{
+export async function createChannel(data: AddChannelRequest): Promise<{
   success: boolean
   message?: string
   data?: { ids?: number[] }
@@ -1620,6 +1629,20 @@ export interface ModelChannelHealthDetail {
   total_tps_trimmed_90: number
   total_tps_p95_high: number
   total_tps_avg: number
+  total_input_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  cache_hit_call_count: number
+  cache_hit_call_ratio: number
+  weighted_cache_rate: number
+  cache_rate_p5_low: number
+  cache_rate_median: number
+  cache_rate_p95_high: number
+  cache_rate_avg: number
+  hit_cache_rate_p5_low: number
+  hit_cache_rate_median: number
+  hit_cache_rate_p95_high: number
+  hit_cache_rate_avg: number
 }
 
 export interface ModelHealthAnalysisRow {
@@ -1646,6 +1669,20 @@ export interface ModelHealthAnalysisRow {
   total_tps_trimmed_90: number
   total_tps_p95_high: number
   total_tps_avg: number
+  total_input_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  cache_hit_call_count: number
+  cache_hit_call_ratio: number
+  weighted_cache_rate: number
+  cache_rate_p5_low: number
+  cache_rate_median: number
+  cache_rate_p95_high: number
+  cache_rate_avg: number
+  hit_cache_rate_p5_low: number
+  hit_cache_rate_median: number
+  hit_cache_rate_p95_high: number
+  hit_cache_rate_avg: number
   channels: ModelChannelHealthDetail[]
 }
 
@@ -1676,6 +1713,20 @@ export interface ChannelHealthSummaryRow {
   total_tps_trimmed_90: number
   total_tps_p95_high: number
   total_tps_avg: number
+  total_input_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  cache_hit_call_count: number
+  cache_hit_call_ratio: number
+  weighted_cache_rate: number
+  cache_rate_p5_low: number
+  cache_rate_median: number
+  cache_rate_p95_high: number
+  cache_rate_avg: number
+  hit_cache_rate_p5_low: number
+  hit_cache_rate_median: number
+  hit_cache_rate_p95_high: number
+  hit_cache_rate_avg: number
   models: ModelChannelHealthDetail[]
 }
 
@@ -1688,6 +1739,7 @@ export interface ModelHealthSummary {
   availability: number
   avg_ttft_sec: number
   median_ttft_sec: number
+  p95_ttft_sec: number
   prefill_tps_avg: number
   prefill_tps_median: number
   decode_tps_p5_low: number
@@ -1700,6 +1752,49 @@ export interface ModelHealthSummary {
   total_tps_trimmed_90: number
   total_tps_p95_high: number
   total_tps_avg: number
+  total_input_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  cache_hit_call_count: number
+  cache_hit_call_ratio: number
+  weighted_cache_rate: number
+  cache_rate_p5_low: number
+  cache_rate_median: number
+  cache_rate_p95_high: number
+  cache_rate_avg: number
+  hit_cache_rate_p5_low: number
+  hit_cache_rate_median: number
+  hit_cache_rate_p95_high: number
+  hit_cache_rate_avg: number
+}
+
+export interface ModelHealthTrendPoint {
+  timestamp: number
+  request_count: number
+  success_count: number
+  error_count: number
+  availability: number
+  avg_ttft_sec: number
+  median_ttft_sec: number
+  p95_ttft_sec: number
+  decode_tps_p5_low: number
+  decode_tps_trimmed_90: number
+  decode_tps_p95_high: number
+  weighted_cache_rate: number
+  cache_rate_p5_low: number
+  cache_rate_median: number
+  cache_rate_p95_high: number
+  hit_cache_rate_p5_low: number
+  hit_cache_rate_median: number
+  hit_cache_rate_p95_high: number
+}
+
+export interface ChannelHealthTrendSeries {
+  channel_id: number
+  channel_name: string
+  channel_type: number
+  total_calls: number
+  points: ModelHealthTrendPoint[]
 }
 
 export async function getModelHealthAnalysis(params?: {
@@ -1713,6 +1808,9 @@ export async function getModelHealthAnalysis(params?: {
     models: ModelHealthAnalysisRow[]
     channels: ChannelHealthSummaryRow[]
     summary: ModelHealthSummary
+    trend?: ModelHealthTrendPoint[]
+    channel_trends?: ChannelHealthTrendSeries[]
+    trend_granularity?: 'hour' | 'day'
   }
 }> {
   const res = await api.get('/api/channel/model_health', {

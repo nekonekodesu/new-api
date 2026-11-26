@@ -1473,3 +1473,148 @@ func TestGetUserCostAnalysisSeparatesUnloggedHistoricalQuotaFromCoveredProfit(t 
 	assert.InDelta(t, 4.0, resp.Data.Summary.TotalCostUSD, 1e-6)
 	assert.InDelta(t, 11.0, resp.Data.Summary.TotalProfitUSD, 1e-6, "unlogged historical consumption must not inflate total gross profit")
 }
+
+func TestGetModelHealthAnalysisCacheMetricsAndHourlyTrends(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	prevLogDB := model.LOG_DB
+	model.LOG_DB = db
+	t.Cleanup(func() {
+		model.LOG_DB = prevLogDB
+	})
+	require.NoError(t, db.AutoMigrate(&model.Log{}))
+
+	claudeCh := &model.Channel{
+		Name:   "Anthropic Upstream",
+		Type:   constant.ChannelTypeAnthropic,
+		Key:    "sk-fictional-test-key-anthropic-health",
+		Group:  "default",
+		Models: "claude-sonnet-4-5",
+		Status: common.ChannelStatusEnabled,
+	}
+	openaiCh := &model.Channel{
+		Name:   "OpenAI Upstream",
+		Type:   constant.ChannelTypeOpenAI,
+		Key:    "sk-fictional-test-key-openai-health",
+		Group:  "default",
+		Models: "gpt-4o",
+		Status: common.ChannelStatusEnabled,
+	}
+	require.NoError(t, db.Create(claudeCh).Error)
+	require.NoError(t, db.Create(openaiCh).Error)
+
+	nowSec := int64(1795651200)
+	hour1 := nowSec - 7200
+	hour2 := nowSec - 1800
+
+	// 1. Anthropic call: prompt_tokens=200 (uncached), cache_tokens=800, cache_write_tokens=0 -> total_input=1000, cache rate=80%
+	require.NoError(t, db.Create(&model.Log{
+		UserId:           1,
+		Type:             model.LogTypeConsume,
+		ModelName:        "claude-sonnet-4-5",
+		ChannelId:        claudeCh.Id,
+		PromptTokens:     200,
+		CompletionTokens: 100,
+		UseTime:          2,
+		IsStream:         true,
+		CreatedAt:        hour1,
+		Other:            `{"usage_semantic":"anthropic","cache_tokens":800,"frt":500}`,
+	}).Error)
+
+	// 2. Anthropic call without cache hit: prompt_tokens=1000, cache_tokens=0 -> total_input=1000, cache rate=0%
+	require.NoError(t, db.Create(&model.Log{
+		UserId:           1,
+		Type:             model.LogTypeConsume,
+		ModelName:        "claude-sonnet-4-5",
+		ChannelId:        claudeCh.Id,
+		PromptTokens:     1000,
+		CompletionTokens: 150,
+		UseTime:          3,
+		IsStream:         true,
+		CreatedAt:        hour2,
+		Other:            `{"usage_semantic":"anthropic","cache_write_tokens":500,"frt":800}`,
+	}).Error)
+
+	// 3. Error log on Anthropic channel in hour2
+	require.NoError(t, db.Create(&model.Log{
+		UserId:    1,
+		Type:      model.LogTypeError,
+		ModelName: "claude-sonnet-4-5",
+		ChannelId: claudeCh.Id,
+		CreatedAt: hour2,
+	}).Error)
+
+	// 4. OpenAI call: prompt_tokens=2000 ALREADY includes cache_tokens=1000 -> total_input=2000, cache rate=50% (never >100%)
+	require.NoError(t, db.Create(&model.Log{
+		UserId:           1,
+		Type:             model.LogTypeConsume,
+		ModelName:        "gpt-4o",
+		ChannelId:        openaiCh.Id,
+		PromptTokens:     2000,
+		CompletionTokens: 200,
+		UseTime:          2,
+		IsStream:         true,
+		CreatedAt:        hour2,
+		Other:            `{"cache_tokens":1000,"input_tokens_total":2000,"frt":400}`,
+	}).Error)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodGet,
+		fmt.Sprintf("/api/channel/model_health?start_timestamp=%d&end_timestamp=%d", nowSec-86400, nowSec),
+		nil,
+	)
+	GetModelHealthAnalysis(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Models           []ModelHealthAnalysisRow   `json:"models"`
+			Channels         []ChannelHealthSummaryRow  `json:"channels"`
+			Summary          ModelHealthSummary         `json:"summary"`
+			Trend            []ModelHealthTrendPoint    `json:"trend"`
+			ChannelTrends    []ChannelHealthTrendSeries `json:"channel_trends"`
+			TrendGranularity string                     `json:"trend_granularity"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	assert.Equal(t, "hour", resp.Data.TrendGranularity)
+
+	// Global totals:
+	// Call 1: totalInput=1000, cacheRead=800 (80%)
+	// Call 2: totalInput=1500 (1000 prompt + 500 write), cacheRead=0 (0%)
+	// Call 4: totalInput=2000, cacheRead=1000 (50%)
+	// Sum totalInput = 4500, Sum cacheRead = 1800 -> Weighted = 40.0%
+	assert.Equal(t, int64(4), resp.Data.Summary.RequestCount)
+	assert.Equal(t, int64(3), resp.Data.Summary.SuccessCount)
+	assert.Equal(t, int64(1), resp.Data.Summary.ErrorCount)
+	assert.InDelta(t, 75.0, resp.Data.Summary.Availability, 1e-4)
+	assert.Equal(t, int64(4500), resp.Data.Summary.TotalInputTokens)
+	assert.Equal(t, int64(1800), resp.Data.Summary.CacheReadTokens)
+	assert.Equal(t, int64(500), resp.Data.Summary.CacheWriteTokens)
+	assert.Equal(t, int64(2), resp.Data.Summary.CacheHitCallCount)
+	assert.InDelta(t, 66.67, resp.Data.Summary.CacheHitCallRatio, 1e-2)
+	assert.InDelta(t, 40.0, resp.Data.Summary.WeightedCacheRate, 1e-2)
+
+	// All-calls cache rate samples: [0, 50, 80] -> median=50; Hit-only samples: [50, 80] -> median=65
+	assert.InDelta(t, 50.0, resp.Data.Summary.CacheRateMedian, 1e-2)
+	assert.InDelta(t, 65.0, resp.Data.Summary.HitCacheRateMedian, 1e-2)
+	assert.Greater(t, resp.Data.Summary.P95TtftSec, 0.0)
+
+	// OpenAI model must report 50% weighted cache rate (proving prompt_tokens was not double-counted)
+	var gptRow *ModelHealthAnalysisRow
+	for i := range resp.Data.Models {
+		if resp.Data.Models[i].Model == "gpt-4o" {
+			gptRow = &resp.Data.Models[i]
+			break
+		}
+	}
+	require.NotNil(t, gptRow)
+	assert.InDelta(t, 50.0, gptRow.WeightedCacheRate, 1e-2)
+
+	// Hourly trend and per-channel trend series must be populated
+	assert.NotEmpty(t, resp.Data.Trend)
+	assert.Len(t, resp.Data.ChannelTrends, 2)
+}

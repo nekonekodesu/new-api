@@ -17,25 +17,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
+import { useLocation, useNavigate } from '@tanstack/react-router'
 import {
   Activity,
   ChevronDown,
   ChevronRight,
   Cpu,
+  DatabaseZap,
   Gauge,
   HeartPulse,
   Info,
-  RefreshCw,
-  Search,
   Server,
   Timer,
   Zap,
 } from 'lucide-react'
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
@@ -43,14 +42,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
@@ -70,111 +61,51 @@ import {
 import {
   getModelHealthAnalysis,
   type ChannelHealthSummaryRow,
+  type ChannelHealthTrendSeries,
   type ModelChannelHealthDetail,
   type ModelHealthAnalysisRow,
+  type ModelHealthTrendPoint,
 } from '@/features/channels/api'
 import { ChannelTypeLogo } from '@/features/channels/components/channel-type-badge'
 import { useIsCompactScreen } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatCompactNumber, formatNumber } from '@/lib/format'
 import { requireServerSuccess } from '@/lib/server-error-message'
-import { computeStartTimestamp, type TimeRangeKey } from '@/lib/time'
+import {
+  computeStartTimestamp,
+  type TimeGranularity,
+  type TimeRangeKey,
+} from '@/lib/time'
 import { cn } from '@/lib/utils'
 
-type ViewMode = 'models' | 'channels'
-
-function formatTpsValue(val: number): string {
-  if (!Number.isFinite(val) || val <= 0) {
-    return '-'
-  }
-  if (val >= 1000) {
-    return `${(val / 1000).toFixed(1)}k`
-  }
-  if (val >= 100) {
-    return val.toFixed(0)
-  }
-  return val.toFixed(1)
-}
-
-function formatTtftSec(val: number): string {
-  if (!Number.isFinite(val) || val <= 0) {
-    return '-'
-  }
-  return `${val.toFixed(2)}s`
-}
-
-function getAvailabilityBadgeClass(avail: number): string {
-  if (avail >= 99) {
-    return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-  }
-  if (avail >= 90) {
-    return 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400'
-  }
-  return 'border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400'
-}
-
-function TpsDistributionBar(props: {
-  p5Low: number
-  trimmed90: number
-  p95High: number
-  maxScale: number
-}) {
-  const { t } = useTranslation()
-  const { p5Low, trimmed90, p95High, maxScale } = props
-  if (trimmed90 <= 0 && p95High <= 0) {
-    return <span className='text-muted-foreground font-mono text-xs'>-</span>
-  }
-  const denom = Math.max(maxScale, p95High, 100)
-  const lowPct = Math.min(Math.max((p5Low / denom) * 100, 2), 92)
-  const midPct = Math.min(Math.max((trimmed90 / denom) * 100, lowPct + 2), 96)
-  const highPct = Math.min(Math.max((p95High / denom) * 100, midPct + 2), 100)
-
-  return (
-    <div className='flex min-w-44 flex-col gap-1'>
-      <div className='flex items-center justify-between gap-2 font-mono text-[11px]'>
-        <span
-          className='text-amber-600 dark:text-amber-400'
-          title={t('5% Low (P5)')}
-        >
-          {formatTpsValue(p5Low)}
-        </span>
-        <span
-          className='text-foreground font-bold'
-          title={t('90% Trimmed Mean / Median')}
-        >
-          {formatTpsValue(trimmed90)} t/s
-        </span>
-        <span
-          className='text-emerald-600 dark:text-emerald-400'
-          title={t('5% High (P95)')}
-        >
-          {formatTpsValue(p95High)}
-        </span>
-      </div>
-      <div className='bg-muted relative h-1.5 w-full overflow-hidden rounded-full'>
-        <div
-          className='bg-primary/35 absolute top-0 bottom-0 rounded-full'
-          style={{
-            left: `${lowPct}%`,
-            width: `${Math.max(highPct - lowPct, 4)}%`,
-          }}
-        />
-        <div
-          className='bg-primary absolute top-0 bottom-0 w-1.5 -translate-x-1/2 rounded-full'
-          style={{ left: `${midPct}%` }}
-        />
-      </div>
-    </div>
-  )
-}
+import { ComprehensiveHealthTab } from './health/comprehensive-health-tab'
+import { ModelHealthCharts } from './health/health-charts'
+import {
+  HealthToolbarControls,
+  TpsDistributionBar,
+} from './health/health-shared'
+import {
+  formatTpsValue,
+  formatTtftSec,
+  getAvailabilityBadgeClass,
+  normalizeHealthSubTab,
+  type HealthEntityViewMode,
+  type HealthSubTab,
+} from './health/health-utils'
+import { ModelCacheAnalysisTab } from './health/model-cache-analysis-tab'
 
 export function ModelHealthPanel() {
   const { t, i18n } = useTranslation()
+  const location = useLocation()
+  const navigate = useNavigate()
   const isMobile = useIsCompactScreen()
   const intlLocale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
 
-  const [viewMode, setViewMode] = useState<ViewMode>('models')
-  const [timeRange, setTimeRange] = useState<TimeRangeKey>('30d')
+  const searchParams = new URLSearchParams(location.searchStr || '')
+  const urlSubTab = normalizeHealthSubTab(searchParams.get('tab'))
+  const [subTab, setSubTab] = useState<HealthSubTab>(urlSubTab)
+  const [viewMode, setViewMode] = useState<HealthEntityViewMode>('models')
+  const [timeRange, setTimeRange] = useState<TimeRangeKey>('1d')
   const [keyword, setKeyword] = useState('')
   const [onlyActiveCalls, setOnlyActiveCalls] = useState(false)
   const [expandedModels, setExpandedModels] = useState<Record<string, boolean>>(
@@ -183,6 +114,23 @@ export function ModelHealthPanel() {
   const [expandedChannels, setExpandedChannels] = useState<
     Record<number, boolean>
   >({})
+
+  useEffect(() => {
+    setSubTab(urlSubTab)
+  }, [urlSubTab])
+
+  const handleSubTabChange = (raw: string) => {
+    const next = normalizeHealthSubTab(raw)
+    setSubTab(next)
+    void navigate({
+      to: '/dashboard/$section',
+      params: { section: 'health' },
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        tab: next === 'overview' ? undefined : next,
+      }),
+    })
+  }
 
   const startTimestamp = useMemo(
     () => computeStartTimestamp(timeRange),
@@ -207,6 +155,16 @@ export function ModelHealthPanel() {
     () => healthQuery.data?.data?.channels ?? [],
     [healthQuery.data]
   )
+  const trend: ModelHealthTrendPoint[] = useMemo(
+    () => healthQuery.data?.data?.trend ?? [],
+    [healthQuery.data]
+  )
+  const channelTrends: ChannelHealthTrendSeries[] = useMemo(
+    () => healthQuery.data?.data?.channel_trends ?? [],
+    [healthQuery.data]
+  )
+  const granularity: TimeGranularity =
+    healthQuery.data?.data?.trend_granularity === 'hour' ? 'hour' : 'day'
   const summary = healthQuery.data?.data?.summary
 
   const kw = keyword.trim().toLowerCase()
@@ -289,269 +247,332 @@ export function ModelHealthPanel() {
   return (
     <TooltipProvider>
       <div className='space-y-4'>
-        {/* Top KPI Summary Cards */}
-        <div className='grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4'>
-          <Card>
-            <CardHeader className='pb-2'>
-              <CardDescription className='flex items-center justify-between text-xs'>
-                <span>{t('Overall Availability & Requests')}</span>
-                <HeartPulse
-                  aria-hidden='true'
-                  className='size-4 text-emerald-500'
-                />
-              </CardDescription>
-              <CardTitle className='flex items-baseline gap-2 text-xl font-bold'>
-                <span className='text-emerald-600 dark:text-emerald-400'>
-                  {(summary?.availability ?? 100).toFixed(2)}%
-                </span>
-                <span className='text-muted-foreground font-mono text-xs font-normal'>
-                  {formatNumber(summary?.request_count ?? 0, intlLocale)}{' '}
-                  {t('calls')} ({summary?.model_count ?? 0} {t('Models')} /{' '}
-                  {summary?.channel_count ?? 0} {t('Channels')})
-                </span>
-              </CardTitle>
-            </CardHeader>
-          </Card>
+        {/* Top Sub-page Tabs: Comprehensive Health / Response Speed / Model Cache Analysis */}
+        <Tabs
+          value={subTab}
+          onValueChange={(value) => handleSubTabChange(String(value))}
+          className='w-full'
+        >
+          <div className='max-w-full overflow-x-auto pb-0.5'>
+            <TabsList className='inline-flex h-auto min-w-full justify-start gap-1 p-1 sm:min-w-0 sm:flex-wrap'>
+              <TabsTrigger
+                value='overview'
+                className='shrink-0 gap-1.5 text-xs'
+              >
+                <HeartPulse aria-hidden='true' className='size-3.5 shrink-0' />
+                <span>{t('Comprehensive Model Health')}</span>
+              </TabsTrigger>
+              <TabsTrigger value='speed' className='shrink-0 gap-1.5 text-xs'>
+                <Timer aria-hidden='true' className='size-3.5 shrink-0' />
+                <span>{t('Response Speed')}</span>
+              </TabsTrigger>
+              <TabsTrigger value='cache' className='shrink-0 gap-1.5 text-xs'>
+                <DatabaseZap aria-hidden='true' className='size-3.5 shrink-0' />
+                <span>{t('Model Cache Analysis')}</span>
+              </TabsTrigger>
+            </TabsList>
+          </div>
+        </Tabs>
 
-          <Card>
-            <CardHeader className='pb-2'>
-              <CardDescription className='flex items-center justify-between text-xs'>
-                <span className='flex items-center gap-1'>
-                  {t('Context Prefill Speed & TTFT')}
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Info className='text-muted-foreground size-3.5 cursor-help' />
-                      }
+        {subTab === 'overview' && (
+          <ComprehensiveHealthTab
+            summary={summary}
+            models={filteredModels}
+            channels={filteredChannels}
+            trend={trend}
+            channelTrends={channelTrends}
+            granularity={granularity}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            keyword={keyword}
+            onKeywordChange={setKeyword}
+            timeRange={timeRange}
+            onTimeRangeChange={setTimeRange}
+            onlyActiveCalls={onlyActiveCalls}
+            onToggleOnlyActiveCalls={() => setOnlyActiveCalls((prev) => !prev)}
+            isLoading={healthQuery.isLoading}
+            isFetching={healthQuery.isFetching}
+            onRefresh={() => void healthQuery.refetch()}
+            onSelectSubTab={handleSubTabChange}
+            isMobile={isMobile}
+            intlLocale={intlLocale}
+          />
+        )}
+
+        {subTab === 'cache' && (
+          <ModelCacheAnalysisTab
+            summary={summary}
+            models={filteredModels}
+            channels={filteredChannels}
+            trend={trend}
+            channelTrends={channelTrends}
+            granularity={granularity}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            keyword={keyword}
+            onKeywordChange={setKeyword}
+            timeRange={timeRange}
+            onTimeRangeChange={setTimeRange}
+            onlyActiveCalls={onlyActiveCalls}
+            onToggleOnlyActiveCalls={() => setOnlyActiveCalls((prev) => !prev)}
+            isLoading={healthQuery.isLoading}
+            isFetching={healthQuery.isFetching}
+            onRefresh={() => void healthQuery.refetch()}
+            isMobile={isMobile}
+            intlLocale={intlLocale}
+          />
+        )}
+
+        {subTab === 'speed' && (
+          <div className='space-y-4'>
+            {/* Top Speed KPI Summary Cards */}
+            <div className='grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4'>
+              <Card>
+                <CardHeader className='pb-2'>
+                  <CardDescription className='flex items-center justify-between text-xs'>
+                    <span>{t('Overall Availability & Requests')}</span>
+                    <HeartPulse
+                      aria-hidden='true'
+                      className='size-4 text-emerald-500'
                     />
-                    <TooltipContent className='max-w-xs text-xs'>
-                      {t(
-                        'Prefill TPS = Prompt Tokens ÷ First Token Time (TTFT). Evaluates how fast the upstream processes long context prompts before generating the first token.'
-                      )}
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <Zap aria-hidden='true' className='size-4 text-amber-500' />
-              </CardDescription>
-              <CardTitle className='flex items-baseline gap-2 text-xl font-bold'>
-                <span>
-                  {formatTpsValue(summary?.prefill_tps_median ?? 0)}{' '}
-                  <span className='text-muted-foreground text-xs font-normal'>
-                    tok/s
-                  </span>
-                </span>
-                <Badge variant='outline' className='font-mono text-xs'>
-                  TTFT: {formatTtftSec(summary?.avg_ttft_sec ?? 0)}
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-          </Card>
-
-          <Card>
-            <CardHeader className='pb-2'>
-              <CardDescription className='flex items-center justify-between text-xs'>
-                <span className='flex items-center gap-1'>
-                  {t('Decode TPS (5% Low / 90% / 5% High)')}
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Info className='text-muted-foreground size-3.5 cursor-help' />
-                      }
-                    />
-                    <TooltipContent className='max-w-xs text-xs'>
-                      {t(
-                        'Post-TTFT Decode Speed = Completion Tokens ÷ (Total Duration - TTFT). Excludes top 5% and bottom 5% outliers for the 90% trimmed average.'
-                      )}
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <Gauge aria-hidden='true' className='text-primary size-4' />
-              </CardDescription>
-              <CardTitle className='flex items-baseline gap-2 font-mono text-lg font-bold'>
-                <span className='text-amber-600 dark:text-amber-400'>
-                  {formatTpsValue(summary?.decode_tps_p5_low ?? 0)}
-                </span>
-                <span className='text-muted-foreground text-xs'>/</span>
-                <span className='text-xl'>
-                  {formatTpsValue(summary?.decode_tps_trimmed_90 ?? 0)}
-                </span>
-                <span className='text-muted-foreground text-xs'>/</span>
-                <span className='text-emerald-600 dark:text-emerald-400'>
-                  {formatTpsValue(summary?.decode_tps_p95_high ?? 0)}
-                </span>
-                <span className='text-muted-foreground text-xs font-normal'>
-                  t/s
-                </span>
-              </CardTitle>
-            </CardHeader>
-          </Card>
-
-          <Card>
-            <CardHeader className='pb-2'>
-              <CardDescription className='flex items-center justify-between text-xs'>
-                <span className='flex items-center gap-1'>
-                  {t('End-to-End Total TPS Average')}
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Info className='text-muted-foreground size-3.5 cursor-help' />
-                      }
-                    />
-                    <TooltipContent className='max-w-xs text-xs'>
-                      {t(
-                        'End-to-End Total TPS = Completion Tokens ÷ Total Request Duration (including prefill + generation time).'
-                      )}
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <Activity
-                  aria-hidden='true'
-                  className='text-muted-foreground size-4'
-                />
-              </CardDescription>
-              <CardTitle className='flex items-baseline gap-2 text-xl font-bold'>
-                <span>
-                  {formatTpsValue(summary?.total_tps_avg ?? 0)}{' '}
-                  <span className='text-muted-foreground text-xs font-normal'>
-                    tok/s
-                  </span>
-                </span>
-                <span className='text-muted-foreground font-mono text-xs font-normal'>
-                  ({t('90% Trimmed')}:{' '}
-                  {formatTpsValue(summary?.total_tps_trimmed_90 ?? 0)} t/s)
-                </span>
-              </CardTitle>
-            </CardHeader>
-          </Card>
-        </div>
-
-        {/* Main Analysis Card */}
-        <Card>
-          <CardHeader className='pb-3'>
-            <div className='flex flex-wrap items-center justify-between gap-3'>
-              <div className='space-y-1'>
-                <div className='flex flex-wrap items-center gap-2.5'>
-                  <CardTitle className='text-base'>
-                    {t('Model & Channel Telemetry Health Matrix')}
+                  </CardDescription>
+                  <CardTitle className='flex items-baseline gap-2 text-xl font-bold'>
+                    <span className='text-emerald-600 dark:text-emerald-400'>
+                      {(summary?.availability ?? 100).toFixed(2)}%
+                    </span>
+                    <span className='text-muted-foreground font-mono text-xs font-normal'>
+                      {formatNumber(summary?.request_count ?? 0, intlLocale)}{' '}
+                      {t('calls')} ({summary?.model_count ?? 0} {t('Models')} /{' '}
+                      {summary?.channel_count ?? 0} {t('Channels')})
+                    </span>
                   </CardTitle>
-                  <Tabs
-                    value={viewMode}
-                    onValueChange={(val) => setViewMode(val as ViewMode)}
-                  >
-                    <TabsList className='h-8'>
-                      <TabsTrigger value='models' className='px-2.5 text-xs'>
-                        <Cpu aria-hidden='true' className='me-1.5 size-3.5' />
-                        {t('By Model Average')} ({filteredModels.length})
-                      </TabsTrigger>
-                      <TabsTrigger value='channels' className='px-2.5 text-xs'>
-                        <Server
-                          aria-hidden='true'
-                          className='me-1.5 size-3.5'
+                </CardHeader>
+              </Card>
+
+              <Card>
+                <CardHeader className='pb-2'>
+                  <CardDescription className='flex items-center justify-between text-xs'>
+                    <span className='flex items-center gap-1'>
+                      {t('Context Prefill Speed & TTFT')}
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Info className='text-muted-foreground size-3.5 cursor-help' />
+                          }
                         />
-                        {t('By Channel Average')} ({filteredChannels.length})
-                      </TabsTrigger>
-                    </TabsList>
-                  </Tabs>
-                </div>
-                <CardDescription className='text-xs'>
-                  {viewMode === 'models'
-                    ? t(
-                        'Click any model row to compare health, prefill speed, and decode TPS distribution across all upstream channels providing that model'
-                      )
-                    : t(
-                        'Click any channel row to inspect overall channel health and per-model prefill/decode performance breakdown'
-                      )}
-                </CardDescription>
-              </div>
+                        <TooltipContent className='max-w-xs text-xs'>
+                          {t(
+                            'Prefill TPS = Prompt Tokens ÷ First Token Time (TTFT). Evaluates how fast the upstream processes long context prompts before generating the first token.'
+                          )}
+                        </TooltipContent>
+                      </Tooltip>
+                    </span>
+                    <Zap aria-hidden='true' className='size-4 text-amber-500' />
+                  </CardDescription>
+                  <CardTitle className='flex items-baseline gap-2 text-xl font-bold'>
+                    <span>
+                      {formatTpsValue(summary?.prefill_tps_median ?? 0)}{' '}
+                      <span className='text-muted-foreground text-xs font-normal'>
+                        tok/s
+                      </span>
+                    </span>
+                    <Badge variant='outline' className='font-mono text-xs'>
+                      TTFT: {formatTtftSec(summary?.avg_ttft_sec ?? 0)}
+                    </Badge>
+                  </CardTitle>
+                </CardHeader>
+              </Card>
 
-              <div className='flex w-full flex-wrap items-center gap-2 sm:w-auto'>
-                <div className='relative w-full sm:w-56'>
-                  <Search
-                    aria-hidden='true'
-                    className='text-muted-foreground absolute start-2.5 top-2.5 size-3.5'
-                  />
-                  <Input
-                    value={keyword}
-                    onChange={(e) => setKeyword(e.target.value)}
-                    placeholder={t('Filter models or channels...')}
-                    className='h-8 ps-8 text-xs'
-                  />
-                </div>
-                <Select
-                  value={timeRange}
-                  onValueChange={(val) => setTimeRange(val as TimeRangeKey)}
-                >
-                  <SelectTrigger className='h-8 w-full text-xs sm:w-36'>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value='1d'>{t('Last 24 Hours')}</SelectItem>
-                    <SelectItem value='7d'>{t('Last 7 Days')}</SelectItem>
-                    <SelectItem value='30d'>{t('Last 30 Days')}</SelectItem>
-                    <SelectItem value='90d'>{t('Last 90 Days')}</SelectItem>
-                    <SelectItem value='all'>{t('All Time')}</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Button
-                  variant={onlyActiveCalls ? 'default' : 'outline'}
-                  size='sm'
-                  className='h-8 flex-1 text-xs sm:flex-initial'
-                  onClick={() => setOnlyActiveCalls((prev) => !prev)}
-                >
-                  {t('Only With Calls')}
-                </Button>
-                <Button
-                  variant='outline'
-                  size='sm'
-                  className='h-8 flex-1 text-xs sm:flex-initial'
-                  onClick={() => void healthQuery.refetch()}
-                  disabled={healthQuery.isFetching}
-                >
-                  <RefreshCw
-                    aria-hidden='true'
-                    className={cn(
-                      'me-1.5 size-3.5',
-                      healthQuery.isFetching && 'animate-spin'
-                    )}
-                  />
-                  {t('Refresh')}
-                </Button>
-              </div>
+              <Card>
+                <CardHeader className='pb-2'>
+                  <CardDescription className='flex items-center justify-between text-xs'>
+                    <span className='flex items-center gap-1'>
+                      {t('Decode TPS (5% Low / 90% / 5% High)')}
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Info className='text-muted-foreground size-3.5 cursor-help' />
+                          }
+                        />
+                        <TooltipContent className='max-w-xs text-xs'>
+                          {t(
+                            'Post-TTFT Decode Speed = Completion Tokens ÷ (Total Duration - TTFT). Excludes top 5% and bottom 5% outliers for the 90% trimmed average.'
+                          )}
+                        </TooltipContent>
+                      </Tooltip>
+                    </span>
+                    <Gauge aria-hidden='true' className='text-primary size-4' />
+                  </CardDescription>
+                  <CardTitle className='flex items-baseline gap-2 font-mono text-lg font-bold'>
+                    <span className='text-amber-600 dark:text-amber-400'>
+                      {formatTpsValue(summary?.decode_tps_p5_low ?? 0)}
+                    </span>
+                    <span className='text-muted-foreground text-xs'>/</span>
+                    <span className='text-xl'>
+                      {formatTpsValue(summary?.decode_tps_trimmed_90 ?? 0)}
+                    </span>
+                    <span className='text-muted-foreground text-xs'>/</span>
+                    <span className='text-emerald-600 dark:text-emerald-400'>
+                      {formatTpsValue(summary?.decode_tps_p95_high ?? 0)}
+                    </span>
+                    <span className='text-muted-foreground text-xs font-normal'>
+                      t/s
+                    </span>
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+
+              <Card>
+                <CardHeader className='pb-2'>
+                  <CardDescription className='flex items-center justify-between text-xs'>
+                    <span className='flex items-center gap-1'>
+                      {t('End-to-End Total TPS Average')}
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Info className='text-muted-foreground size-3.5 cursor-help' />
+                          }
+                        />
+                        <TooltipContent className='max-w-xs text-xs'>
+                          {t(
+                            'End-to-End Total TPS = Completion Tokens ÷ Total Request Duration (including prefill + generation time).'
+                          )}
+                        </TooltipContent>
+                      </Tooltip>
+                    </span>
+                    <Activity
+                      aria-hidden='true'
+                      className='text-muted-foreground size-4'
+                    />
+                  </CardDescription>
+                  <CardTitle className='flex items-baseline gap-2 text-xl font-bold'>
+                    <span>
+                      {formatTpsValue(summary?.total_tps_avg ?? 0)}{' '}
+                      <span className='text-muted-foreground text-xs font-normal'>
+                        tok/s
+                      </span>
+                    </span>
+                    <span className='text-muted-foreground font-mono text-xs font-normal'>
+                      ({t('90% Trimmed')}:{' '}
+                      {formatTpsValue(summary?.total_tps_trimmed_90 ?? 0)} t/s)
+                    </span>
+                  </CardTitle>
+                </CardHeader>
+              </Card>
             </div>
-          </CardHeader>
 
-          <CardContent className='p-0'>
-            {healthQuery.isLoading && (
-              <div className='space-y-2 p-4'>
-                <Skeleton className='h-12 w-full' />
-                <Skeleton className='h-12 w-full' />
-                <Skeleton className='h-12 w-full' />
-              </div>
-            )}
+            {/* Speed Trend & Ranking Charts */}
+            <ModelHealthCharts
+              mode='speed'
+              entityViewMode={viewMode}
+              trend={trend}
+              channelTrends={channelTrends}
+              granularity={granularity}
+              models={filteredModels}
+              channels={filteredChannels}
+              isLoading={healthQuery.isLoading}
+            />
 
-            {!healthQuery.isLoading && viewMode === 'models' && (
-              <ModelsHealthTable
-                rows={filteredModels}
-                expandedModels={expandedModels}
-                onToggleExpand={toggleModelExpand}
-                maxScale={maxModelP95}
-                isMobile={isMobile}
-                intlLocale={intlLocale}
-              />
-            )}
+            {/* Main Speed Analysis Card */}
+            <Card>
+              <CardHeader className='pb-3'>
+                <div className='flex flex-wrap items-center justify-between gap-3'>
+                  <div className='space-y-1'>
+                    <div className='flex flex-wrap items-center gap-2.5'>
+                      <CardTitle className='text-base'>
+                        {t('Model & Channel Response Speed Matrix')}
+                      </CardTitle>
+                      <Tabs
+                        value={viewMode}
+                        onValueChange={(val) =>
+                          setViewMode(val as HealthEntityViewMode)
+                        }
+                      >
+                        <TabsList className='h-8'>
+                          <TabsTrigger
+                            value='models'
+                            className='px-2.5 text-xs'
+                          >
+                            <Cpu
+                              aria-hidden='true'
+                              className='me-1.5 size-3.5'
+                            />
+                            {t('By Model Average')} ({filteredModels.length})
+                          </TabsTrigger>
+                          <TabsTrigger
+                            value='channels'
+                            className='px-2.5 text-xs'
+                          >
+                            <Server
+                              aria-hidden='true'
+                              className='me-1.5 size-3.5'
+                            />
+                            {t('By Channel Average')} ({filteredChannels.length}
+                            )
+                          </TabsTrigger>
+                        </TabsList>
+                      </Tabs>
+                    </div>
+                    <CardDescription className='text-xs'>
+                      {viewMode === 'models'
+                        ? t(
+                            'Click any model row to compare health, prefill speed, and decode TPS distribution across all upstream channels providing that model'
+                          )
+                        : t(
+                            'Click any channel row to inspect overall channel health and per-model prefill/decode performance breakdown'
+                          )}
+                    </CardDescription>
+                  </div>
 
-            {!healthQuery.isLoading && viewMode === 'channels' && (
-              <ChannelsHealthTable
-                rows={filteredChannels}
-                expandedChannels={expandedChannels}
-                onToggleExpand={toggleChannelExpand}
-                maxScale={maxChannelP95}
-                isMobile={isMobile}
-                intlLocale={intlLocale}
-              />
-            )}
-          </CardContent>
-        </Card>
+                  <HealthToolbarControls
+                    keyword={keyword}
+                    onKeywordChange={setKeyword}
+                    timeRange={timeRange}
+                    onTimeRangeChange={setTimeRange}
+                    onlyActiveCalls={onlyActiveCalls}
+                    onToggleOnlyActiveCalls={() =>
+                      setOnlyActiveCalls((prev) => !prev)
+                    }
+                    isFetching={healthQuery.isFetching}
+                    onRefresh={() => void healthQuery.refetch()}
+                  />
+                </div>
+              </CardHeader>
+
+              <CardContent className='p-0'>
+                {healthQuery.isLoading && (
+                  <div className='space-y-2 p-4'>
+                    <Skeleton className='h-12 w-full' />
+                    <Skeleton className='h-12 w-full' />
+                    <Skeleton className='h-12 w-full' />
+                  </div>
+                )}
+
+                {!healthQuery.isLoading && viewMode === 'models' && (
+                  <ModelsHealthTable
+                    rows={filteredModels}
+                    expandedModels={expandedModels}
+                    onToggleExpand={toggleModelExpand}
+                    maxScale={maxModelP95}
+                    isMobile={isMobile}
+                    intlLocale={intlLocale}
+                  />
+                )}
+
+                {!healthQuery.isLoading && viewMode === 'channels' && (
+                  <ChannelsHealthTable
+                    rows={filteredChannels}
+                    expandedChannels={expandedChannels}
+                    onToggleExpand={toggleChannelExpand}
+                    maxScale={maxChannelP95}
+                    isMobile={isMobile}
+                    intlLocale={intlLocale}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
     </TooltipProvider>
   )

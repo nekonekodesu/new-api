@@ -91,7 +91,6 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
                 title: t('Basic Data'),
                 url: '/dashboard/models',
                 activeUrls: [
-                  '/dashboard/health',
                   '/dashboard/flow',
                   '/dashboard/users',
                   '/dashboard/network-security',
@@ -99,6 +98,10 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
               },
               ...(isAdmin
                 ? [
+                    {
+                      title: t('Model Health'),
+                      url: '/dashboard/health',
+                    },
                     {
                       title: t('Cost Management'),
                       url: '/channels?tab=cost-models',

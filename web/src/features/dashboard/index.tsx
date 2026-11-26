@@ -269,9 +269,8 @@ export function Dashboard() {
       DASHBOARD_SECTION_IDS.filter(
         (section) =>
           section !== 'overview' &&
-          ((section !== 'users' &&
-            section !== 'health' &&
-            section !== 'network-security') ||
+          section !== 'health' &&
+          ((section !== 'users' && section !== 'network-security') ||
             (section === 'network-security' ? isRoot : isAdmin))
       ),
     [isAdmin, isRoot]
@@ -286,7 +285,9 @@ export function Dashboard() {
     [navigate]
   )
   const showSectionTabs =
-    activeSection !== 'overview' && visibleSections.length > 1
+    activeSection !== 'overview' &&
+    activeSection !== 'health' &&
+    visibleSections.length > 1
   const modelActions =
     activeSection === 'models' ? (
       <>
@@ -350,26 +351,28 @@ export function Dashboard() {
       <SectionPageLayout.Title>{t(meta.titleKey)}</SectionPageLayout.Title>
       <SectionPageLayout.Content>
         <div className='space-y-3 sm:space-y-4'>
-          <div className='flex flex-wrap items-center justify-between gap-1.5 sm:gap-2'>
-            {showSectionTabs ? (
-              <Tabs value={activeSection} onValueChange={handleSectionChange}>
-                <TabsList className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'>
-                  {visibleSections.map((section) => (
-                    <TabsTrigger key={section} value={section}>
-                      {t(SECTION_META[section].titleKey)}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-            ) : (
-              <div />
-            )}
-            {sectionActions != null && (
-              <div className='flex shrink-0 flex-wrap items-center gap-1.5 sm:gap-2'>
-                {sectionActions}
-              </div>
-            )}
-          </div>
+          {(showSectionTabs || sectionActions != null) && (
+            <div className='flex flex-wrap items-center justify-between gap-1.5 sm:gap-2'>
+              {showSectionTabs ? (
+                <Tabs value={activeSection} onValueChange={handleSectionChange}>
+                  <TabsList className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'>
+                    {visibleSections.map((section) => (
+                      <TabsTrigger key={section} value={section}>
+                        {t(SECTION_META[section].titleKey)}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+              ) : (
+                <div />
+              )}
+              {sectionActions != null && (
+                <div className='flex shrink-0 flex-wrap items-center gap-1.5 sm:gap-2'>
+                  {sectionActions}
+                </div>
+              )}
+            </div>
+          )}
           {activeSection === 'models' && (
             <>
               <FadeIn>

@@ -3391,14 +3391,17 @@ func resolvedLogGroupCol() string {
 }
 
 var (
-	logCacheTokensRe           = regexp.MustCompile(`"cache_tokens"\s*:\s*(\d+)`)
-	logCacheWriteTokensRe      = regexp.MustCompile(`"cache_write_tokens"\s*:\s*(\d+)`)
-	logCacheCreationTokensRe   = regexp.MustCompile(`"cache_creation_tokens"\s*:\s*(\d+)`)
-	logCacheCreationTokens5mRe = regexp.MustCompile(`"cache_creation_tokens_5m"\s*:\s*(\d+)`)
-	logCacheCreationTokens1hRe = regexp.MustCompile(`"cache_creation_tokens_1h"\s*:\s*(\d+)`)
-	logUpstreamCostUSDRe       = regexp.MustCompile(`"upstream_cost_usd"\s*:\s*([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)`)
-	logAdminChannelNameRe      = regexp.MustCompile(`"channel_name"\s*:\s*"([^"\\]*)"`)
-	logFrtMsRegex              = regexp.MustCompile(`"frt"\s*:\s*([0-9]+(?:\.[0-9]+)?)`)
+	logCacheTokensRe            = regexp.MustCompile(`"cache_tokens"\s*:\s*(\d+)`)
+	logCacheWriteTokensRe       = regexp.MustCompile(`"cache_write_tokens"\s*:\s*(\d+)`)
+	logCacheCreationTokensRe    = regexp.MustCompile(`"cache_creation_tokens"\s*:\s*(\d+)`)
+	logCacheCreationTokens5mRe  = regexp.MustCompile(`"cache_creation_tokens_5m"\s*:\s*(\d+)`)
+	logCacheCreationTokens1hRe  = regexp.MustCompile(`"cache_creation_tokens_1h"\s*:\s*(\d+)`)
+	logCacheCreationTokens12hRe = regexp.MustCompile(`"cache_creation_tokens_12h"\s*:\s*(\d+)`)
+	logInputTokensTotalRe       = regexp.MustCompile(`"input_tokens_total"\s*:\s*(\d+)`)
+	logAnthropicSemanticRe      = regexp.MustCompile(`"usage_semantic"\s*:\s*"anthropic"`)
+	logUpstreamCostUSDRe        = regexp.MustCompile(`"upstream_cost_usd"\s*:\s*([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)`)
+	logAdminChannelNameRe       = regexp.MustCompile(`"channel_name"\s*:\s*"([^"\\]*)"`)
+	logFrtMsRegex               = regexp.MustCompile(`"frt"\s*:\s*([0-9]+(?:\.[0-9]+)?)`)
 )
 
 // ParseLogOtherFrtMs extracts the upstream first-token time (ms) from a Log.Other JSON string.
@@ -3445,7 +3448,12 @@ func parseLogOtherCacheTokens(other string) (cacheRead int64, cacheWrite int64) 
 			cacheRead = v
 		}
 	}
-	var cw5m, cw1h int64
+	if m := logCacheWriteTokensRe.FindStringSubmatch(other); len(m) == 2 {
+		if v, err := strconv.ParseInt(m[1], 10, 64); err == nil && v > 0 {
+			return cacheRead, v
+		}
+	}
+	var cw5m, cw1h, cw12h int64
 	if m := logCacheCreationTokens5mRe.FindStringSubmatch(other); len(m) == 2 {
 		if v, err := strconv.ParseInt(m[1], 10, 64); err == nil && v > 0 {
 			cw5m = v
@@ -3456,18 +3464,43 @@ func parseLogOtherCacheTokens(other string) (cacheRead int64, cacheWrite int64) 
 			cw1h = v
 		}
 	}
-	if cw5m > 0 || cw1h > 0 {
-		cacheWrite = cw5m + cw1h
-	} else if m := logCacheWriteTokensRe.FindStringSubmatch(other); len(m) == 2 {
+	if m := logCacheCreationTokens12hRe.FindStringSubmatch(other); len(m) == 2 {
 		if v, err := strconv.ParseInt(m[1], 10, 64); err == nil && v > 0 {
-			cacheWrite = v
+			cw12h = v
 		}
+	}
+	if cw5m > 0 || cw1h > 0 || cw12h > 0 {
+		cacheWrite = cw5m + cw1h + cw12h
 	} else if m := logCacheCreationTokensRe.FindStringSubmatch(other); len(m) == 2 {
 		if v, err := strconv.ParseInt(m[1], 10, 64); err == nil && v > 0 {
 			cacheWrite = v
 		}
 	}
 	return cacheRead, cacheWrite
+}
+
+// ParseLogOtherHealthCacheMetrics normalizes total input tokens, cache-read tokens,
+// and cache-write tokens across Anthropic (where prompt_tokens excludes cache) and
+// OpenAI/Gemini (where prompt_tokens or input_tokens_total includes cache_tokens).
+func ParseLogOtherHealthCacheMetrics(promptTokens int, other string) (totalInput int64, cacheRead int64, cacheWrite int64) {
+	cacheRead, cacheWrite = parseLogOtherCacheTokens(other)
+	prompt := int64(max(promptTokens, 0))
+	if strings.Contains(other, "usage_semantic") && logAnthropicSemanticRe.MatchString(other) {
+		totalInput = prompt + cacheRead + cacheWrite
+	} else if strings.Contains(other, "input_tokens_total") {
+		if m := logInputTokensTotalRe.FindStringSubmatch(other); len(m) == 2 {
+			if v, err := strconv.ParseInt(m[1], 10, 64); err == nil && v > 0 {
+				totalInput = max(v, cacheRead)
+			}
+		}
+	}
+	if totalInput <= 0 {
+		totalInput = max(prompt, cacheRead+cacheWrite)
+	}
+	if cacheRead > totalInput {
+		totalInput = cacheRead
+	}
+	return totalInput, cacheRead, cacheWrite
 }
 
 func UpstreamAccountKey(acc UpstreamAccountSource) string {

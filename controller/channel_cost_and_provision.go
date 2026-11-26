@@ -3010,132 +3010,240 @@ func computeHealthDistribution(samples []float64) HealthPercentiles {
 }
 
 type ModelChannelHealthDetail struct {
-	ChannelID        int     `json:"channel_id"`
-	ChannelName      string  `json:"channel_name"`
-	ChannelType      int     `json:"channel_type"`
-	ChannelStatus    int     `json:"channel_status"`
-	Model            string  `json:"model"`
-	RequestCount     int64   `json:"request_count"`
-	SuccessCount     int64   `json:"success_count"`
-	ErrorCount       int64   `json:"error_count"`
-	Availability     float64 `json:"availability"`
-	AvgPromptTokens  float64 `json:"avg_prompt_tokens"`
-	AvgOutputTokens  float64 `json:"avg_output_tokens"`
-	AvgTtftSec       float64 `json:"avg_ttft_sec"`
-	MedianTtftSec    float64 `json:"median_ttft_sec"`
-	P95TtftSec       float64 `json:"p95_ttft_sec"`
-	PrefillTpsAvg    float64 `json:"prefill_tps_avg"`
-	PrefillTpsMedian float64 `json:"prefill_tps_median"`
-	DecodeTpsP5Low   float64 `json:"decode_tps_p5_low"`
-	DecodeTpsMedian  float64 `json:"decode_tps_median"`
-	DecodeTpsTrim90  float64 `json:"decode_tps_trimmed_90"`
-	DecodeTpsP95High float64 `json:"decode_tps_p95_high"`
-	DecodeTpsAvg     float64 `json:"decode_tps_avg"`
-	TotalTpsP5Low    float64 `json:"total_tps_p5_low"`
-	TotalTpsMedian   float64 `json:"total_tps_median"`
-	TotalTpsTrim90   float64 `json:"total_tps_trimmed_90"`
-	TotalTpsP95High  float64 `json:"total_tps_p95_high"`
-	TotalTpsAvg      float64 `json:"total_tps_avg"`
+	ChannelID           int     `json:"channel_id"`
+	ChannelName         string  `json:"channel_name"`
+	ChannelType         int     `json:"channel_type"`
+	ChannelStatus       int     `json:"channel_status"`
+	Model               string  `json:"model"`
+	RequestCount        int64   `json:"request_count"`
+	SuccessCount        int64   `json:"success_count"`
+	ErrorCount          int64   `json:"error_count"`
+	Availability        float64 `json:"availability"`
+	AvgPromptTokens     float64 `json:"avg_prompt_tokens"`
+	AvgOutputTokens     float64 `json:"avg_output_tokens"`
+	AvgTtftSec          float64 `json:"avg_ttft_sec"`
+	MedianTtftSec       float64 `json:"median_ttft_sec"`
+	P95TtftSec          float64 `json:"p95_ttft_sec"`
+	PrefillTpsAvg       float64 `json:"prefill_tps_avg"`
+	PrefillTpsMedian    float64 `json:"prefill_tps_median"`
+	DecodeTpsP5Low      float64 `json:"decode_tps_p5_low"`
+	DecodeTpsMedian     float64 `json:"decode_tps_median"`
+	DecodeTpsTrim90     float64 `json:"decode_tps_trimmed_90"`
+	DecodeTpsP95High    float64 `json:"decode_tps_p95_high"`
+	DecodeTpsAvg        float64 `json:"decode_tps_avg"`
+	TotalTpsP5Low       float64 `json:"total_tps_p5_low"`
+	TotalTpsMedian      float64 `json:"total_tps_median"`
+	TotalTpsTrim90      float64 `json:"total_tps_trimmed_90"`
+	TotalTpsP95High     float64 `json:"total_tps_p95_high"`
+	TotalTpsAvg         float64 `json:"total_tps_avg"`
+	TotalInputTokens    int64   `json:"total_input_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheWriteTokens    int64   `json:"cache_write_tokens"`
+	CacheHitCallCount   int64   `json:"cache_hit_call_count"`
+	CacheHitCallRatio   float64 `json:"cache_hit_call_ratio"`
+	WeightedCacheRate   float64 `json:"weighted_cache_rate"`
+	CacheRateP5Low      float64 `json:"cache_rate_p5_low"`
+	CacheRateMedian     float64 `json:"cache_rate_median"`
+	CacheRateP95High    float64 `json:"cache_rate_p95_high"`
+	CacheRateAvg        float64 `json:"cache_rate_avg"`
+	HitCacheRateP5Low   float64 `json:"hit_cache_rate_p5_low"`
+	HitCacheRateMedian  float64 `json:"hit_cache_rate_median"`
+	HitCacheRateP95High float64 `json:"hit_cache_rate_p95_high"`
+	HitCacheRateAvg     float64 `json:"hit_cache_rate_avg"`
 }
 
 type ModelHealthAnalysisRow struct {
-	Model            string                     `json:"model"`
-	ChannelCount     int                        `json:"channel_count"`
-	RequestCount     int64                      `json:"request_count"`
-	SuccessCount     int64                      `json:"success_count"`
-	ErrorCount       int64                      `json:"error_count"`
-	Availability     float64                    `json:"availability"`
-	AvgPromptTokens  float64                    `json:"avg_prompt_tokens"`
-	AvgOutputTokens  float64                    `json:"avg_output_tokens"`
-	AvgTtftSec       float64                    `json:"avg_ttft_sec"`
-	MedianTtftSec    float64                    `json:"median_ttft_sec"`
-	P95TtftSec       float64                    `json:"p95_ttft_sec"`
-	PrefillTpsAvg    float64                    `json:"prefill_tps_avg"`
-	PrefillTpsMedian float64                    `json:"prefill_tps_median"`
-	DecodeTpsP5Low   float64                    `json:"decode_tps_p5_low"`
-	DecodeTpsMedian  float64                    `json:"decode_tps_median"`
-	DecodeTpsTrim90  float64                    `json:"decode_tps_trimmed_90"`
-	DecodeTpsP95High float64                    `json:"decode_tps_p95_high"`
-	DecodeTpsAvg     float64                    `json:"decode_tps_avg"`
-	TotalTpsP5Low    float64                    `json:"total_tps_p5_low"`
-	TotalTpsMedian   float64                    `json:"total_tps_median"`
-	TotalTpsTrim90   float64                    `json:"total_tps_trimmed_90"`
-	TotalTpsP95High  float64                    `json:"total_tps_p95_high"`
-	TotalTpsAvg      float64                    `json:"total_tps_avg"`
-	Channels         []ModelChannelHealthDetail `json:"channels"`
+	Model               string                     `json:"model"`
+	ChannelCount        int                        `json:"channel_count"`
+	RequestCount        int64                      `json:"request_count"`
+	SuccessCount        int64                      `json:"success_count"`
+	ErrorCount          int64                      `json:"error_count"`
+	Availability        float64                    `json:"availability"`
+	AvgPromptTokens     float64                    `json:"avg_prompt_tokens"`
+	AvgOutputTokens     float64                    `json:"avg_output_tokens"`
+	AvgTtftSec          float64                    `json:"avg_ttft_sec"`
+	MedianTtftSec       float64                    `json:"median_ttft_sec"`
+	P95TtftSec          float64                    `json:"p95_ttft_sec"`
+	PrefillTpsAvg       float64                    `json:"prefill_tps_avg"`
+	PrefillTpsMedian    float64                    `json:"prefill_tps_median"`
+	DecodeTpsP5Low      float64                    `json:"decode_tps_p5_low"`
+	DecodeTpsMedian     float64                    `json:"decode_tps_median"`
+	DecodeTpsTrim90     float64                    `json:"decode_tps_trimmed_90"`
+	DecodeTpsP95High    float64                    `json:"decode_tps_p95_high"`
+	DecodeTpsAvg        float64                    `json:"decode_tps_avg"`
+	TotalTpsP5Low       float64                    `json:"total_tps_p5_low"`
+	TotalTpsMedian      float64                    `json:"total_tps_median"`
+	TotalTpsTrim90      float64                    `json:"total_tps_trimmed_90"`
+	TotalTpsP95High     float64                    `json:"total_tps_p95_high"`
+	TotalTpsAvg         float64                    `json:"total_tps_avg"`
+	TotalInputTokens    int64                      `json:"total_input_tokens"`
+	CacheReadTokens     int64                      `json:"cache_read_tokens"`
+	CacheWriteTokens    int64                      `json:"cache_write_tokens"`
+	CacheHitCallCount   int64                      `json:"cache_hit_call_count"`
+	CacheHitCallRatio   float64                    `json:"cache_hit_call_ratio"`
+	WeightedCacheRate   float64                    `json:"weighted_cache_rate"`
+	CacheRateP5Low      float64                    `json:"cache_rate_p5_low"`
+	CacheRateMedian     float64                    `json:"cache_rate_median"`
+	CacheRateP95High    float64                    `json:"cache_rate_p95_high"`
+	CacheRateAvg        float64                    `json:"cache_rate_avg"`
+	HitCacheRateP5Low   float64                    `json:"hit_cache_rate_p5_low"`
+	HitCacheRateMedian  float64                    `json:"hit_cache_rate_median"`
+	HitCacheRateP95High float64                    `json:"hit_cache_rate_p95_high"`
+	HitCacheRateAvg     float64                    `json:"hit_cache_rate_avg"`
+	Channels            []ModelChannelHealthDetail `json:"channels"`
 }
 
 type ChannelHealthSummaryRow struct {
-	ChannelID        int                        `json:"channel_id"`
-	ChannelName      string                     `json:"channel_name"`
-	ChannelType      int                        `json:"channel_type"`
-	ChannelStatus    int                        `json:"channel_status"`
-	ModelCount       int                        `json:"model_count"`
-	RequestCount     int64                      `json:"request_count"`
-	SuccessCount     int64                      `json:"success_count"`
-	ErrorCount       int64                      `json:"error_count"`
-	Availability     float64                    `json:"availability"`
-	AvgPromptTokens  float64                    `json:"avg_prompt_tokens"`
-	AvgOutputTokens  float64                    `json:"avg_output_tokens"`
-	AvgTtftSec       float64                    `json:"avg_ttft_sec"`
-	MedianTtftSec    float64                    `json:"median_ttft_sec"`
-	P95TtftSec       float64                    `json:"p95_ttft_sec"`
-	PrefillTpsAvg    float64                    `json:"prefill_tps_avg"`
-	PrefillTpsMedian float64                    `json:"prefill_tps_median"`
-	DecodeTpsP5Low   float64                    `json:"decode_tps_p5_low"`
-	DecodeTpsMedian  float64                    `json:"decode_tps_median"`
-	DecodeTpsTrim90  float64                    `json:"decode_tps_trimmed_90"`
-	DecodeTpsP95High float64                    `json:"decode_tps_p95_high"`
-	DecodeTpsAvg     float64                    `json:"decode_tps_avg"`
-	TotalTpsP5Low    float64                    `json:"total_tps_p5_low"`
-	TotalTpsMedian   float64                    `json:"total_tps_median"`
-	TotalTpsTrim90   float64                    `json:"total_tps_trimmed_90"`
-	TotalTpsP95High  float64                    `json:"total_tps_p95_high"`
-	TotalTpsAvg      float64                    `json:"total_tps_avg"`
-	Models           []ModelChannelHealthDetail `json:"models"`
+	ChannelID           int                        `json:"channel_id"`
+	ChannelName         string                     `json:"channel_name"`
+	ChannelType         int                        `json:"channel_type"`
+	ChannelStatus       int                        `json:"channel_status"`
+	ModelCount          int                        `json:"model_count"`
+	RequestCount        int64                      `json:"request_count"`
+	SuccessCount        int64                      `json:"success_count"`
+	ErrorCount          int64                      `json:"error_count"`
+	Availability        float64                    `json:"availability"`
+	AvgPromptTokens     float64                    `json:"avg_prompt_tokens"`
+	AvgOutputTokens     float64                    `json:"avg_output_tokens"`
+	AvgTtftSec          float64                    `json:"avg_ttft_sec"`
+	MedianTtftSec       float64                    `json:"median_ttft_sec"`
+	P95TtftSec          float64                    `json:"p95_ttft_sec"`
+	PrefillTpsAvg       float64                    `json:"prefill_tps_avg"`
+	PrefillTpsMedian    float64                    `json:"prefill_tps_median"`
+	DecodeTpsP5Low      float64                    `json:"decode_tps_p5_low"`
+	DecodeTpsMedian     float64                    `json:"decode_tps_median"`
+	DecodeTpsTrim90     float64                    `json:"decode_tps_trimmed_90"`
+	DecodeTpsP95High    float64                    `json:"decode_tps_p95_high"`
+	DecodeTpsAvg        float64                    `json:"decode_tps_avg"`
+	TotalTpsP5Low       float64                    `json:"total_tps_p5_low"`
+	TotalTpsMedian      float64                    `json:"total_tps_median"`
+	TotalTpsTrim90      float64                    `json:"total_tps_trimmed_90"`
+	TotalTpsP95High     float64                    `json:"total_tps_p95_high"`
+	TotalTpsAvg         float64                    `json:"total_tps_avg"`
+	TotalInputTokens    int64                      `json:"total_input_tokens"`
+	CacheReadTokens     int64                      `json:"cache_read_tokens"`
+	CacheWriteTokens    int64                      `json:"cache_write_tokens"`
+	CacheHitCallCount   int64                      `json:"cache_hit_call_count"`
+	CacheHitCallRatio   float64                    `json:"cache_hit_call_ratio"`
+	WeightedCacheRate   float64                    `json:"weighted_cache_rate"`
+	CacheRateP5Low      float64                    `json:"cache_rate_p5_low"`
+	CacheRateMedian     float64                    `json:"cache_rate_median"`
+	CacheRateP95High    float64                    `json:"cache_rate_p95_high"`
+	CacheRateAvg        float64                    `json:"cache_rate_avg"`
+	HitCacheRateP5Low   float64                    `json:"hit_cache_rate_p5_low"`
+	HitCacheRateMedian  float64                    `json:"hit_cache_rate_median"`
+	HitCacheRateP95High float64                    `json:"hit_cache_rate_p95_high"`
+	HitCacheRateAvg     float64                    `json:"hit_cache_rate_avg"`
+	Models              []ModelChannelHealthDetail `json:"models"`
 }
 
 type ModelHealthSummary struct {
-	ModelCount       int     `json:"model_count"`
-	ChannelCount     int     `json:"channel_count"`
-	RequestCount     int64   `json:"request_count"`
-	SuccessCount     int64   `json:"success_count"`
-	ErrorCount       int64   `json:"error_count"`
-	Availability     float64 `json:"availability"`
-	AvgTtftSec       float64 `json:"avg_ttft_sec"`
-	MedianTtftSec    float64 `json:"median_ttft_sec"`
-	PrefillTpsAvg    float64 `json:"prefill_tps_avg"`
-	PrefillTpsMedian float64 `json:"prefill_tps_median"`
-	DecodeTpsP5Low   float64 `json:"decode_tps_p5_low"`
-	DecodeTpsMedian  float64 `json:"decode_tps_median"`
-	DecodeTpsTrim90  float64 `json:"decode_tps_trimmed_90"`
-	DecodeTpsP95High float64 `json:"decode_tps_p95_high"`
-	DecodeTpsAvg     float64 `json:"decode_tps_avg"`
-	TotalTpsP5Low    float64 `json:"total_tps_p5_low"`
-	TotalTpsMedian   float64 `json:"total_tps_median"`
-	TotalTpsTrim90   float64 `json:"total_tps_trimmed_90"`
-	TotalTpsP95High  float64 `json:"total_tps_p95_high"`
-	TotalTpsAvg      float64 `json:"total_tps_avg"`
+	ModelCount          int     `json:"model_count"`
+	ChannelCount        int     `json:"channel_count"`
+	RequestCount        int64   `json:"request_count"`
+	SuccessCount        int64   `json:"success_count"`
+	ErrorCount          int64   `json:"error_count"`
+	Availability        float64 `json:"availability"`
+	AvgTtftSec          float64 `json:"avg_ttft_sec"`
+	MedianTtftSec       float64 `json:"median_ttft_sec"`
+	P95TtftSec          float64 `json:"p95_ttft_sec"`
+	PrefillTpsAvg       float64 `json:"prefill_tps_avg"`
+	PrefillTpsMedian    float64 `json:"prefill_tps_median"`
+	DecodeTpsP5Low      float64 `json:"decode_tps_p5_low"`
+	DecodeTpsMedian     float64 `json:"decode_tps_median"`
+	DecodeTpsTrim90     float64 `json:"decode_tps_trimmed_90"`
+	DecodeTpsP95High    float64 `json:"decode_tps_p95_high"`
+	DecodeTpsAvg        float64 `json:"decode_tps_avg"`
+	TotalTpsP5Low       float64 `json:"total_tps_p5_low"`
+	TotalTpsMedian      float64 `json:"total_tps_median"`
+	TotalTpsTrim90      float64 `json:"total_tps_trimmed_90"`
+	TotalTpsP95High     float64 `json:"total_tps_p95_high"`
+	TotalTpsAvg         float64 `json:"total_tps_avg"`
+	TotalInputTokens    int64   `json:"total_input_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheWriteTokens    int64   `json:"cache_write_tokens"`
+	CacheHitCallCount   int64   `json:"cache_hit_call_count"`
+	CacheHitCallRatio   float64 `json:"cache_hit_call_ratio"`
+	WeightedCacheRate   float64 `json:"weighted_cache_rate"`
+	CacheRateP5Low      float64 `json:"cache_rate_p5_low"`
+	CacheRateMedian     float64 `json:"cache_rate_median"`
+	CacheRateP95High    float64 `json:"cache_rate_p95_high"`
+	CacheRateAvg        float64 `json:"cache_rate_avg"`
+	HitCacheRateP5Low   float64 `json:"hit_cache_rate_p5_low"`
+	HitCacheRateMedian  float64 `json:"hit_cache_rate_median"`
+	HitCacheRateP95High float64 `json:"hit_cache_rate_p95_high"`
+	HitCacheRateAvg     float64 `json:"hit_cache_rate_avg"`
+}
+
+type ModelHealthTrendPoint struct {
+	Timestamp           int64   `json:"timestamp"`
+	RequestCount        int64   `json:"request_count"`
+	SuccessCount        int64   `json:"success_count"`
+	ErrorCount          int64   `json:"error_count"`
+	Availability        float64 `json:"availability"`
+	AvgTtftSec          float64 `json:"avg_ttft_sec"`
+	MedianTtftSec       float64 `json:"median_ttft_sec"`
+	P95TtftSec          float64 `json:"p95_ttft_sec"`
+	DecodeTpsP5Low      float64 `json:"decode_tps_p5_low"`
+	DecodeTpsTrim90     float64 `json:"decode_tps_trimmed_90"`
+	DecodeTpsP95High    float64 `json:"decode_tps_p95_high"`
+	WeightedCacheRate   float64 `json:"weighted_cache_rate"`
+	CacheRateP5Low      float64 `json:"cache_rate_p5_low"`
+	CacheRateMedian     float64 `json:"cache_rate_median"`
+	CacheRateP95High    float64 `json:"cache_rate_p95_high"`
+	HitCacheRateP5Low   float64 `json:"hit_cache_rate_p5_low"`
+	HitCacheRateMedian  float64 `json:"hit_cache_rate_median"`
+	HitCacheRateP95High float64 `json:"hit_cache_rate_p95_high"`
+}
+
+type ChannelHealthTrendSeries struct {
+	ChannelID   int                     `json:"channel_id"`
+	ChannelName string                  `json:"channel_name"`
+	ChannelType int                     `json:"channel_type"`
+	TotalCalls  int64                   `json:"total_calls"`
+	Points      []ModelHealthTrendPoint `json:"points"`
 }
 
 type healthSampleCollector struct {
-	successCount int64
-	errorCount   int64
-	promptSum    int64
-	outputSum    int64
-	ttftSec      []float64
-	prefillTps   []float64
-	decodeTps    []float64
-	totalTps     []float64
+	successCount  int64
+	errorCount    int64
+	promptSum     int64
+	outputSum     int64
+	totalInputSum int64
+	cacheReadSum  int64
+	cacheWriteSum int64
+	cacheHitCalls int64
+	ttftSec       []float64
+	prefillTps    []float64
+	decodeTps     []float64
+	totalTps      []float64
+	cacheRates    []float64
+	hitCacheRates []float64
 }
 
-func (hc *healthSampleCollector) addConsumeSample(promptTokens int, completionTokens int, useTimeSec int, isStream bool, frtMs float64) {
+func (hc *healthSampleCollector) addConsumeSample(promptTokens int, completionTokens int, useTimeSec int, isStream bool, frtMs float64, totalInput int64, cacheRead int64, cacheWrite int64) {
 	hc.successCount++
-	if promptTokens > 0 {
-		hc.promptSum += int64(promptTokens)
+	effectivePrompt := max(int64(promptTokens), totalInput)
+	if effectivePrompt > 0 {
+		hc.promptSum += effectivePrompt
 	}
 	if completionTokens > 0 {
 		hc.outputSum += int64(completionTokens)
+	}
+	if totalInput > 0 {
+		hc.totalInputSum += totalInput
+		rate := min(max((float64(cacheRead)/float64(totalInput))*100.0, 0.0), 100.0)
+		hc.cacheRates = append(hc.cacheRates, rate)
+		if cacheRead > 0 {
+			hc.cacheHitCalls++
+			hc.hitCacheRates = append(hc.hitCacheRates, rate)
+		}
+	}
+	if cacheRead > 0 {
+		hc.cacheReadSum += cacheRead
+	}
+	if cacheWrite > 0 {
+		hc.cacheWriteSum += cacheWrite
 	}
 
 	totalDurSec := float64(useTimeSec)
@@ -3144,8 +3252,8 @@ func (hc *healthSampleCollector) addConsumeSample(promptTokens int, completionTo
 		ttftS = frtMs / 1000.0
 		if ttftS <= 600.0 {
 			hc.ttftSec = append(hc.ttftSec, ttftS)
-			if promptTokens > 0 && ttftS >= 0.01 {
-				pTps := float64(promptTokens) / ttftS
+			if effectivePrompt > 0 && ttftS >= 0.01 {
+				pTps := float64(effectivePrompt) / ttftS
 				if pTps > 0 && pTps <= 5_000_000 {
 					hc.prefillTps = append(hc.prefillTps, pTps)
 				}
@@ -3196,6 +3304,7 @@ func GetModelHealthAnalysis(c *gin.Context) {
 	}
 
 	type rawHealthLog struct {
+		CreatedAt        int64  `gorm:"column:created_at"`
 		Type             int    `gorm:"column:type"`
 		ModelName        string `gorm:"column:model_name"`
 		ChannelID        int    `gorm:"column:channel_id"`
@@ -3209,7 +3318,7 @@ func GetModelHealthAnalysis(c *gin.Context) {
 	var logRows []rawHealthLog
 	if logDB != nil {
 		tx := logDB.Model(&model.Log{}).
-			Select("type, model_name, channel_id, prompt_tokens, completion_tokens, use_time, is_stream, other").
+			Select("created_at, type, model_name, channel_id, prompt_tokens, completion_tokens, use_time, is_stream, other").
 			Where("type IN ?", []int{model.LogTypeConsume, model.LogTypeError})
 		if startTs > 0 {
 			tx = tx.Where("created_at >= ?", startTs)
@@ -3218,6 +3327,17 @@ func GetModelHealthAnalysis(c *gin.Context) {
 			tx = tx.Where("created_at <= ?", endTs)
 		}
 		_ = tx.Order("id DESC").Limit(50000).Scan(&logRows).Error
+	}
+
+	effectiveEnd := endTs
+	if effectiveEnd <= 0 {
+		effectiveEnd = time.Now().Unix()
+	}
+	bucketSec := int64(86400)
+	trendGranularity := "day"
+	if startTs > 0 && effectiveEnd > startTs && effectiveEnd-startTs <= 2*86400 {
+		bucketSec = 3600
+		trendGranularity = "hour"
 	}
 
 	type pairKey struct {
@@ -3229,6 +3349,8 @@ func GetModelHealthAnalysis(c *gin.Context) {
 	modelCollectors := make(map[string]*healthSampleCollector)
 	channelCollectors := make(map[int]*healthSampleCollector)
 	globalCollector := &healthSampleCollector{}
+	globalBuckets := make(map[int64]*healthSampleCollector)
+	channelBuckets := make(map[int]map[int64]*healthSampleCollector)
 
 	getPairCollector := func(m string, chID int) *healthSampleCollector {
 		k := pairKey{model: m, channelID: chID}
@@ -3252,6 +3374,27 @@ func GetModelHealthAnalysis(c *gin.Context) {
 		if !ok {
 			col = &healthSampleCollector{}
 			channelCollectors[chID] = col
+		}
+		return col
+	}
+	getGlobalBucket := func(bTs int64) *healthSampleCollector {
+		col, ok := globalBuckets[bTs]
+		if !ok {
+			col = &healthSampleCollector{}
+			globalBuckets[bTs] = col
+		}
+		return col
+	}
+	getChannelBucket := func(chID int, bTs int64) *healthSampleCollector {
+		byTs := channelBuckets[chID]
+		if byTs == nil {
+			byTs = make(map[int64]*healthSampleCollector)
+			channelBuckets[chID] = byTs
+		}
+		col, ok := byTs[bTs]
+		if !ok {
+			col = &healthSampleCollector{}
+			byTs[bTs] = col
 		}
 		return col
 	}
@@ -3289,18 +3432,35 @@ func GetModelHealthAnalysis(c *gin.Context) {
 		mc := getModelCollector(m)
 		cc := getChannelCollector(row.ChannelID)
 
+		hasBucket := row.CreatedAt > 0
+		var gb, cb *healthSampleCollector
+		if hasBucket {
+			bTs := (row.CreatedAt / bucketSec) * bucketSec
+			gb = getGlobalBucket(bTs)
+			cb = getChannelBucket(row.ChannelID, bTs)
+		}
+
 		if row.Type == model.LogTypeError {
 			pc.errorCount++
 			mc.errorCount++
 			cc.errorCount++
 			globalCollector.errorCount++
+			if hasBucket {
+				gb.errorCount++
+				cb.errorCount++
+			}
 			continue
 		}
 		frtMs := model.ParseLogOtherFrtMs(row.Other)
-		pc.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs)
-		mc.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs)
-		cc.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs)
-		globalCollector.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs)
+		totalInput, cacheRead, cacheWrite := model.ParseLogOtherHealthCacheMetrics(row.PromptTokens, row.Other)
+		pc.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs, totalInput, cacheRead, cacheWrite)
+		mc.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs, totalInput, cacheRead, cacheWrite)
+		cc.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs, totalInput, cacheRead, cacheWrite)
+		globalCollector.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs, totalInput, cacheRead, cacheWrite)
+		if hasBucket {
+			gb.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs, totalInput, cacheRead, cacheWrite)
+			cb.addConsumeSample(row.PromptTokens, row.CompletionTokens, row.UseTime, row.IsStream, frtMs, totalInput, cacheRead, cacheWrite)
+		}
 	}
 
 	// Supplement with in-memory channel telemetry when no historical logs exist for a pair
@@ -3367,34 +3527,89 @@ func GetModelHealthAnalysis(c *gin.Context) {
 		prefillDist := computeHealthDistribution(hc.prefillTps)
 		decodeDist := computeHealthDistribution(hc.decodeTps)
 		totalDist := computeHealthDistribution(hc.totalTps)
+		cacheDist := computeHealthDistribution(hc.cacheRates)
+		hitCacheDist := computeHealthDistribution(hc.hitCacheRates)
+
+		weightedCacheRate := 0.0
+		if hc.totalInputSum > 0 && hc.cacheReadSum > 0 {
+			weightedCacheRate = common.RoundFloat2(min((float64(hc.cacheReadSum)/float64(hc.totalInputSum))*100.0, 100.0))
+		}
+		cacheHitRatio := 0.0
+		if hc.successCount > 0 && hc.cacheHitCalls > 0 {
+			cacheHitRatio = common.RoundFloat2(min((float64(hc.cacheHitCalls)/float64(hc.successCount))*100.0, 100.0))
+		}
 
 		return ModelChannelHealthDetail{
-			ChannelID:        chID,
-			ChannelName:      chName,
-			ChannelType:      chType,
-			ChannelStatus:    chStatus,
-			Model:            m,
-			RequestCount:     reqCount,
-			SuccessCount:     hc.successCount,
-			ErrorCount:       hc.errorCount,
-			Availability:     avail,
-			AvgPromptTokens:  avgPrompt,
-			AvgOutputTokens:  avgOutput,
-			AvgTtftSec:       ttftDist.Mean,
-			MedianTtftSec:    ttftDist.Median,
-			P95TtftSec:       ttftDist.P95High,
-			PrefillTpsAvg:    prefillDist.Mean,
-			PrefillTpsMedian: prefillDist.Trimmed90,
-			DecodeTpsP5Low:   decodeDist.P5Low,
-			DecodeTpsMedian:  decodeDist.Median,
-			DecodeTpsTrim90:  decodeDist.Trimmed90,
-			DecodeTpsP95High: decodeDist.P95High,
-			DecodeTpsAvg:     decodeDist.Mean,
-			TotalTpsP5Low:    totalDist.P5Low,
-			TotalTpsMedian:   totalDist.Median,
-			TotalTpsTrim90:   totalDist.Trimmed90,
-			TotalTpsP95High:  totalDist.P95High,
-			TotalTpsAvg:      totalDist.Mean,
+			ChannelID:           chID,
+			ChannelName:         chName,
+			ChannelType:         chType,
+			ChannelStatus:       chStatus,
+			Model:               m,
+			RequestCount:        reqCount,
+			SuccessCount:        hc.successCount,
+			ErrorCount:          hc.errorCount,
+			Availability:        avail,
+			AvgPromptTokens:     avgPrompt,
+			AvgOutputTokens:     avgOutput,
+			AvgTtftSec:          ttftDist.Mean,
+			MedianTtftSec:       ttftDist.Median,
+			P95TtftSec:          ttftDist.P95High,
+			PrefillTpsAvg:       prefillDist.Mean,
+			PrefillTpsMedian:    prefillDist.Trimmed90,
+			DecodeTpsP5Low:      decodeDist.P5Low,
+			DecodeTpsMedian:     decodeDist.Median,
+			DecodeTpsTrim90:     decodeDist.Trimmed90,
+			DecodeTpsP95High:    decodeDist.P95High,
+			DecodeTpsAvg:        decodeDist.Mean,
+			TotalTpsP5Low:       totalDist.P5Low,
+			TotalTpsMedian:      totalDist.Median,
+			TotalTpsTrim90:      totalDist.Trimmed90,
+			TotalTpsP95High:     totalDist.P95High,
+			TotalTpsAvg:         totalDist.Mean,
+			TotalInputTokens:    hc.totalInputSum,
+			CacheReadTokens:     hc.cacheReadSum,
+			CacheWriteTokens:    hc.cacheWriteSum,
+			CacheHitCallCount:   hc.cacheHitCalls,
+			CacheHitCallRatio:   cacheHitRatio,
+			WeightedCacheRate:   weightedCacheRate,
+			CacheRateP5Low:      cacheDist.P5Low,
+			CacheRateMedian:     cacheDist.Median,
+			CacheRateP95High:    cacheDist.P95High,
+			CacheRateAvg:        cacheDist.Mean,
+			HitCacheRateP5Low:   hitCacheDist.P5Low,
+			HitCacheRateMedian:  hitCacheDist.Median,
+			HitCacheRateP95High: hitCacheDist.P95High,
+			HitCacheRateAvg:     hitCacheDist.Mean,
+		}
+	}
+
+	buildTrendPoint := func(ts int64, hc *healthSampleCollector) ModelHealthTrendPoint {
+		if hc == nil {
+			return ModelHealthTrendPoint{
+				Timestamp:    ts,
+				Availability: 100.0,
+			}
+		}
+		d := buildDetailFromCollector("", 0, hc)
+		return ModelHealthTrendPoint{
+			Timestamp:           ts,
+			RequestCount:        d.RequestCount,
+			SuccessCount:        d.SuccessCount,
+			ErrorCount:          d.ErrorCount,
+			Availability:        d.Availability,
+			AvgTtftSec:          d.AvgTtftSec,
+			MedianTtftSec:       d.MedianTtftSec,
+			P95TtftSec:          d.P95TtftSec,
+			DecodeTpsP5Low:      d.DecodeTpsP5Low,
+			DecodeTpsTrim90:     d.DecodeTpsTrim90,
+			DecodeTpsP95High:    d.DecodeTpsP95High,
+			WeightedCacheRate:   d.WeightedCacheRate,
+			CacheRateP5Low:      d.CacheRateP5Low,
+			CacheRateMedian:     d.CacheRateMedian,
+			CacheRateP95High:    d.CacheRateP95High,
+			HitCacheRateP5Low:   d.HitCacheRateP5Low,
+			HitCacheRateMedian:  d.HitCacheRateMedian,
+			HitCacheRateP95High: d.HitCacheRateP95High,
 		}
 	}
 
@@ -3434,30 +3649,44 @@ func GetModelHealthAnalysis(c *gin.Context) {
 
 		mSummary := buildDetailFromCollector(m, 0, mc)
 		modelRows = append(modelRows, ModelHealthAnalysisRow{
-			Model:            m,
-			ChannelCount:     len(chDetails),
-			RequestCount:     mSummary.RequestCount,
-			SuccessCount:     mSummary.SuccessCount,
-			ErrorCount:       mSummary.ErrorCount,
-			Availability:     mSummary.Availability,
-			AvgPromptTokens:  mSummary.AvgPromptTokens,
-			AvgOutputTokens:  mSummary.AvgOutputTokens,
-			AvgTtftSec:       mSummary.AvgTtftSec,
-			MedianTtftSec:    mSummary.MedianTtftSec,
-			P95TtftSec:       mSummary.P95TtftSec,
-			PrefillTpsAvg:    mSummary.PrefillTpsAvg,
-			PrefillTpsMedian: mSummary.PrefillTpsMedian,
-			DecodeTpsP5Low:   mSummary.DecodeTpsP5Low,
-			DecodeTpsMedian:  mSummary.DecodeTpsMedian,
-			DecodeTpsTrim90:  mSummary.DecodeTpsTrim90,
-			DecodeTpsP95High: mSummary.DecodeTpsP95High,
-			DecodeTpsAvg:     mSummary.DecodeTpsAvg,
-			TotalTpsP5Low:    mSummary.TotalTpsP5Low,
-			TotalTpsMedian:   mSummary.TotalTpsMedian,
-			TotalTpsTrim90:   mSummary.TotalTpsTrim90,
-			TotalTpsP95High:  mSummary.TotalTpsP95High,
-			TotalTpsAvg:      mSummary.TotalTpsAvg,
-			Channels:         chDetails,
+			Model:               m,
+			ChannelCount:        len(chDetails),
+			RequestCount:        mSummary.RequestCount,
+			SuccessCount:        mSummary.SuccessCount,
+			ErrorCount:          mSummary.ErrorCount,
+			Availability:        mSummary.Availability,
+			AvgPromptTokens:     mSummary.AvgPromptTokens,
+			AvgOutputTokens:     mSummary.AvgOutputTokens,
+			AvgTtftSec:          mSummary.AvgTtftSec,
+			MedianTtftSec:       mSummary.MedianTtftSec,
+			P95TtftSec:          mSummary.P95TtftSec,
+			PrefillTpsAvg:       mSummary.PrefillTpsAvg,
+			PrefillTpsMedian:    mSummary.PrefillTpsMedian,
+			DecodeTpsP5Low:      mSummary.DecodeTpsP5Low,
+			DecodeTpsMedian:     mSummary.DecodeTpsMedian,
+			DecodeTpsTrim90:     mSummary.DecodeTpsTrim90,
+			DecodeTpsP95High:    mSummary.DecodeTpsP95High,
+			DecodeTpsAvg:        mSummary.DecodeTpsAvg,
+			TotalTpsP5Low:       mSummary.TotalTpsP5Low,
+			TotalTpsMedian:      mSummary.TotalTpsMedian,
+			TotalTpsTrim90:      mSummary.TotalTpsTrim90,
+			TotalTpsP95High:     mSummary.TotalTpsP95High,
+			TotalTpsAvg:         mSummary.TotalTpsAvg,
+			TotalInputTokens:    mSummary.TotalInputTokens,
+			CacheReadTokens:     mSummary.CacheReadTokens,
+			CacheWriteTokens:    mSummary.CacheWriteTokens,
+			CacheHitCallCount:   mSummary.CacheHitCallCount,
+			CacheHitCallRatio:   mSummary.CacheHitCallRatio,
+			WeightedCacheRate:   mSummary.WeightedCacheRate,
+			CacheRateP5Low:      mSummary.CacheRateP5Low,
+			CacheRateMedian:     mSummary.CacheRateMedian,
+			CacheRateP95High:    mSummary.CacheRateP95High,
+			CacheRateAvg:        mSummary.CacheRateAvg,
+			HitCacheRateP5Low:   mSummary.HitCacheRateP5Low,
+			HitCacheRateMedian:  mSummary.HitCacheRateMedian,
+			HitCacheRateP95High: mSummary.HitCacheRateP95High,
+			HitCacheRateAvg:     mSummary.HitCacheRateAvg,
+			Channels:            chDetails,
 		})
 	}
 
@@ -3521,33 +3750,47 @@ func GetModelHealthAnalysis(c *gin.Context) {
 		})
 
 		channelRows = append(channelRows, ChannelHealthSummaryRow{
-			ChannelID:        chID,
-			ChannelName:      cSummary.ChannelName,
-			ChannelType:      cSummary.ChannelType,
-			ChannelStatus:    cSummary.ChannelStatus,
-			ModelCount:       len(mDetails),
-			RequestCount:     cSummary.RequestCount,
-			SuccessCount:     cSummary.SuccessCount,
-			ErrorCount:       cSummary.ErrorCount,
-			Availability:     cSummary.Availability,
-			AvgPromptTokens:  cSummary.AvgPromptTokens,
-			AvgOutputTokens:  cSummary.AvgOutputTokens,
-			AvgTtftSec:       cSummary.AvgTtftSec,
-			MedianTtftSec:    cSummary.MedianTtftSec,
-			P95TtftSec:       cSummary.P95TtftSec,
-			PrefillTpsAvg:    cSummary.PrefillTpsAvg,
-			PrefillTpsMedian: cSummary.PrefillTpsMedian,
-			DecodeTpsP5Low:   cSummary.DecodeTpsP5Low,
-			DecodeTpsMedian:  cSummary.DecodeTpsMedian,
-			DecodeTpsTrim90:  cSummary.DecodeTpsTrim90,
-			DecodeTpsP95High: cSummary.DecodeTpsP95High,
-			DecodeTpsAvg:     cSummary.DecodeTpsAvg,
-			TotalTpsP5Low:    cSummary.TotalTpsP5Low,
-			TotalTpsMedian:   cSummary.TotalTpsMedian,
-			TotalTpsTrim90:   cSummary.TotalTpsTrim90,
-			TotalTpsP95High:  cSummary.TotalTpsP95High,
-			TotalTpsAvg:      cSummary.TotalTpsAvg,
-			Models:           mDetails,
+			ChannelID:           chID,
+			ChannelName:         cSummary.ChannelName,
+			ChannelType:         cSummary.ChannelType,
+			ChannelStatus:       cSummary.ChannelStatus,
+			ModelCount:          len(mDetails),
+			RequestCount:        cSummary.RequestCount,
+			SuccessCount:        cSummary.SuccessCount,
+			ErrorCount:          cSummary.ErrorCount,
+			Availability:        cSummary.Availability,
+			AvgPromptTokens:     cSummary.AvgPromptTokens,
+			AvgOutputTokens:     cSummary.AvgOutputTokens,
+			AvgTtftSec:          cSummary.AvgTtftSec,
+			MedianTtftSec:       cSummary.MedianTtftSec,
+			P95TtftSec:          cSummary.P95TtftSec,
+			PrefillTpsAvg:       cSummary.PrefillTpsAvg,
+			PrefillTpsMedian:    cSummary.PrefillTpsMedian,
+			DecodeTpsP5Low:      cSummary.DecodeTpsP5Low,
+			DecodeTpsMedian:     cSummary.DecodeTpsMedian,
+			DecodeTpsTrim90:     cSummary.DecodeTpsTrim90,
+			DecodeTpsP95High:    cSummary.DecodeTpsP95High,
+			DecodeTpsAvg:        cSummary.DecodeTpsAvg,
+			TotalTpsP5Low:       cSummary.TotalTpsP5Low,
+			TotalTpsMedian:      cSummary.TotalTpsMedian,
+			TotalTpsTrim90:      cSummary.TotalTpsTrim90,
+			TotalTpsP95High:     cSummary.TotalTpsP95High,
+			TotalTpsAvg:         cSummary.TotalTpsAvg,
+			TotalInputTokens:    cSummary.TotalInputTokens,
+			CacheReadTokens:     cSummary.CacheReadTokens,
+			CacheWriteTokens:    cSummary.CacheWriteTokens,
+			CacheHitCallCount:   cSummary.CacheHitCallCount,
+			CacheHitCallRatio:   cSummary.CacheHitCallRatio,
+			WeightedCacheRate:   cSummary.WeightedCacheRate,
+			CacheRateP5Low:      cSummary.CacheRateP5Low,
+			CacheRateMedian:     cSummary.CacheRateMedian,
+			CacheRateP95High:    cSummary.CacheRateP95High,
+			CacheRateAvg:        cSummary.CacheRateAvg,
+			HitCacheRateP5Low:   cSummary.HitCacheRateP5Low,
+			HitCacheRateMedian:  cSummary.HitCacheRateMedian,
+			HitCacheRateP95High: cSummary.HitCacheRateP95High,
+			HitCacheRateAvg:     cSummary.HitCacheRateAvg,
+			Models:              mDetails,
 		})
 	}
 
@@ -3561,33 +3804,104 @@ func GetModelHealthAnalysis(c *gin.Context) {
 		return channelRows[i].ChannelID < channelRows[j].ChannelID
 	})
 
+	var bucketKeys []int64
+	if len(globalBuckets) > 0 {
+		if trendGranularity == "hour" && startTs > 0 && effectiveEnd >= startTs && effectiveEnd-startTs <= 2*86400 {
+			firstBucket := (startTs / bucketSec) * bucketSec
+			lastBucket := (effectiveEnd / bucketSec) * bucketSec
+			for ts := firstBucket; ts <= lastBucket; ts += bucketSec {
+				bucketKeys = append(bucketKeys, ts)
+			}
+		} else {
+			bucketKeys = make([]int64, 0, len(globalBuckets))
+			for ts := range globalBuckets {
+				bucketKeys = append(bucketKeys, ts)
+			}
+			slices.Sort(bucketKeys)
+		}
+	}
+
+	trendPoints := make([]ModelHealthTrendPoint, 0, len(bucketKeys))
+	for _, ts := range bucketKeys {
+		trendPoints = append(trendPoints, buildTrendPoint(ts, globalBuckets[ts]))
+	}
+
+	const maxTrendChannels = 8
+	channelTrends := make([]ChannelHealthTrendSeries, 0, maxTrendChannels)
+	for _, chRow := range channelRows {
+		if len(channelTrends) >= maxTrendChannels {
+			break
+		}
+		if chRow.RequestCount <= 0 {
+			continue
+		}
+		byTs := channelBuckets[chRow.ChannelID]
+		if len(byTs) == 0 {
+			continue
+		}
+		chTsList := make([]int64, 0, len(byTs))
+		for ts := range byTs {
+			chTsList = append(chTsList, ts)
+		}
+		slices.Sort(chTsList)
+		pts := make([]ModelHealthTrendPoint, 0, len(chTsList))
+		for _, ts := range chTsList {
+			pts = append(pts, buildTrendPoint(ts, byTs[ts]))
+		}
+		channelTrends = append(channelTrends, ChannelHealthTrendSeries{
+			ChannelID:   chRow.ChannelID,
+			ChannelName: chRow.ChannelName,
+			ChannelType: chRow.ChannelType,
+			TotalCalls:  chRow.RequestCount,
+			Points:      pts,
+		})
+	}
+
 	gSummary := buildDetailFromCollector("", 0, globalCollector)
 	summary := ModelHealthSummary{
-		ModelCount:       len(modelRows),
-		ChannelCount:     len(channelRows),
-		RequestCount:     gSummary.RequestCount,
-		SuccessCount:     gSummary.SuccessCount,
-		ErrorCount:       gSummary.ErrorCount,
-		Availability:     gSummary.Availability,
-		AvgTtftSec:       gSummary.AvgTtftSec,
-		MedianTtftSec:    gSummary.MedianTtftSec,
-		PrefillTpsAvg:    gSummary.PrefillTpsAvg,
-		PrefillTpsMedian: gSummary.PrefillTpsMedian,
-		DecodeTpsP5Low:   gSummary.DecodeTpsP5Low,
-		DecodeTpsMedian:  gSummary.DecodeTpsMedian,
-		DecodeTpsTrim90:  gSummary.DecodeTpsTrim90,
-		DecodeTpsP95High: gSummary.DecodeTpsP95High,
-		DecodeTpsAvg:     gSummary.DecodeTpsAvg,
-		TotalTpsP5Low:    gSummary.TotalTpsP5Low,
-		TotalTpsMedian:   gSummary.TotalTpsMedian,
-		TotalTpsTrim90:   gSummary.TotalTpsTrim90,
-		TotalTpsP95High:  gSummary.TotalTpsP95High,
-		TotalTpsAvg:      gSummary.TotalTpsAvg,
+		ModelCount:          len(modelRows),
+		ChannelCount:        len(channelRows),
+		RequestCount:        gSummary.RequestCount,
+		SuccessCount:        gSummary.SuccessCount,
+		ErrorCount:          gSummary.ErrorCount,
+		Availability:        gSummary.Availability,
+		AvgTtftSec:          gSummary.AvgTtftSec,
+		MedianTtftSec:       gSummary.MedianTtftSec,
+		P95TtftSec:          gSummary.P95TtftSec,
+		PrefillTpsAvg:       gSummary.PrefillTpsAvg,
+		PrefillTpsMedian:    gSummary.PrefillTpsMedian,
+		DecodeTpsP5Low:      gSummary.DecodeTpsP5Low,
+		DecodeTpsMedian:     gSummary.DecodeTpsMedian,
+		DecodeTpsTrim90:     gSummary.DecodeTpsTrim90,
+		DecodeTpsP95High:    gSummary.DecodeTpsP95High,
+		DecodeTpsAvg:        gSummary.DecodeTpsAvg,
+		TotalTpsP5Low:       gSummary.TotalTpsP5Low,
+		TotalTpsMedian:      gSummary.TotalTpsMedian,
+		TotalTpsTrim90:      gSummary.TotalTpsTrim90,
+		TotalTpsP95High:     gSummary.TotalTpsP95High,
+		TotalTpsAvg:         gSummary.TotalTpsAvg,
+		TotalInputTokens:    gSummary.TotalInputTokens,
+		CacheReadTokens:     gSummary.CacheReadTokens,
+		CacheWriteTokens:    gSummary.CacheWriteTokens,
+		CacheHitCallCount:   gSummary.CacheHitCallCount,
+		CacheHitCallRatio:   gSummary.CacheHitCallRatio,
+		WeightedCacheRate:   gSummary.WeightedCacheRate,
+		CacheRateP5Low:      gSummary.CacheRateP5Low,
+		CacheRateMedian:     gSummary.CacheRateMedian,
+		CacheRateP95High:    gSummary.CacheRateP95High,
+		CacheRateAvg:        gSummary.CacheRateAvg,
+		HitCacheRateP5Low:   gSummary.HitCacheRateP5Low,
+		HitCacheRateMedian:  gSummary.HitCacheRateMedian,
+		HitCacheRateP95High: gSummary.HitCacheRateP95High,
+		HitCacheRateAvg:     gSummary.HitCacheRateAvg,
 	}
 
 	common.ApiSuccess(c, gin.H{
-		"models":   modelRows,
-		"channels": channelRows,
-		"summary":  summary,
+		"models":            modelRows,
+		"channels":          channelRows,
+		"summary":           summary,
+		"trend":             trendPoints,
+		"channel_trends":    channelTrends,
+		"trend_granularity": trendGranularity,
 	})
 }

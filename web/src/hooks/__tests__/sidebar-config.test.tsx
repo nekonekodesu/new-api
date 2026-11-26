@@ -159,15 +159,32 @@ describe('audit log sidebar entry', () => {
     rerender()
     expect(dashboard()?.items?.map((item) => item.url)).toEqual([
       '/dashboard/models',
+      '/dashboard/health',
       '/channels?tab=cost-models',
     ])
     expect(dashboard()?.items?.map((item) => item.title)).toEqual([
       'Basic Data',
+      'Model Health',
       'Cost Management',
     ])
     const item = dashboard()
     expect(item).toBeDefined()
     if (!item) throw new Error('Dashboard navigation is missing')
+    const basicDataItem = item.items?.find(
+      (subItem) => subItem.title === 'Basic Data'
+    )
+    const modelHealthItem = item.items?.find(
+      (subItem) => subItem.title === 'Model Health'
+    )
+    expect(basicDataItem).toBeDefined()
+    expect(modelHealthItem).toBeDefined()
+    if (!basicDataItem || !modelHealthItem) {
+      throw new Error('Dashboard sub-items are missing')
+    }
+    expect(checkIsActive('/dashboard/health?tab=cache', modelHealthItem)).toBe(
+      true
+    )
+    expect(checkIsActive('/dashboard/health', basicDataItem)).toBe(false)
     expect(checkIsActive('/channels?tab=cost-users', item)).toBe(true)
     expect(checkIsActive('/dashboard/network-security', item)).toBe(true)
   })
