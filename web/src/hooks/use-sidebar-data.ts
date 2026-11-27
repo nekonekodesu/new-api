@@ -83,35 +83,42 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             url: '/dashboard/overview',
             icon: Activity,
           },
-          {
-            title: t('Dashboard'),
-            icon: LayoutDashboard,
-            items: [
-              {
-                title: t('Basic Data'),
+          isAdmin
+            ? {
+                title: t('Dashboard'),
+                icon: LayoutDashboard,
+                items: [
+                  {
+                    title: t('Basic Data'),
+                    url: '/dashboard/models',
+                    activeUrls: [
+                      '/dashboard/flow',
+                      '/dashboard/users',
+                      '/dashboard/network-security',
+                    ],
+                  },
+                  {
+                    title: t('Model Health'),
+                    url: '/dashboard/health',
+                  },
+                  {
+                    title: t('Cost Management'),
+                    url: '/channels?tab=cost-models',
+                    activeUrls: ['/channels?tab=cost-users'],
+                    configUrls: ['/channels'],
+                  },
+                ],
+              }
+            : {
+                title: t('Dashboard'),
                 url: '/dashboard/models',
                 activeUrls: [
                   '/dashboard/flow',
                   '/dashboard/users',
                   '/dashboard/network-security',
                 ],
+                icon: LayoutDashboard,
               },
-              ...(isAdmin
-                ? [
-                    {
-                      title: t('Model Health'),
-                      url: '/dashboard/health',
-                    },
-                    {
-                      title: t('Cost Management'),
-                      url: '/channels?tab=cost-models',
-                      activeUrls: ['/channels?tab=cost-users'],
-                      configUrls: ['/channels'],
-                    },
-                  ]
-                : []),
-            ],
-          },
           {
             title: t('API Keys'),
             url: '/keys',

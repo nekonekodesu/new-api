@@ -142,15 +142,21 @@ describe('security sidebar visibility', () => {
 })
 
 describe('audit log sidebar entry', () => {
-  it('keeps the dashboard destination and shows cost links only for administrators', () => {
+  it('renders Dashboard as a direct link for regular users and a submenu with health/cost links for administrators', () => {
     const { result, rerender } = renderHook(() => useSidebarData())
     const dashboard = () =>
       result.current.navGroups
         .flatMap((group) => group.items)
         .find((item) => item.title === 'Dashboard')
-    expect(dashboard()?.items?.map((item) => item.title)).toEqual([
-      'Basic Data',
-    ])
+    const regularItem = dashboard()
+    expect(regularItem).toBeDefined()
+    if (!regularItem) throw new Error('Dashboard navigation is missing')
+    expect(regularItem.items).toBeUndefined()
+    expect(regularItem.url).toBe('/dashboard/models')
+    expect(checkIsActive('/dashboard/models', regularItem)).toBe(true)
+    expect(checkIsActive('/dashboard/flow', regularItem)).toBe(true)
+    expect(checkIsActive('/dashboard/overview', regularItem)).toBe(false)
+
     act(() =>
       useAuthStore
         .getState()
